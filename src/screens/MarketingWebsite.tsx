@@ -59,14 +59,15 @@ const PHOTOS = {
 type Page = 'home'|'about'|'how-it-works'|'become-agent'|'services'|'contact'|'pricing'|'faq'|'privacy'|'terms'|'404'
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
-function useScrolled(threshold = 60) {
-  const [scrolled, setScrolled] = useState(false)
+function useScrollProgress(range = 120) {
+  const [progress, setProgress] = useState(0)
   useEffect(() => {
-    const h = () => setScrolled(window.scrollY > threshold)
+    const h = () => setProgress(Math.min(window.scrollY / range, 1))
     window.addEventListener('scroll', h, { passive: true })
+    h()
     return () => window.removeEventListener('scroll', h)
-  }, [threshold])
-  return scrolled
+  }, [range])
+  return progress
 }
 
 function useInView(threshold = 0.25) {
@@ -233,7 +234,8 @@ function StarRow({ value = 5 }: { value?: number }) {
 
 // ─── Navbar ───────────────────────────────────────────────────────────────────
 function Navbar({ nav, cur }: { nav: (p: Page) => void; cur: Page }) {
-  const scrolled = useScrolled(60)
+  const scrollP = useScrollProgress(120)
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t
   const [mob, setMob] = useState(false)
 
   const links: [string, Page][] = [
@@ -244,13 +246,12 @@ function Navbar({ nav, cur }: { nav: (p: Page) => void; cur: Page }) {
   return (
     <nav style={{
       position:'fixed', top:0, left:0, right:0, zIndex:100,
-      padding: scrolled ? '10px 32px' : '18px 32px',
-      transition:'all 0.30s cubic-bezier(0.4,0,0.2,1)',
-      background: scrolled ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.45)',
-      backdropFilter: scrolled ? 'blur(40px) saturate(2.2)' : 'blur(14px) saturate(1.5)',
-      WebkitBackdropFilter: scrolled ? 'blur(40px) saturate(2.2)' : 'blur(14px) saturate(1.5)',
-      borderBottom: `1px solid ${scrolled ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.38)'}`,
-      boxShadow: scrolled ? '0 4px 32px rgba(44,62,67,0.07)' : 'none',
+      padding: `${lerp(18,10,scrollP)}px 32px`,
+      background: `rgba(255,255,255,${lerp(0.45,0.88,scrollP)})`,
+      backdropFilter: `blur(${lerp(14,40,scrollP)}px) saturate(${lerp(1.5,2.2,scrollP)})`,
+      WebkitBackdropFilter: `blur(${lerp(14,40,scrollP)}px) saturate(${lerp(1.5,2.2,scrollP)})`,
+      borderBottom: `1px solid rgba(255,255,255,${lerp(0.38,0.72,scrollP)})`,
+      boxShadow: `0 4px 32px rgba(44,62,67,${lerp(0,0.07,scrollP)})`,
       display:'flex', alignItems:'center', justifyContent:'space-between',
     }}>
       <button onClick={() => nav('home')} style={{ background:'none', border:'none', cursor:'pointer', padding:0, display:'flex', alignItems:'center', gap:10 }}>
