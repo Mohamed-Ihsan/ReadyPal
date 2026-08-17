@@ -1,3 +1,4 @@
+import { supabase } from '../lib/supabaseClient'
 import {
   useState, useRef, useEffect, useCallback,
   type ReactNode, type CSSProperties, type KeyboardEvent,
@@ -5,6 +6,7 @@ import {
 import logoFull from '@/imports/20260723_170707.png'
 import logoWhite from '@/imports/20260723_165045.png'
 import logoIcon from '@/imports/20260723_164632.png'
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type AuthScreen =
@@ -501,11 +503,32 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const submit = () => {
-    if (!email || !pass) { setError('Please fill in all fields.'); return }
-    setError(''); setLoading(true)
-    setTimeout(() => { setLoading(false); go('client-1') }, 1200)
+  const submit = async () => {
+  if (!email || !pass) { setError('Please fill in all fields.'); return }
+  setError(''); setLoading(true)
+
+  const { data, error: authError } = await supabase.auth.signInWithPassword({
+    email,
+    password: pass,
+  })
+
+  setLoading(false)
+
+  if (authError) {
+    setError(authError.message)
+    return
   }
+
+  // Check the user's role to route them correctly
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', data.user.id)
+    .single()
+
+  go(profile?.role === 'agent' ? 'agent-1' : 'client-1')
+  }
+  
 
   return (
     <AuthShell left={
