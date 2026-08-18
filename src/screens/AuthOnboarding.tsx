@@ -2,6 +2,9 @@ import {
   useState, useRef, useEffect, useCallback,
   type ReactNode, type CSSProperties, type KeyboardEvent,
 } from 'react'
+
+import { signInUser } from "../lib/api"
+
 import logoFull from '@/imports/20260723_170707.png'
 import logoWhite from '@/imports/20260723_165045.png'
 import logoIcon from '@/imports/20260723_164632.png'
@@ -501,10 +504,32 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const submit = () => {
-    if (!email || !pass) { setError('Please fill in all fields.'); return }
-    setError(''); setLoading(true)
-    setTimeout(() => { setLoading(false); go('client-1') }, 1200)
+  const submit = async () => {
+    if (!email || !pass) {
+      setError('Please fill in all fields.')
+      return
+    }
+
+    try {
+      setError('')
+      setLoading(true)
+
+      const result = await signInUser(email, pass)
+
+      console.log('Supabase login successful:', result)
+
+      window.location.href = '/agent/onboarding'
+    } catch (err) {
+      console.error('Supabase login failed:', err)
+
+      if (err instanceof Error) {
+        setError(err.message)
+      } else {
+      setError('Login failed. Please try again.')
+      }
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

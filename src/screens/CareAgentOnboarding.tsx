@@ -1,4 +1,5 @@
 import { useState, type ReactNode, type CSSProperties } from 'react'
+import { updateMyProfile,uploadProfilePhoto } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -365,67 +366,471 @@ function StepWrap({ step, total, title, desc, children, onBack, onNext, nextLabe
 
 // ─── Step 1: Personal Information ─────────────────────────────────────────────
 function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const [photoUploaded, setPhotoUploaded] = useState(false)
-  const [form, setForm] = useState({ firstName:'Kasun', lastName:'Perera', preferred:'Kasun', nic:'199234567890', dob:'1992-05-14', gender:'Male', nationality:'Sri Lankan', email:'kasun.p@email.lk', phone:'+94 77 234 5678', emergency:'Nimal Perera · +94 11 234 5678', address:'45 Galle Road', province:'Western Province', district:'Colombo', city:'Colombo', postal:'00300' })
-  const f = (k:string) => (v:string) => setForm(p=>({...p,[k]:v}))
+  const [photoUrl, setPhotoUrl] = useState('')
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const [photoError, setPhotoError] = useState('')
+
+  const [form, setForm] = useState({
+    firstName: '',
+    lastName: '',
+    preferred: '',
+    nic: '',
+    dob: '',
+    gender: '',
+    nationality: '',
+    email: '',
+    phone: '',
+    emergency: '',
+    address: '',
+    province: '',
+    district: '',
+    city: '',
+    postal: ''
+  })
+
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const f = (k:string) => (v:string) =>
+    setForm(p => ({ ...p, [k]: v }))
+
+  const handlePhotoUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+
+    if (!file) return
+
+    try {
+      setPhotoError('')
+      setPhotoUploading(true)
+
+      const result = await uploadProfilePhoto(file)
+
+      setPhotoUrl(result.avatarUrl)
+    } catch (error) {
+      console.error('Profile photo upload failed:', error)
+
+      if (error instanceof Error) {
+        setPhotoError(error.message)
+      } else {
+        setPhotoError('Failed to upload profile photo')
+      }
+    } finally {
+      setPhotoUploading(false)
+    }
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaving(true)
+      setSaveError('')
+
+      if (!form.firstName.trim()) {
+        throw new Error('First name is required')
+      }
+
+      if (!form.lastName.trim()) {
+        throw new Error('Last name is required')
+      }
+
+      if (!form.nic.trim()) {
+        throw new Error('NIC is required')
+      }
+
+      if (!form.dob) {
+        throw new Error('Date of birth is required')
+      }
+
+      if (!form.email.trim()) {
+        throw new Error('Email is required')
+      }
+
+      if (!form.phone.trim()) {
+        throw new Error('Phone number is required')
+      }
+
+      if (!form.address.trim()) {
+        throw new Error('Address is required')
+      }
+
+      if (!form.city.trim()) {
+        throw new Error('City is required')
+      }
+
+      await updateMyProfile({
+        full_name: `${form.firstName.trim()} ${form.lastName.trim()}`,
+        preferred_name: form.preferred.trim(),
+        nic: form.nic.trim(),
+        date_of_birth: form.dob,
+        gender: form.gender,
+        nationality: form.nationality,
+        email: form.email.trim(),
+        phone: form.phone.trim(),
+        emergency_contact: form.emergency.trim(),
+        address: form.address.trim(),
+        province: form.province,
+        district: form.district,
+        city: form.city.trim(),
+        postal_code: form.postal.trim()
+      })
+
+      onNext()
+    } catch (error) {
+      console.error('Failed to save personal information:', error)
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save personal information')
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <StepWrap step={1} total={11} title="Personal Information" desc="Tell us about yourself. This information will be verified against your official documents." onBack={onBack} onNext={onNext}>
+    <StepWrap
+      step={1}
+      total={11}
+      title="Personal Information"
+      desc="Tell us about yourself. This information will be verified against your official documents."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+    >
       {/* Photo */}
       <Card style={{ padding:20, marginBottom:24 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:14 }}>Profile Photo</p>
-        <div style={{ display:'flex', gap:16, alignItems:'center' }}>
-          <div style={{ width:80, height:80, borderRadius:'50%', background:photoUploaded?`${C.success}10`:`${C.primary}10`, border:`3px solid ${photoUploaded?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, cursor:'pointer', position:'relative' as const }} onClick={()=>setPhotoUploaded(v=>!v)}>
-            {photoUploaded
-              ? <span style={{fontSize:32}}>👨‍⚕️</span>
-              : <span style={{color:C.muted,display:'flex',transform:'scale(1.3)'}}>{I.camera}</span>
-            }
-            <div style={{ position:'absolute', bottom:0, right:0, width:24, height:24, borderRadius:'50%', background:C.primary, border:'2px solid #fff', display:'flex', alignItems:'center', justifyContent:'center', color:'#fff' }}>
-              <span style={{display:'flex',transform:'scale(0.65)'}}>{I.camera}</span>
-            </div>
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+            textTransform:'uppercase',
+            letterSpacing:'0.08em',
+            marginBottom:14
+          }}
+        >
+          Profile Photo
+        </p>
+
+        <div
+          style={{
+            display:'flex',
+            gap:16,
+            alignItems:'center'
+          }}
+        >
+          <div
+            style={{
+              width:80,
+              height:80,
+              borderRadius:'50%',
+              background:`${C.primary}10`,
+              border:`3px solid ${photoUrl ? C.success : C.border}`,
+              display:'flex',
+              alignItems:'center',
+              justifyContent:'center',
+              flexShrink:0,
+              overflow:'hidden'
+            }}
+          >
+            {photoUrl ? (
+              <img
+                src={photoUrl}
+                alt="Profile"
+                style={{
+                  width:'100%',
+                  height:'100%',
+                  objectFit:'cover'
+                }}
+              />
+            ) : (
+              <span
+                style={{
+                  color:C.muted,
+                  display:'flex',
+                  transform:'scale(1.3)'
+                }}
+              >
+                {I.camera}
+              </span>
+            )}
           </div>
-          <div>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:4 }}>Upload a professional photo</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>Clear face photo, plain background preferred. Min 400×400px, max 5MB.</p>
-            <button onClick={()=>setPhotoUploaded(v=>!v)} style={{ marginTop:8, fontSize:12, fontWeight:700, color:C.primary, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>{photoUploaded?'Change Photo':'Upload Photo'}</button>
+
+          <div style={{ flex:1 }}>
+            <p
+              style={{
+                fontSize:13,
+                fontWeight:700,
+                color:C.type,
+                marginBottom:4
+              }}
+            >
+              Upload a professional photo
+            </p>
+
+            <p
+              style={{
+                fontSize:12,
+                color:C.muted,
+                lineHeight:1.6
+              }}
+            >
+              Clear face photo, plain background preferred.
+              Min 400×400px, max 5MB.
+            </p>
+
+            <label
+              style={{
+                display:'inline-block',
+                marginTop:8,
+                fontSize:12,
+                fontWeight:700,
+                color:C.primary,
+                cursor:'pointer'
+              }}
+            >
+              {photoUploading
+                ? 'Uploading...'
+                : photoUrl
+                  ? 'Change Photo'
+                  : 'Upload Photo'}
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handlePhotoUpload}
+                style={{ display:'none' }}
+              />
+            </label>
+
+            {photoError && (
+              <p
+                style={{
+                  marginTop:6,
+                  fontSize:11,
+                  color:C.error
+                }}
+              >
+                {photoError}
+              </p>
+            )}
           </div>
-          {photoUploaded&&<Bdg label="Photo Added" color={C.success} />}
+
+          {photoUrl && (
+            <Bdg
+              label="Photo Uploaded"
+              color={C.success}
+            />
+          )}
         </div>
       </Card>
 
-      <Card style={{ padding:'4px 20px 20px', marginBottom:20 }}>
+      <Card style={{
+        padding:'4px 20px 20px',
+        marginBottom:20
+      }}>
         <FormSection title="Full Name">
-          <Input label="First Name" value={form.firstName} onChange={f('firstName')} required />
-          <Input label="Last Name" value={form.lastName} onChange={f('lastName')} required />
-          <Input label="Preferred Name" value={form.preferred} onChange={f('preferred')} hint="Name shown to clients" />
-          <Input label="NIC / National ID" value={form.nic} onChange={f('nic')} required />
+          <Input
+            label="First Name"
+            value={form.firstName}
+            onChange={f('firstName')}
+            required
+          />
+
+          <Input
+            label="Last Name"
+            value={form.lastName}
+            onChange={f('lastName')}
+            required
+          />
+
+          <Input
+            label="Preferred Name"
+            value={form.preferred}
+            onChange={f('preferred')}
+            hint="Name shown to clients"
+          />
+
+          <Input
+            label="NIC / National ID"
+            value={form.nic}
+            onChange={f('nic')}
+            required
+          />
         </FormSection>
+
         <FormSection title="Personal Details">
-          <Input label="Date of Birth" type="date" value={form.dob} onChange={f('dob')} required />
-          <Select label="Gender" options={['Male','Female','Prefer not to say']} value={form.gender} onChange={f('gender')} />
-          <Select label="Nationality" options={['Sri Lankan','Other']} value={form.nationality} onChange={f('nationality')} />
+          <Input
+            label="Date of Birth"
+            type="date"
+            value={form.dob}
+            onChange={f('dob')}
+            required
+          />
+
+          <Select
+            label="Gender"
+            options={[
+              'Male',
+              'Female',
+              'Prefer not to say'
+            ]}
+            value={form.gender}
+            onChange={f('gender')}
+          />
+
+          <Select
+            label="Nationality"
+            options={[
+              'Sri Lankan',
+              'Other'
+            ]}
+            value={form.nationality}
+            onChange={f('nationality')}
+          />
         </FormSection>
+
         <FormSection title="Contact">
-          <Input label="Email Address" type="email" value={form.email} onChange={f('email')} required />
-          <Input label="Phone Number" type="tel" value={form.phone} onChange={f('phone')} required />
+          <Input
+            label="Email Address"
+            type="email"
+            value={form.email}
+            onChange={f('email')}
+            required
+          />
+
+          <Input
+            label="Phone Number"
+            type="tel"
+            value={form.phone}
+            onChange={f('phone')}
+            required
+          />
+
           <FormFull>
-            <Input label="Emergency Contact" value={form.emergency} onChange={f('emergency')} hint="Name and phone number" />
+            <Input
+              label="Emergency Contact"
+              value={form.emergency}
+              onChange={f('emergency')}
+              hint="Name and phone number"
+            />
           </FormFull>
         </FormSection>
+
         <FormSection title="Residential Address">
           <FormFull>
-            <Input label="Address" value={form.address} onChange={f('address')} required />
+            <Input
+              label="Address"
+              value={form.address}
+              onChange={f('address')}
+              required
+            />
           </FormFull>
-          <Select label="Province" options={['Western Province','Central Province','Southern Province','Northern Province','Eastern Province','North Western Province','North Central Province','Uva Province','Sabaragamuwa Province']} value={form.province} onChange={f('province')} />
-          <Select label="District" options={['Colombo','Gampaha','Kalutara','Kandy','Matale','Nuwara Eliya','Galle','Matara','Hambantota']} value={form.district} onChange={f('district')} />
-          <Input label="City" value={form.city} onChange={f('city')} required />
-          <Input label="Postal Code" value={form.postal} onChange={f('postal')} />
+
+          <Select
+            label="Province"
+            options={[
+              'Western Province',
+              'Central Province',
+              'Southern Province',
+              'Northern Province',
+              'Eastern Province',
+              'North Western Province',
+              'North Central Province',
+              'Uva Province',
+              'Sabaragamuwa Province'
+            ]}
+            value={form.province}
+            onChange={f('province')}
+          />
+
+          <Select
+            label="District"
+            options={[
+              'Colombo',
+              'Gampaha',
+              'Kalutara',
+              'Kandy',
+              'Matale',
+              'Nuwara Eliya',
+              'Galle',
+              'Matara',
+              'Hambantota'
+            ]}
+            value={form.district}
+            onChange={f('district')}
+          />
+
+          <Input
+            label="City"
+            value={form.city}
+            onChange={f('city')}
+            required
+          />
+
+          <Input
+            label="Postal Code"
+            value={form.postal}
+            onChange={f('postal')}
+          />
         </FormSection>
+
+        {saveError && (
+          <div style={{
+            padding:'12px 14px',
+            marginBottom:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}>
+            {saveError}
+          </div>
+        )}
+
         {/* Live photo placeholder */}
-        <div style={{ padding:'14px 16px', borderRadius:12, background:`${C.info}06`, border:`1px solid ${C.info}20`, display:'flex', gap:10, alignItems:'center' }}>
-          <span style={{color:C.info,display:'flex'}}>{I.camera}</span>
+        <div style={{
+          padding:'14px 16px',
+          borderRadius:12,
+          background:`${C.info}06`,
+          border:`1px solid ${C.info}20`,
+          display:'flex',
+          gap:10,
+          alignItems:'center'
+        }}>
+          <span
+            style={{
+              color:C.info,
+              display:'flex'
+            }}
+          >
+            {I.camera}
+          </span>
+
           <div>
-            <p style={{fontSize:12,fontWeight:700,color:C.info}}>Live Verification Photo <Bdg label="Coming Soon" color={C.info} /></p>
-            <p style={{fontSize:11,color:C.muted}}>Real-time selfie verification will be available in the next update.</p>
+            <p style={{
+              fontSize:12,
+              fontWeight:700,
+              color:C.info
+            }}>
+              Live Verification Photo{' '}
+              <Bdg
+                label="Coming Soon"
+                color={C.info}
+              />
+            </p>
+
+            <p style={{
+              fontSize:11,
+              color:C.muted
+            }}>
+              Real-time selfie verification will be available
+              in the next update.
+            </p>
           </div>
         </div>
       </Card>

@@ -88,3 +88,97 @@ export async function getMyAgentDetails() {
 
   return data
 }
+
+
+export async function signUpUser(
+  email: string,
+  password: string,
+  fullName: string,
+  role: "client" | "agent" = "client"
+) {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        full_name: fullName,
+        role,
+      },
+    },
+  })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function signInUser(email: string, password: string) {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+
+export async function uploadProfilePhoto(file: File) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Please select an image file")
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("Image must be smaller than 5MB")
+  }
+
+  const extension = file.name.split(".").pop() || "jpg"
+
+  const filePath = `${user.id}/avatar.${extension}`
+
+  const { error: uploadError } = await supabase.storage
+    .from("avatars")
+    .upload(filePath, file, {
+      upsert: true,
+      contentType: file.type,
+    })
+
+  if (uploadError) {
+    throw uploadError
+  }
+
+  const { data } = supabase.storage
+    .from("avatars")
+    .getPublicUrl(filePath)
+
+  const avatarUrl = data.publicUrl
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .update({
+      avatar_url: avatarUrl,
+    })
+    .eq("id", user.id)
+    .select()
+    .single()
+
+  if (profileError) {
+    throw profileError
+  }
+
+  return {
+    avatarUrl,
+    profile,
+  }
+}
