@@ -48,6 +48,7 @@ export async function updateMyProfile(updates: {
   district?: string
   city?: string
   postal_code?: string
+  avatar_url?: string
 }) {
   const user = await getCurrentUser()
 
@@ -143,15 +144,14 @@ export async function uploadProfilePhoto(file: File) {
     throw new Error("Image must be smaller than 5MB")
   }
 
-  const extension = file.name.split(".").pop() || "jpg"
-
-  const filePath = `${user.id}/avatar.${extension}`
+  const filePath = `${user.id}/avatar`
 
   const { error: uploadError } = await supabase.storage
     .from("avatars")
     .upload(filePath, file, {
       upsert: true,
       contentType: file.type,
+      cacheControl: "0",
     })
 
   if (uploadError) {
@@ -162,7 +162,7 @@ export async function uploadProfilePhoto(file: File) {
     .from("avatars")
     .getPublicUrl(filePath)
 
-  const avatarUrl = data.publicUrl
+  const avatarUrl = `${data.publicUrl}?v=${Date.now()}`
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")

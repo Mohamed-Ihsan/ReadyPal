@@ -1,5 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
-import { updateMyProfile,uploadProfilePhoto,saveMyAgentDetails } from '../lib/api'
+import { useState,useEffect, type ReactNode, type CSSProperties } from 'react'
+import { updateMyProfile,uploadProfilePhoto,saveMyAgentDetails,getMyProfile,getMyAgentDetails } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -367,6 +367,7 @@ function StepWrap({ step, total, title, desc, children, onBack, onNext, nextLabe
 // ─── Step 1: Personal Information ─────────────────────────────────────────────
 function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
   const [photoUrl, setPhotoUrl] = useState('')
+  const [selectedPhoto, setSelectedPhoto] = useState<File | null>(null)
   const [photoUploading, setPhotoUploading] = useState(false)
   const [photoError, setPhotoError] = useState('')
 
@@ -394,31 +395,73 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
   const f = (k:string) => (v:string) =>
     setForm(p => ({ ...p, [k]: v }))
 
-  const handlePhotoUpload = async (
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      try {
+        const profile = await getMyProfile()
+
+        if (!profile) return
+
+        const nameParts = (profile.full_name || '').trim().split(' ')
+
+        const firstName = nameParts[0] || ''
+        const lastName = nameParts.slice(1).join(' ')
+
+        setForm({
+          firstName,
+          lastName,
+          preferred: profile.preferred_name || '',
+          nic: profile.nic || '',
+          dob: profile.date_of_birth || '',
+          gender: profile.gender || '',
+          nationality: profile.nationality || '',
+          email: profile.email || '',
+          phone: profile.phone || '',
+          emergency: profile.emergency_contact || '',
+          address: profile.address || '',
+          province: profile.province || '',
+          district: profile.district || '',
+          city: profile.city || '',
+          postal: profile.postal_code || ''
+        })
+
+        if (profile.avatar_url) {
+          setPhotoUrl(profile.avatar_url)
+        }
+
+      } catch (error) {
+        console.error('Failed to load personal information:', error)
+      }
+    }
+
+    loadProfile()
+  }, [])
+
+
+
+  const handlePhotoUpload = (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = event.target.files?.[0]
 
     if (!file) return
 
-    try {
-      setPhotoError('')
-      setPhotoUploading(true)
-
-      const result = await uploadProfilePhoto(file)
-
-      setPhotoUrl(result.avatarUrl)
-    } catch (error) {
-      console.error('Profile photo upload failed:', error)
-
-      if (error instanceof Error) {
-        setPhotoError(error.message)
-      } else {
-        setPhotoError('Failed to upload profile photo')
-      }
-    } finally {
-      setPhotoUploading(false)
+    if (!file.type.startsWith('image/')) {
+      setPhotoError('Please select an image file')
+      return
     }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setPhotoError('Image must be smaller than 5MB')
+      return
+    }
+
+    setPhotoError('')
+    setSelectedPhoto(file)
+
+    const previewUrl = URL.createObjectURL(file)
+    setPhotoUrl(previewUrl)
   }
 
   const handleSaveAndContinue = async () => {
@@ -458,6 +501,18 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         throw new Error('City is required')
       }
 
+      let uploadedAvatarUrl: string | undefined
+
+      if (selectedPhoto) {
+        setPhotoUploading(true)
+
+        const photoResult = await uploadProfilePhoto(selectedPhoto)
+
+        uploadedAvatarUrl = photoResult.avatarUrl
+
+        setPhotoUrl(uploadedAvatarUrl)
+      }
+
       await updateMyProfile({
         full_name: `${form.firstName.trim()} ${form.lastName.trim()}`,
         preferred_name: form.preferred.trim(),
@@ -472,7 +527,11 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         province: form.province,
         district: form.district,
         city: form.city.trim(),
-        postal_code: form.postal.trim()
+        postal_code: form.postal.trim(),
+
+        ...(uploadedAvatarUrl && {
+          avatar_url: uploadedAvatarUrl
+        })
       })
 
       onNext()
@@ -873,6 +932,7 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     'Mobility Assistance'
   ]
 
+
   const convertExperienceToYears = (value: string) => {
     switch (value) {
       case 'Less than 1 year':
@@ -891,6 +951,58 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         return 0
     }
   }
+
+  const convertYearsToOption = (years: number | null) => {
+    if (years === null || years === undefined) return ''
+
+    if (years < 1) return 'Less than 1 year'
+    if (years <= 2) return '1–2 years'
+    if (years <= 5) return '3–5 years'
+    if (years <= 8) return '5–8 years'
+    if (years <= 10) return '8–10 years'
+
+    return '10+ years'
+  }
+
+
+  useEffect(() => {
+    const loadAgentDetails = async () => {
+      try {
+        const details = await getMyAgentDetails()
+
+        if (!details) return
+
+        setForm({
+          headline: details.professional_headline || '',
+          bio: details.bio || '',
+          years: convertYearsToOption(details.experience_years),
+          employment: details.current_employer || '',
+          prevEmployment: details.previous_employment || '',
+          edu: details.education || '',
+          hourlyRate: details.hourly_rate?.toString() || '',
+          maxRate: details.max_rate?.toString() || '',
+          areas: Array.isArray(details.service_areas)
+            ? details.service_areas.join(', ')
+            : ''
+        })
+
+        setLangs(
+          Array.isArray(details.languages)
+            ? details.languages
+            : []
+        )
+
+        setRadius(details.travel_radius_km || 20)
+
+      } catch (error) {
+        console.error('Failed to load professional profile:', error)
+      }
+    }
+
+    loadAgentDetails()
+  }, [])
+
+
 
   const handleSaveAndContinue = async () => {
     try {
