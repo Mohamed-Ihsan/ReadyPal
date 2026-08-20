@@ -291,3 +291,188 @@ export async function getMyAgentSkills() {
 
   return data
 }
+
+
+
+function certificationSlug(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+}
+
+export async function saveMyCertification(
+  certificateName: string,
+  file: File | null,
+  issueDate: string,
+  expiryDate: string
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const docType = certificationSlug(certificateName)
+
+  let filePath: string | undefined
+
+  // Upload only if user selected a new file
+  if (file) {
+    if (
+      ![
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+      ].includes(file.type)
+    ) {
+      throw new Error("Only PDF, JPG and PNG files are allowed")
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      throw new Error("File must be smaller than 10MB")
+    }
+
+    filePath = `${user.id}/certifications/${docType}`
+
+    const { error: uploadError } = await supabase.storage
+      .from("verification-documents")
+      .upload(filePath, file, {
+        upsert: true,
+        contentType: file.type,
+        cacheControl: "0",
+      })
+
+    if (uploadError) {
+      throw uploadError
+    }
+  }
+
+  // Check whether this certificate already exists
+  const { data: existing, error: findError } = await supabase
+    .from("verification_documents")
+    .select("*")
+    .eq("agent_id", user.id)
+    .eq("doc_type", docType)
+    .maybeSingle()
+
+  if (findError) {
+    throw findError
+  }
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from("verification_documents")
+      .update({
+        ...(filePath && { file_url: filePath }),
+        issue_date: issueDate || null,
+        expiry_date: expiryDate || null,
+        status: "pending",
+      })
+      .eq("id", existing.id)
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    return data
+  }
+
+  if (!filePath) {
+    throw new Error(`Please upload ${certificateName}`)
+  }
+
+  const { data, error } = await supabase
+    .from("verification_documents")
+    .insert({
+      agent_id: user.id,
+      doc_type: docType,
+      file_url: filePath,
+      issue_date: issueDate || null,
+      expiry_date: expiryDate || null,
+      status: "pending",
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function getMyCertifications() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const certificateTypes = [
+    "caregiving-certificate",
+    "first-aid-certificate",
+    "cpr-certificate",
+    "nursing-qualification",
+    "medical-training-certificate",
+    "other-certification",
+  ]
+
+  const { data, error } = await supabase
+    .from("verification_documents")
+    .select("*")
+    .eq("agent_id", user.id)
+    .in("doc_type", certificateTypes)
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+
+
+export async function deleteMyCertification(docType: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data: existing, error: findError } = await supabase
+    .from("verification_documents")
+    .select("*")
+    .eq("agent_id", user.id)
+    .eq("doc_type", docType)
+    .maybeSingle()
+
+  if (findError) {
+    throw findError
+  }
+
+  if (!existing) {
+    return
+  }
+
+  if (existing.file_url) {
+    const { error: storageError } = await supabase.storage
+      .from("verification-documents")
+      .remove([existing.file_url])
+
+    if (storageError) {
+      throw storageError
+    }
+  }
+
+  const { error: deleteError } = await supabase
+    .from("verification_documents")
+    .delete()
+    .eq("id", existing.id)
+
+  if (deleteError) {
+    throw deleteError
+  }
+}

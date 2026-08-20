@@ -6,7 +6,10 @@ import {
   getMyProfile,
   getMyAgentDetails,
   saveMyAgentSkills,
-  getMyAgentSkills
+  getMyAgentSkills,
+  saveMyCertification,
+  getMyCertifications,
+  deleteMyCertification
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -1536,44 +1539,442 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
 // ─── Step 4: Certifications ───────────────────────────────────────────────────
 function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  type UpStatus = 'idle'|'uploading'|'done'|'error'
-  const [docs, setDocs] = useState<Record<string,{status:UpStatus;issued:string;expiry:string}>>({
-    'Caregiving Certificate':      {status:'done',    issued:'2018-03-10', expiry:'2028-03-09'},
-    'First Aid Certificate':       {status:'done',    issued:'2023-06-01', expiry:'2025-06-01'},
-    'CPR Certificate':             {status:'done',    issued:'2023-06-01', expiry:'2025-06-01'},
-    'Nursing Qualification':       {status:'idle',    issued:'', expiry:''},
-    'Medical Training Certificate':{status:'idle',    issued:'', expiry:''},
-    'Other Certification':         {status:'idle',    issued:'', expiry:''},
-  })
-  const upload = (k:string) => {
-    setDocs(p=>({...p,[k]:{...p[k],status:'uploading'}}))
-    setTimeout(()=>setDocs(p=>({...p,[k]:{...p[k],status:'done'}})),1400)
+
+  type CertData = {
+    file: File | null
+    fileName: string
+    existing: boolean
+    removed: boolean
+    issued: string
+    expiry: string
   }
+
+  const certificateNames = [
+    'Caregiving Certificate',
+    'First Aid Certificate',
+    'CPR Certificate',
+    'Nursing Qualification',
+    'Medical Training Certificate',
+    'Other Certification'
+  ]
+
+  const [docs, setDocs] = useState<Record<string, CertData>>(() => {
+    const initial: Record<string, CertData> = {}
+
+    certificateNames.forEach(name => {
+      initial[name] = {
+        file: null,
+        fileName: '',
+        existing: false,
+        removed: false,
+        issued: '',
+        expiry: ''
+      }
+    })
+
+    return initial
+  })
+
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const slugToName: Record<string, string> = {
+    'caregiving-certificate': 'Caregiving Certificate',
+    'first-aid-certificate': 'First Aid Certificate',
+    'cpr-certificate': 'CPR Certificate',
+    'nursing-qualification': 'Nursing Qualification',
+    'medical-training-certificate': 'Medical Training Certificate',
+    'other-certification': 'Other Certification'
+  }
+
+  // Load certificates already saved in Supabase
+  useEffect(() => {
+    const loadCertifications = async () => {
+      try {
+        const savedDocs = await getMyCertifications()
+
+        if (!savedDocs) return
+
+        setDocs(prev => {
+          const updated = { ...prev }
+
+          savedDocs.forEach(doc => {
+            const name = slugToName[doc.doc_type]
+
+            if (!name) return
+
+            updated[name] = {
+              ...updated[name],
+              existing: true,
+              removed: false,
+              fileName: doc.file_url
+                ? doc.file_url.split('/').pop() || name
+                : name,
+              issued: doc.issue_date || '',
+              expiry: doc.expiry_date || ''
+            }
+          })
+
+          return updated
+        })
+
+      } catch (error) {
+        console.error('Failed to load certifications:', error)
+      }
+    }
+
+    loadCertifications()
+  }, [])
+
+  const handleFileSelect = (
+    certificateName: string,
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+
+    if (!file) return
+
+    const allowedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/png'
+    ]
+
+    if (!allowedTypes.includes(file.type)) {
+      setSaveError('Only PDF, JPG and PNG files are allowed')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setSaveError('File must be smaller than 10MB')
+      return
+    }
+
+    setSaveError('')
+
+    setDocs(prev => ({
+      ...prev,
+      [certificateName]: {
+        ...prev[certificateName],
+        file,
+        fileName: file.name,
+        removed: false
+      }
+    }))
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+      setSaving(true)
+
+      // 1. Delete certificates that were previously saved
+      //    but the user marked for removal
+      for (const [certificateName, data] of Object.entries(docs)) {
+        if (data.removed) {
+          const docType = certificateName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-|-$/g, "")
+
+          await deleteMyCertification(docType)
+        }
+      }
+
+      // 2. Get certificates that should remain/save
+      const selectedCertificates = Object.entries(docs)
+        .filter(([, data]) =>
+          !data.removed && (data.file || data.existing)
+        )
+
+      if (selectedCertificates.length === 0) {
+        throw new Error('Please upload at least one certification')
+      }
+
+      // 3. Save new files or update existing certificate details
+      for (const [certificateName, data] of selectedCertificates) {
+        await saveMyCertification(
+          certificateName,
+          data.file,
+          data.issued,
+          data.expiry
+        )
+      }
+
+      // 4. Go to Step 5 only after all database work is complete
+      onNext()
+
+    } catch (error) {
+      console.error('Failed to save certifications:', error)
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save certifications')
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <StepWrap step={4} total={11} title="Certifications" desc="Upload your professional certifications. Supported: PDF, JPG, PNG up to 10MB." onBack={onBack} onNext={onNext}>
-      <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-        {Object.entries(docs).map(([cert,data])=>(
-          <Card key={cert} style={{ padding:22 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-              <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{cert}</p>
-                {data.status==='done'&&<Bdg label="Uploaded" color={C.success} />}
-                {cert.includes('First Aid')||cert.includes('CPR')
-                  ? <Bdg label="Expiring Soon" color={C.warning} />
-                  : null
-                }
+    <StepWrap
+      step={4}
+      total={11}
+      title="Certifications"
+      desc="Upload your professional certifications. Supported: PDF, JPG, PNG up to 10MB."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+    >
+
+      <div
+        style={{
+          display:'flex',
+          flexDirection:'column',
+          gap:16
+        }}
+      >
+
+        {certificateNames.map(cert => {
+          const data = docs[cert]
+
+          return (
+            <Card
+              key={cert}
+              style={{ padding:22 }}
+            >
+              <div
+                style={{
+                  display:'flex',
+                  justifyContent:'space-between',
+                  alignItems:'center',
+                  marginBottom:14
+                }}
+              >
+                <div
+                  style={{
+                    display:'flex',
+                    gap:8,
+                    alignItems:'center'
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize:13,
+                      fontWeight:700,
+                      color:C.type
+                    }}
+                  >
+                    {cert}
+                  </p>
+
+                  {(data.file || data.existing) && (
+                    <Bdg
+                      label={
+                        data.file
+                          ? 'Ready to Save'
+                          : 'Saved'
+                      }
+                      color={
+                        data.file
+                          ? C.info
+                          : C.success
+                      }
+                    />
+                  )}
+                </div>
               </div>
-            </div>
-            <UploadBox label={`Upload ${cert}`} desc="PDF, JPG or PNG · Max 10MB" file={data.status==='done'?cert+'.pdf':undefined} status={data.status} onUpload={()=>upload(cert)} />
-            {data.status==='done'&&(
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:14 }} className="cao-2col">
-                <Input label="Issue Date" type="date" value={data.issued} onChange={v=>setDocs(p=>({...p,[cert]:{...p[cert],issued:v}}))} />
-                <Input label="Expiry Date" type="date" value={data.expiry} onChange={v=>setDocs(p=>({...p,[cert]:{...p[cert],expiry:v}}))} />
-              </div>
-            )}
-          </Card>
-        ))}
+
+              <label
+                style={{
+                  display:'block',
+                  padding:'20px',
+                  borderRadius:14,
+                  border:`2px dashed ${
+                    data.file || data.existing
+                      ? C.success
+                      : C.border
+                  }`,
+                  background:
+                    data.file || data.existing
+                      ? `${C.success}06`
+                      : C.bg,
+                  cursor:'pointer',
+                  textAlign:'center' as const
+                }}
+              >
+
+                <div
+                  style={{
+                    width:40,
+                    height:40,
+                    borderRadius:13,
+                    background:`${C.primary}10`,
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    color:C.primary,
+                    margin:'0 auto 10px'
+                  }}
+                >
+                  {I.upload}
+                </div>
+
+                <p
+                  style={{
+                    fontSize:13,
+                    fontWeight:700,
+                    color:C.type
+                  }}
+                >
+                  {data.file
+                    ? data.fileName
+                    : data.existing
+                      ? 'Change Certificate'
+                      : `Upload ${cert}`}
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.muted,
+                    marginTop:4
+                  }}
+                >
+                  PDF, JPG or PNG · Max 10MB
+                </p>
+
+                <input
+                  type="file"
+                  accept=".pdf,image/jpeg,image/png"
+                  onChange={event =>
+                    handleFileSelect(cert, event)
+                  }
+                  style={{ display:'none' }}
+                />
+              </label>
+
+              {(data.file || data.existing) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDocs(prev => {
+                      const current = prev[cert]
+
+                      // 1. Newly selected unsaved file
+                      if (current.file && !current.existing) {
+                        return {
+                          ...prev,
+                          [cert]: {
+                            ...current,
+                            file: null,
+                            fileName: '',
+                            removed: false,
+                            issued: '',
+                            expiry: ''
+                          }
+                        }
+                      }
+
+                      // 2. File already saved in Supabase
+                      if (current.existing) {
+                        return {
+                          ...prev,
+                          [cert]: {
+                            ...current,
+                            file: null,
+                            fileName: '',
+                            existing: false,
+                            removed: true,
+                            issued: '',
+                            expiry: ''
+                          }
+                        }
+                      }
+
+                      return prev
+                    })
+                  }
+                  style={{
+                    marginTop:10,
+                    background:'none',
+                    border:'none',
+                    color:C.error,
+                    fontSize:12,
+                    fontWeight:700,
+                    cursor:'pointer'
+                  }}
+                >
+                  Remove file
+                </button>
+              )}
+
+              {(data.file || data.existing) && (
+                <div
+                  style={{
+                    display:'grid',
+                    gridTemplateColumns:'1fr 1fr',
+                    gap:12,
+                    marginTop:14
+                  }}
+                  className="cao-2col"
+                >
+                  <Input
+                    label="Issue Date"
+                    type="date"
+                    value={data.issued}
+                    onChange={value =>
+                      setDocs(prev => ({
+                        ...prev,
+                        [cert]: {
+                          ...prev[cert],
+                          issued:value
+                        }
+                      }))
+                    }
+                  />
+
+                  <Input
+                    label="Expiry Date"
+                    type="date"
+                    value={data.expiry}
+                    onChange={value =>
+                      setDocs(prev => ({
+                        ...prev,
+                        [cert]: {
+                          ...prev[cert],
+                          expiry:value
+                        }
+                      }))
+                    }
+                  />
+                </div>
+              )}
+
+            </Card>
+          )
+        })}
       </div>
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
