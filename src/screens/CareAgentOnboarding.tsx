@@ -9,7 +9,9 @@ import {
   getMyAgentSkills,
   saveMyCertification,
   getMyCertifications,
-  deleteMyCertification
+  deleteMyCertification,
+  saveMyIdentityDocument,
+  getMyIdentityDocuments
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -1981,55 +1983,548 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
 // ─── Step 5: Identity Verification ───────────────────────────────────────────
 function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  type UpStatus = 'idle'|'uploading'|'done'|'error'
-  const [docs, setDocs] = useState<Record<string,UpStatus>>({ 'NIC Front':'done','NIC Back':'done','Police Clearance Certificate':'done','Medical Fitness Certificate':'idle','Passport (Optional)':'idle','Driving Licence (Optional)':'idle' })
-  const upload = (k:string) => {
-    setDocs(p=>({...p,[k]:'uploading'}))
-    setTimeout(()=>setDocs(p=>({...p,[k]:'done'})),1500)
-  }
-  const done = Object.values(docs).filter(v=>v==='done').length
-  const total = Object.keys(docs).length
 
-  const tips = ['Ensure all text is clearly legible','Use good lighting — avoid shadows and glare','Photograph the full document with all four corners visible','Avoid blurry images — hold the camera steady']
+  type IdentityDocData = {
+    file: File | null
+    fileName: string
+    existing: boolean
+    removed: boolean
+  }
+
+  const documentNames = [
+    'NIC Front',
+    'NIC Back',
+    'Police Clearance Certificate',
+    'Medical Fitness Certificate',
+    'Passport (Optional)',
+    'Driving Licence (Optional)'
+  ]
+
+  const requiredDocuments = [
+    'NIC Front',
+    'NIC Back',
+    'Police Clearance Certificate',
+    'Medical Fitness Certificate'
+  ]
+
+  const [docs, setDocs] = useState<Record<string, IdentityDocData>>(() => {
+    const initial: Record<string, IdentityDocData> = {}
+
+    documentNames.forEach(name => {
+      initial[name] = {
+        file: null,
+        fileName: '',
+        existing: false,
+        removed: false
+      }
+    })
+
+    return initial
+  })
+
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const slugToName: Record<string, string> = {
+    'nic-front': 'NIC Front',
+    'nic-back': 'NIC Back',
+    'police-clearance-certificate': 'Police Clearance Certificate',
+    'medical-fitness-certificate': 'Medical Fitness Certificate',
+    'passport': 'Passport (Optional)',
+    'driving-licence': 'Driving Licence (Optional)'
+  }
+
+  // Load already-saved identity documents
+  useEffect(() => {
+    const loadIdentityDocuments = async () => {
+      try {
+        const savedDocs = await getMyIdentityDocuments()
+
+        if (!savedDocs) return
+
+        setDocs(prev => {
+          const updated = { ...prev }
+
+          savedDocs.forEach(doc => {
+            const name = slugToName[doc.doc_type]
+
+            if (!name) return
+
+            updated[name] = {
+              ...updated[name],
+              file: null,
+              existing: true,
+              removed: false,
+              fileName: doc.file_url
+                ? doc.file_url.split('/').pop() || name
+                : name
+            }
+          })
+
+          return updated
+        })
+
+      } catch (error) {
+        console.error('Failed to load identity documents:', error)
+      }
+    }
+
+    loadIdentityDocuments()
+  }, [])
+
+  const handleFileSelect = (
+    documentName: string,
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+
+    if (!file) return
+
+    const allowedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/png'
+    ]
+
+    if (!allowedTypes.includes(file.type)) {
+      setSaveError('Only PDF, JPG and PNG files are allowed')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setSaveError('File must be smaller than 10MB')
+      return
+    }
+
+    setSaveError('')
+
+    setDocs(prev => ({
+      ...prev,
+      [documentName]: {
+        ...prev[documentName],
+        file,
+        fileName: file.name,
+        removed: false
+      }
+    }))
+  }
+
+  const handleRemove = (documentName: string) => {
+    setDocs(prev => {
+      const current = prev[documentName]
+
+      // New unsaved file → clear locally only
+      if (current.file && !current.existing) {
+        return {
+          ...prev,
+          [documentName]: {
+            ...current,
+            file: null,
+            fileName: '',
+            removed: false
+          }
+        }
+      }
+
+      // Already saved → mark for Supabase deletion
+      if (current.existing) {
+        return {
+          ...prev,
+          [documentName]: {
+            ...current,
+            file: null,
+            fileName: '',
+            existing: false,
+            removed: true
+          }
+        }
+      }
+
+      return prev
+    })
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+      setSaving(true)
+
+      // Delete documents marked for removal
+      for (const [documentName, data] of Object.entries(docs)) {
+        if (data.removed) {
+          const docType = documentName
+            .replace(' (Optional)', '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+
+          await deleteMyCertification(docType)
+        }
+      }
+
+      // Validate required documents
+      for (const requiredDoc of requiredDocuments) {
+        const data = docs[requiredDoc]
+
+        if (
+          data.removed ||
+          (!data.file && !data.existing)
+        ) {
+          throw new Error(`${requiredDoc} is required`)
+        }
+      }
+
+      // Upload new / changed files
+      for (const [documentName, data] of Object.entries(docs)) {
+        if (!data.removed && data.file) {
+          await saveMyIdentityDocument(
+            documentName,
+            data.file
+          )
+        }
+      }
+
+      onNext()
+
+    } catch (error) {
+      console.error('Failed to save identity documents:', error)
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save identity documents')
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const done = Object.values(docs).filter(
+    data =>
+      !data.removed &&
+      (data.file || data.existing)
+  ).length
+
+  const total = documentNames.length
+
+  const tips = [
+    'Ensure all text is clearly legible',
+    'Use good lighting — avoid shadows and glare',
+    'Photograph the full document with all four corners visible',
+    'Avoid blurry images — hold the camera steady'
+  ]
 
   return (
-    <StepWrap step={5} total={11} title="Identity Verification" desc="KYC verification protects clients and ensures platform integrity." onBack={onBack} onNext={onNext}>
+    <StepWrap
+      step={5}
+      total={11}
+      title="Identity Verification"
+      desc="KYC verification protects clients and ensures platform integrity."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+    >
+
       {/* Quality indicator */}
-      <Card style={{ padding:20, marginBottom:20, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1px solid ${C.primary}20` }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
-          <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Document Quality Score</p>
-          <span style={{ fontSize:18, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{Math.round((done/total)*100)}%</span>
+      <Card
+        style={{
+          padding:20,
+          marginBottom:20,
+          background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`,
+          border:`1px solid ${C.primary}20`
+        }}
+      >
+        <div
+          style={{
+            display:'flex',
+            alignItems:'center',
+            justifyContent:'space-between',
+            marginBottom:10
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              fontWeight:800,
+              color:C.type,
+              fontFamily:'Manrope,sans-serif'
+            }}
+          >
+            Document Quality Score
+          </p>
+
+          <span
+            style={{
+              fontSize:18,
+              fontWeight:900,
+              color:C.success,
+              fontFamily:'Manrope,sans-serif'
+            }}
+          >
+            {Math.round((done / total) * 100)}%
+          </span>
         </div>
-        <div style={{ height:8, borderRadius:99, background:'rgba(0,115,122,0.1)', overflow:'hidden' }}>
-          <div style={{ width:`${(done/total)*100}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
+
+        <div
+          style={{
+            height:8,
+            borderRadius:99,
+            background:'rgba(0,115,122,0.1)',
+            overflow:'hidden'
+          }}
+        >
+          <div
+            style={{
+              width:`${(done / total) * 100}%`,
+              height:'100%',
+              background:`linear-gradient(90deg,${C.primary},${C.success})`,
+              borderRadius:99,
+              transition:'width 0.5s'
+            }}
+          />
         </div>
-        <p style={{ fontSize:11, color:C.muted, marginTop:8 }}>{done} of {total} documents uploaded</p>
+
+        <p
+          style={{
+            fontSize:11,
+            color:C.muted,
+            marginTop:8
+          }}
+        >
+          {done} of {total} documents uploaded
+        </p>
       </Card>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:20 }} className="cao-2col">
-        {Object.entries(docs).map(([doc,status])=>(
-          <UploadBox key={doc} label={doc} desc="JPG, PNG or PDF · Max 10MB" file={status==='done'?doc+'.jpg':undefined} status={status} onUpload={()=>upload(doc)} />
-        ))}
+      {/* Documents */}
+      <div
+        style={{
+          display:'grid',
+          gridTemplateColumns:'1fr 1fr',
+          gap:14,
+          marginBottom:20
+        }}
+        className="cao-2col"
+      >
+        {documentNames.map(doc => {
+          const data = docs[doc]
+
+          return (
+            <Card
+              key={doc}
+              style={{ padding:18 }}
+            >
+              <label
+                style={{
+                  display:'block',
+                  padding:'18px',
+                  borderRadius:14,
+                  border:`2px dashed ${
+                    data.file || data.existing
+                      ? C.success
+                      : C.border
+                  }`,
+                  background:
+                    data.file || data.existing
+                      ? `${C.success}06`
+                      : C.bg,
+                  cursor:'pointer',
+                  textAlign:'center' as const
+                }}
+              >
+                <div
+                  style={{
+                    width:40,
+                    height:40,
+                    borderRadius:13,
+                    background:`${C.primary}10`,
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    color:C.primary,
+                    margin:'0 auto 10px'
+                  }}
+                >
+                  {I.upload}
+                </div>
+
+                <p
+                  style={{
+                    fontSize:13,
+                    fontWeight:700,
+                    color:C.type
+                  }}
+                >
+                  {data.file
+                    ? data.fileName
+                    : data.existing
+                      ? `Change ${doc}`
+                      : doc}
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.muted,
+                    marginTop:4
+                  }}
+                >
+                  JPG, PNG or PDF · Max 10MB
+                </p>
+
+                <input
+                  type="file"
+                  accept=".pdf,image/jpeg,image/png"
+                  onChange={event =>
+                    handleFileSelect(doc, event)
+                  }
+                  style={{ display:'none' }}
+                />
+              </label>
+
+              {(data.file || data.existing) && (
+                <button
+                  type="button"
+                  onClick={() => handleRemove(doc)}
+                  style={{
+                    marginTop:10,
+                    background:'none',
+                    border:'none',
+                    color:C.error,
+                    fontSize:12,
+                    fontWeight:700,
+                    cursor:'pointer'
+                  }}
+                >
+                  Remove file
+                </button>
+              )}
+            </Card>
+          )
+        })}
       </div>
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginBottom:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
 
       {/* Verification tips */}
       <Card style={{ padding:20 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Verification Tips</p>
-        {tips.map((tip,i)=>(
-          <div key={i} style={{ display:'flex', gap:8, alignItems:'flex-start', marginBottom:8 }}>
-            <div style={{ width:20, height:20, borderRadius:'50%', background:`${C.info}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.info, flexShrink:0, fontSize:11, fontWeight:800, fontFamily:'Manrope,sans-serif' }}>{i+1}</div>
-            <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>{tip}</p>
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+            textTransform:'uppercase',
+            letterSpacing:'0.08em',
+            marginBottom:12
+          }}
+        >
+          Verification Tips
+        </p>
+
+        {tips.map((tip, i) => (
+          <div
+            key={i}
+            style={{
+              display:'flex',
+              gap:8,
+              alignItems:'flex-start',
+              marginBottom:8
+            }}
+          >
+            <div
+              style={{
+                width:20,
+                height:20,
+                borderRadius:'50%',
+                background:`${C.info}10`,
+                display:'flex',
+                alignItems:'center',
+                justifyContent:'center',
+                color:C.info,
+                flexShrink:0,
+                fontSize:11,
+                fontWeight:800,
+                fontFamily:'Manrope,sans-serif'
+              }}
+            >
+              {i + 1}
+            </div>
+
+            <p
+              style={{
+                fontSize:12,
+                color:C.sub,
+                lineHeight:1.6
+              }}
+            >
+              {tip}
+            </p>
           </div>
         ))}
-        {/* Selfie placeholder */}
-        <div style={{ marginTop:14, padding:'14px 16px', borderRadius:12, background:`${C.info}06`, border:`1px solid ${C.info}20`, display:'flex', gap:10, alignItems:'center' }}>
-          <span style={{color:C.info,display:'flex'}}>{I.camera}</span>
+
+        <div
+          style={{
+            marginTop:14,
+            padding:'14px 16px',
+            borderRadius:12,
+            background:`${C.info}06`,
+            border:`1px solid ${C.info}20`,
+            display:'flex',
+            gap:10,
+            alignItems:'center'
+          }}
+        >
+          <span
+            style={{
+              color:C.info,
+              display:'flex'
+            }}
+          >
+            {I.camera}
+          </span>
+
           <div>
-            <p style={{fontSize:12,fontWeight:700,color:C.info}}>Selfie Verification <Bdg label="Coming Soon" color={C.info} /></p>
-            <p style={{fontSize:11,color:C.muted}}>Real-time liveness check will be required in future updates.</p>
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.info
+              }}
+            >
+              Selfie Verification{' '}
+              <Bdg
+                label="Coming Soon"
+                color={C.info}
+              />
+            </p>
+
+            <p
+              style={{
+                fontSize:11,
+                color:C.muted
+              }}
+            >
+              Real-time liveness check will be required in future updates.
+            </p>
           </div>
         </div>
       </Card>
+
     </StepWrap>
   )
 }
