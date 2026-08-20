@@ -1,5 +1,5 @@
 import { useState, type ReactNode, type CSSProperties } from 'react'
-import { updateMyProfile,uploadProfilePhoto } from '../lib/api'
+import { updateMyProfile,uploadProfilePhoto,saveMyAgentDetails } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -840,25 +840,139 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
 // ─── Step 2: Professional Profile ─────────────────────────────────────────────
 function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const [form, setForm] = useState({ headline:'Experienced Home Care & Hospital Companion Specialist', bio:'I am a dedicated care professional with 8 years of experience supporting elderly patients and individuals with disabilities across Colombo. I specialise in hospital accompaniment, medication management, and post-surgery recovery care. I am fluent in English, Sinhala, and Tamil, and hold a First Aid and CPR certification.', years:'8', employment:'Sri Lanka Red Cross Society', prevEmployment:'Nawaloka Hospital · 2015–2019', edu:'Diploma in Caregiving, National Institute of Social Development', areas:'Colombo, Dehiwela, Moratuwa' })
-  const f = (k:string) => (v:string) => setForm(p=>({...p,[k]:v}))
-  const [langs, setLangs] = useState(['English','Sinhala','Tamil'])
+  const [form, setForm] = useState({
+    headline: '',
+    bio: '',
+    years: '',
+    employment: '',
+    prevEmployment: '',
+    edu: '',
+    hourlyRate: '',
+    maxRate: '',
+    areas: ''
+  })
+
+  const [langs, setLangs] = useState<string[]>([])
   const [radius, setRadius] = useState(20)
-  const [specs, setSpecs] = useState(['Hospital Companion','Medication Collection','Home Care','First Aid'])
-  const allSpecs = ['Hospital Companion','Medication Collection','Home Care','Transportation Assistance','Wheelchair Assistance','Post-Surgery Care','Stroke Care','Dementia Care','First Aid','CPR','Mental Health Support','Shopping Assistance','Bill Payments']
+  const [specs, setSpecs] = useState<string[]>([])
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const f = (key: string) => (value: string) => {
+    setForm(prev => ({
+      ...prev,
+      [key]: value
+    }))
+  }
+
+  const allSpecs = [
+    'Hospital Companion',
+    'Medication Collection',
+    'Home Care',
+    'First Aid',
+    'Elderly Care',
+    'Mobility Assistance'
+  ]
+
+  const convertExperienceToYears = (value: string) => {
+    switch (value) {
+      case 'Less than 1 year':
+        return 0
+      case '1–2 years':
+        return 1
+      case '3–5 years':
+        return 3
+      case '5–8 years':
+        return 5
+      case '8–10 years':
+        return 8
+      case '10+ years':
+        return 10
+      default:
+        return 0
+    }
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+      setSaving(true)
+
+      if (!form.headline.trim()) {
+        throw new Error('Professional headline is required')
+      }
+
+      if (form.bio.trim().length < 100) {
+        throw new Error('Biography must be at least 100 characters')
+      }
+
+      if (!form.years) {
+        throw new Error('Please select your years of experience')
+      }
+
+      if (langs.length === 0) {
+        throw new Error('Please select at least one language')
+      }
+
+      if (specs.length === 0) {
+        throw new Error('Please select at least one specialization')
+      }
+
+      const serviceAreas = form.areas
+        .split(',')
+        .map(area => area.trim())
+        .filter(Boolean)
+
+      await saveMyAgentDetails({
+        professional_headline: form.headline.trim(),
+        bio: form.bio.trim(),
+        education: form.edu.trim(),
+        experience_years: convertExperienceToYears(form.years),
+
+        hourly_rate: form.hourlyRate
+          ? Number(form.hourlyRate)
+          : undefined,
+
+        max_rate: form.maxRate
+          ? Number(form.maxRate)
+          : undefined,
+
+        languages: langs,
+        skills: specs,
+        current_employer: form.employment.trim(),
+        previous_employment: form.prevEmployment.trim(),
+        service_areas: serviceAreas,
+        travel_radius_km: radius,
+      })
+
+      onNext()
+    } catch (error) {
+      console.error('Failed to save professional profile:', error)
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save professional profile')
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <StepWrap step={2} total={11} title="Professional Profile" desc="Showcase your expertise to attract the right clients." onBack={onBack} onNext={onNext}>
+    <StepWrap step={2} total={11} title="Professional Profile" desc="Showcase your expertise to attract the right clients." onBack={onBack} onNext={handleSaveAndContinue} nextLabel={saving ? 'Saving...' : 'Save & Continue'}>
       <Card style={{ padding:'4px 20px 20px', marginBottom:20 }}>
         <FormSection title="Headline & Bio">
           <FormFull><Input label="Professional Headline" value={form.headline} onChange={f('headline')} hint="One sentence that sums up your expertise" required /></FormFull>
           <FormFull><Textarea label="Biography" value={form.bio} onChange={f('bio')} rows={5} hint="Write in first person. Minimum 100 characters." /></FormFull>
         </FormSection>
         <FormSection title="Experience">
-          <Select label="Years of Experience" options={['Less than 1 year','1–2 years','3–5 years','5–8 years','8–10 years','10+ years']} value={form.years==='8'?'5–8 years':form.years} onChange={f('years')} />
+          <Select label="Years of Experience" options={['Less than 1 year','1–2 years','3–5 years','5–8 years','8–10 years','10+ years']} value={form.years} onChange={f('years')}/>
           <Input label="Current Employer / Organisation" value={form.employment} onChange={f('employment')} hint="Hospital, clinic, or self-employed" />
           <FormFull><Input label="Previous Employment" value={form.prevEmployment} onChange={f('prevEmployment')} hint="Most recent previous employer and dates" /></FormFull>
           <FormFull><Input label="Education / Qualifications" value={form.edu} onChange={f('edu')} /></FormFull>
+          <FormFull><Input label="Hourly Rate (LKR)" type="number" value={form.hourlyRate} onChange={f('hourlyRate')} hint="Your standard hourly rate"/></FormFull>
+          <FormFull><Input label="Maximum Rate (LKR)" type="number" value={form.maxRate} onChange={f('maxRate')} hint="Maximum hourly rate for complex or urgent care"/></FormFull>
         </FormSection>
       </Card>
 
@@ -904,6 +1018,24 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
           </div>
         </div>
       </Card>
+
+
+      {saveError && (
+        <div
+          style={{
+            padding: '12px 14px',
+            marginTop: 16,
+            borderRadius: 10,
+            background: `${C.error}08`,
+            border: `1px solid ${C.error}30`,
+            color: C.error,
+            fontSize: 12,
+            fontWeight: 600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
     </StepWrap>
   )
 }

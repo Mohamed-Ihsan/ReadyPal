@@ -182,3 +182,45 @@ export async function uploadProfilePhoto(file: File) {
     profile,
   }
 }
+
+
+export async function saveMyAgentDetails(details: {
+  professional_headline?: string
+  bio?: string
+  education?: string
+  experience_years?: number
+  hourly_rate?: number
+  max_rate?: number
+  languages?: string[]
+  skills?: string[]
+  current_employer?: string
+  previous_employment?: string
+  service_areas?: string[]
+  travel_radius_km?: number
+}) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_details")
+    .upsert(
+      {
+        id: user.id,
+        ...details,
+      },
+      {
+        onConflict: "id",
+      }
+    )
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
