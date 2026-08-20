@@ -1,5 +1,13 @@
 import { useState,useEffect, type ReactNode, type CSSProperties } from 'react'
-import { updateMyProfile,uploadProfilePhoto,saveMyAgentDetails,getMyProfile,getMyAgentDetails } from '../lib/api'
+import { 
+  updateMyProfile,
+  uploadProfilePhoto,
+  saveMyAgentDetails,
+  getMyProfile,
+  getMyAgentDetails,
+  saveMyAgentSkills,
+  getMyAgentSkills
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -923,15 +931,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     }))
   }
 
-  const allSpecs = [
-    'Hospital Companion',
-    'Medication Collection',
-    'Home Care',
-    'First Aid',
-    'Elderly Care',
-    'Mobility Assistance'
-  ]
-
 
   const convertExperienceToYears = (value: string) => {
     switch (value) {
@@ -1137,50 +1136,337 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
 // ─── Step 3: Skills & Services ────────────────────────────────────────────────
 function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const services = ['Hospital Companion','Medication Collection','Home Care','Transportation Assistance','Wheelchair Assistance','Post-Surgery Care','Stroke Care','Dementia Care','First Aid','CPR','Mental Health Support','Shopping Assistance','Bill Payments']
-  const [selected, setSelected] = useState<Record<string,{level:string;years:string;certified:boolean}>>({
-    'Hospital Companion':  {level:'Expert',   years:'8', certified:true},
-    'Medication Collection':{level:'Expert',  years:'8', certified:false},
-    'Home Care':           {level:'Advanced', years:'5', certified:true},
-    'First Aid':           {level:'Expert',   years:'8', certified:true},
-    'CPR':                 {level:'Expert',   years:'8', certified:true},
-  })
-  const toggle = (s:string) => {
-    if(selected[s]) {
-      const n = {...selected}; delete n[s]; setSelected(n)
+
+  const services = [
+    'Hospital Companion',
+    'Medication Collection',
+    'Home Care',
+    'Transportation Assistance',
+    'Wheelchair Assistance',
+    'Post-Surgery Care',
+    'Stroke Care',
+    'Dementia Care',
+    'First Aid',
+    'CPR',
+    'Mental Health Support',
+    'Shopping Assistance',
+    'Bill Payments'
+  ]
+
+  const [selected, setSelected] = useState<Record<
+    string,
+    {
+      level: string
+      years: string
+      certified: boolean
+    }
+  >>({})
+
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const toggle = (service: string) => {
+    if (selected[service]) {
+      const updated = { ...selected }
+      delete updated[service]
+      setSelected(updated)
     } else {
-      setSelected(p=>({...p,[s]:{level:'Beginner',years:'1',certified:false}}))
+      setSelected(prev => ({
+        ...prev,
+        [service]: {
+          level: 'Beginner',
+          years: 'Less than 1',
+          certified: false
+        }
+      }))
     }
   }
+
+  // Load previously saved Step 3 data
+  useEffect(() => {
+    const loadSkills = async () => {
+      try {
+        const skills = await getMyAgentSkills()
+
+        if (!skills || skills.length === 0) {
+          return
+        }
+
+        const loadedSkills: Record<
+          string,
+          {
+            level: string
+            years: string
+            certified: boolean
+          }
+        > = {}
+
+        skills.forEach(skill => {
+          loadedSkills[skill.service_name] = {
+            level: skill.skill_level || 'Beginner',
+            years: skill.experience_years || 'Less than 1',
+            certified: skill.certified ?? false
+          }
+        })
+
+        setSelected(loadedSkills)
+
+      } catch (error) {
+        console.error('Failed to load skills and services:', error)
+      }
+    }
+
+    loadSkills()
+  }, [])
+
+  // Save Step 3 data
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+      setSaving(true)
+
+      const selectedEntries = Object.entries(selected)
+
+      if (selectedEntries.length === 0) {
+        throw new Error('Please select at least one service')
+      }
+
+      const skills = selectedEntries.map(([serviceName, data]) => ({
+        service_name: serviceName,
+        skill_level: data.level,
+        experience_years: data.years,
+        certified: data.certified
+      }))
+
+      await saveMyAgentSkills(skills)
+
+      onNext()
+
+    } catch (error) {
+      console.error('Failed to save skills and services:', error)
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save skills and services')
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <StepWrap step={3} total={11} title="Skills & Services" desc="Select the services you offer and rate your proficiency." onBack={onBack} onNext={onNext}>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:20 }}>Click a service to add it, then set your experience level and certification status.</p>
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap' as const, marginBottom:24 }}>
-        {services.map(s=>(
-          <button key={s} onClick={()=>toggle(s)}
-            style={{ padding:'8px 16px', borderRadius:99, border:`1.5px solid ${selected[s]?C.primary:C.border}`, background:selected[s]?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:selected[s]?700:500, color:selected[s]?C.primary:C.sub, transition:'all 0.12s' }}>
-            {selected[s]&&<span style={{marginRight:4}}>✓</span>}{s}
+    <StepWrap
+      step={3}
+      total={11}
+      title="Skills & Services"
+      desc="Select the services you offer and rate your proficiency."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+    >
+      <p
+        style={{
+          fontSize:13,
+          color:C.muted,
+          marginBottom:20
+        }}
+      >
+        Click a service to add it, then set your experience level
+        and certification status.
+      </p>
+
+      <div
+        style={{
+          display:'flex',
+          gap:8,
+          flexWrap:'wrap' as const,
+          marginBottom:24
+        }}
+      >
+        {services.map(service => (
+          <button
+            key={service}
+            onClick={() => toggle(service)}
+            style={{
+              padding:'8px 16px',
+              borderRadius:99,
+              border:`1.5px solid ${
+                selected[service]
+                  ? C.primary
+                  : C.border
+              }`,
+              background:selected[service]
+                ? `${C.primary}08`
+                : 'transparent',
+              cursor:'pointer',
+              fontFamily:'Manrope,sans-serif',
+              fontSize:12,
+              fontWeight:selected[service] ? 700 : 500,
+              color:selected[service]
+                ? C.primary
+                : C.sub,
+              transition:'all 0.12s'
+            }}
+          >
+            {selected[service] && (
+              <span style={{ marginRight:4 }}>
+                ✓
+              </span>
+            )}
+
+            {service}
           </button>
         ))}
       </div>
-      {Object.keys(selected).length>0&&(
-        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-          {Object.entries(selected).map(([svc,data])=>(
-            <Card key={svc} style={{ padding:20 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
-                <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{svc}</p>
-                <button onClick={()=>toggle(svc)} style={{ width:26, height:26, borderRadius:'50%', border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.muted, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                  <span style={{display:'flex',transform:'scale(0.8)'}}>{I.close}</span>
+
+      {Object.keys(selected).length > 0 && (
+        <div
+          style={{
+            display:'flex',
+            flexDirection:'column',
+            gap:12
+          }}
+        >
+          {Object.entries(selected).map(([service, data]) => (
+            <Card
+              key={service}
+              style={{ padding:20 }}
+            >
+              <div
+                style={{
+                  display:'flex',
+                  justifyContent:'space-between',
+                  alignItems:'flex-start',
+                  marginBottom:14
+                }}
+              >
+                <p
+                  style={{
+                    fontSize:14,
+                    fontWeight:800,
+                    color:C.type,
+                    fontFamily:'Manrope,sans-serif'
+                  }}
+                >
+                  {service}
+                </p>
+
+                <button
+                  onClick={() => toggle(service)}
+                  style={{
+                    width:26,
+                    height:26,
+                    borderRadius:'50%',
+                    border:`1px solid ${C.border}`,
+                    background:'transparent',
+                    cursor:'pointer',
+                    color:C.muted,
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center'
+                  }}
+                >
+                  <span
+                    style={{
+                      display:'flex',
+                      transform:'scale(0.8)'
+                    }}
+                  >
+                    {I.close}
+                  </span>
                 </button>
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="cao-2col">
-                <Select label="Skill Level" options={['Beginner','Intermediate','Advanced','Expert']} value={data.level} onChange={v=>setSelected(p=>({...p,[svc]:{...p[svc],level:v}}))} />
-                <Select label="Years of Experience" options={['Less than 1','1–2 years','3–5 years','5–8 years','8+ years']} value={data.years==='1'?'Less than 1':data.years==='8'?'8+ years':'3–5 years'} onChange={v=>setSelected(p=>({...p,[svc]:{...p[svc],years:v}}))} />
-                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                  <Toggle on={data.certified} onToggle={()=>setSelected(p=>({...p,[svc]:{...p[svc],certified:!data.certified}}))} />
+
+              <div
+                style={{
+                  display:'grid',
+                  gridTemplateColumns:'1fr 1fr',
+                  gap:12
+                }}
+                className="cao-2col"
+              >
+                <Select
+                  label="Skill Level"
+                  options={[
+                    'Beginner',
+                    'Intermediate',
+                    'Advanced',
+                    'Expert'
+                  ]}
+                  value={data.level}
+                  onChange={value =>
+                    setSelected(prev => ({
+                      ...prev,
+                      [service]: {
+                        ...prev[service],
+                        level:value
+                      }
+                    }))
+                  }
+                />
+
+                <Select
+                  label="Years of Experience"
+                  options={[
+                    'Less than 1',
+                    '1–2 years',
+                    '3–5 years',
+                    '5–8 years',
+                    '8+ years'
+                  ]}
+                  value={data.years}
+                  onChange={value =>
+                    setSelected(prev => ({
+                      ...prev,
+                      [service]: {
+                        ...prev[service],
+                        years:value
+                      }
+                    }))
+                  }
+                />
+
+                <div
+                  style={{
+                    display:'flex',
+                    alignItems:'center',
+                    gap:10
+                  }}
+                >
+                  <Toggle
+                    on={data.certified}
+                    onToggle={() =>
+                      setSelected(prev => ({
+                        ...prev,
+                        [service]: {
+                          ...prev[service],
+                          certified:!data.certified
+                        }
+                      }))
+                    }
+                  />
+
                   <div>
-                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>Certification Available</p>
-                    <p style={{ fontSize:11, color:C.muted }}>I have a document to prove this</p>
+                    <p
+                      style={{
+                        fontSize:12,
+                        fontWeight:700,
+                        color:C.type
+                      }}
+                    >
+                      Certification Available
+                    </p>
+
+                    <p
+                      style={{
+                        fontSize:11,
+                        color:C.muted
+                      }}
+                    >
+                      I have a document to prove this
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1188,16 +1474,65 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
           ))}
         </div>
       )}
-      {Object.keys(selected).length===0&&(
-        <Card style={{ padding:'40px 20px', textAlign:'center' as const }}>
-          <p style={{ fontSize:32, marginBottom:10 }}>🩺</p>
-          <p style={{ fontSize:14, fontWeight:700, color:C.type }}>No services selected yet</p>
-          <p style={{ fontSize:12, color:C.muted }}>Select at least one service above to continue.</p>
+
+      {Object.keys(selected).length === 0 && (
+        <Card
+          style={{
+            padding:'40px 20px',
+            textAlign:'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:32,
+              marginBottom:10
+            }}
+          >
+            🩺
+          </p>
+
+          <p
+            style={{
+              fontSize:14,
+              fontWeight:700,
+              color:C.type
+            }}
+          >
+            No services selected yet
+          </p>
+
+          <p
+            style={{
+              fontSize:12,
+              color:C.muted
+            }}
+          >
+            Select at least one service above to continue.
+          </p>
         </Card>
       )}
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
+
 
 // ─── Step 4: Certifications ───────────────────────────────────────────────────
 function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {

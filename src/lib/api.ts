@@ -223,3 +223,71 @@ export async function saveMyAgentDetails(details: {
 
   return data
 }
+
+
+export async function saveMyAgentSkills(
+  skills: {
+    service_name: string
+    skill_level: string
+    experience_years: string
+    certified: boolean
+  }[]
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { error: deleteError } = await supabase
+    .from("agent_skills")
+    .delete()
+    .eq("agent_id", user.id)
+
+  if (deleteError) {
+    throw deleteError
+  }
+
+  if (skills.length === 0) {
+    return []
+  }
+
+  const rows = skills.map(skill => ({
+    agent_id: user.id,
+    service_name: skill.service_name,
+    skill_level: skill.skill_level,
+    experience_years: skill.experience_years,
+    certified: skill.certified,
+  }))
+
+  const { data, error } = await supabase
+    .from("agent_skills")
+    .insert(rows)
+    .select()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function getMyAgentSkills() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_skills")
+    .select("*")
+    .eq("agent_id", user.id)
+    .order("created_at", { ascending: true })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
