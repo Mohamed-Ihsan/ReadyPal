@@ -854,7 +854,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
   const [langs, setLangs] = useState<string[]>([])
   const [radius, setRadius] = useState(20)
-  const [specs, setSpecs] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
@@ -914,9 +913,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         throw new Error('Please select at least one language')
       }
 
-      if (specs.length === 0) {
-        throw new Error('Please select at least one specialization')
-      }
 
       const serviceAreas = form.areas
         .split(',')
@@ -938,7 +934,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
           : undefined,
 
         languages: langs,
-        skills: specs,
         current_employer: form.employment.trim(),
         previous_employment: form.prevEmployment.trim(),
         service_areas: serviceAreas,
@@ -989,18 +984,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         </div>
       </Card>
 
-      {/* Specialisations */}
-      <Card style={{ padding:20, marginBottom:14 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Specializations</p>
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap' as const }}>
-          {allSpecs.map(s=>(
-            <button key={s} onClick={()=>setSpecs(p=>p.includes(s)?p.filter(x=>x!==s):[...p,s])}
-              style={{ padding:'7px 14px', borderRadius:99, border:`1.5px solid ${specs.includes(s)?C.primary:C.border}`, background:specs.includes(s)?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:specs.includes(s)?700:500, color:specs.includes(s)?C.primary:C.sub, transition:'all 0.12s' }}>
-              {specs.includes(s)&&<span style={{marginRight:4}}>✓</span>}{s}
-            </button>
-          ))}
-        </div>
-      </Card>
 
       {/* Travel radius */}
       <Card style={{ padding:20 }}>

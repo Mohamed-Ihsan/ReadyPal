@@ -192,7 +192,6 @@ export async function saveMyAgentDetails(details: {
   hourly_rate?: number
   max_rate?: number
   languages?: string[]
-  skills?: string[]
   current_employer?: string
   previous_employment?: string
   service_areas?: string[]
