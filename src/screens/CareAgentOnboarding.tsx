@@ -11,7 +11,9 @@ import {
   getMyCertifications,
   deleteMyCertification,
   saveMyIdentityDocument,
-  getMyIdentityDocuments
+  getMyIdentityDocuments,
+  getMyBankAccount,
+  saveMyBankAccount
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -2531,41 +2533,240 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
 // ─── Step 6: Banking & Payouts ────────────────────────────────────────────────
 function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const [form, setForm] = useState({ bank:'Commercial Bank of Ceylon', branch:'Colombo 03', name:'Kasun Perera', number:'12345678901', swift:'CCEYLKLX', payout:'Weekly Bank Transfer' })
-  const f = (k:string) => (v:string) => setForm(p=>({...p,[k]:v}))
-  const [verified, setVerified] = useState(false)
+
+  const [form, setForm] = useState({
+    bankName: '',
+    branch: '',
+    accountName: '',
+    accountNumber: '',
+    swiftCode: '',
+    payoutPreference: 'Bank Transfer'
+  })
+
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const f = (key: keyof typeof form) => (value: string) => {
+    setForm(prev => ({
+      ...prev,
+      [key]: value
+    }))
+  }
+
+  // Load previously saved bank details
+  useEffect(() => {
+    const loadBankAccount = async () => {
+      try {
+        const account = await getMyBankAccount()
+
+        if (account) {
+          setForm({
+            bankName: account.bank_name || '',
+            branch: account.branch || '',
+            accountName: account.account_name || '',
+            accountNumber: account.account_number || '',
+            swiftCode: account.swift_code || '',
+            payoutPreference:
+              account.payout_preference || 'Bank Transfer'
+          })
+        }
+
+      } catch (error) {
+        console.error('Failed to load bank account:', error)
+        setSaveError('Failed to load saved bank details')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadBankAccount()
+  }, [])
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+
+      if (!form.bankName.trim()) {
+        throw new Error('Bank name is required')
+      }
+
+      if (!form.branch.trim()) {
+        throw new Error('Branch is required')
+      }
+
+      if (!form.accountName.trim()) {
+        throw new Error('Account holder name is required')
+      }
+
+      if (!form.accountNumber.trim()) {
+        throw new Error('Account number is required')
+      }
+
+      setSaving(true)
+
+      await saveMyBankAccount({
+        bank_name: form.bankName.trim(),
+        branch: form.branch.trim(),
+        account_name: form.accountName.trim(),
+        account_number: form.accountNumber.trim(),
+        swift_code: form.swiftCode.trim(),
+        payout_preference: form.payoutPreference
+      })
+
+      onNext()
+
+    } catch (error) {
+      console.error('Failed to save bank account:', error)
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save bank details')
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <StepWrap
+        step={6}
+        total={11}
+        title="Banking & Payouts"
+        desc="Add your bank account details for future payouts."
+        onBack={onBack}
+        onNext={() => {}}
+      >
+        <Card
+          style={{
+            padding:30,
+            textAlign:'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading bank details...
+          </p>
+        </Card>
+      </StepWrap>
+    )
+  }
+
   return (
-    <StepWrap step={6} total={11} title="Banking & Payouts" desc="Your earnings will be transferred to this account after each completed job." onBack={onBack} onNext={onNext}>
-      <Card style={{ padding:'4px 20px 20px', marginBottom:20 }}>
-        <FormSection title="Bank Details">
-          <Select label="Bank Name" options={['Commercial Bank of Ceylon','Bank of Ceylon','Peoples Bank','Hatton National Bank','Sampath Bank','Nations Trust Bank','DFCC Bank','Seylan Bank']} value={form.bank} onChange={f('bank')} />
-          <Input label="Branch" value={form.branch} onChange={f('branch')} />
-          <Input label="Account Holder Name" value={form.name} onChange={f('name')} required hint="Must match your NIC exactly" />
-          <Input label="Account Number" value={form.number} onChange={f('number')} required />
-          <Input label="SWIFT / BIC Code" value={form.swift} onChange={f('swift')} hint="Required for international transfers (optional)" />
+    <StepWrap
+      step={6}
+      total={11}
+      title="Banking & Payouts"
+      desc="Add your bank account details for future payouts."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+    >
+
+      <Card style={{ padding:22, marginBottom:18 }}>
+
+        <FormSection title="Bank Account Details">
+
+          <FormFull>
+            <Input
+              label="Bank Name"
+              value={form.bankName}
+              onChange={f('bankName')}
+              hint="Enter the name of your bank"
+              required
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="Branch"
+              value={form.branch}
+              onChange={f('branch')}
+              hint="Enter your bank branch"
+              required
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="Account Holder Name"
+              value={form.accountName}
+              onChange={f('accountName')}
+              hint="Name exactly as shown on the bank account"
+              required
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="Account Number"
+              value={form.accountNumber}
+              onChange={f('accountNumber')}
+              hint="Enter your bank account number"
+              required
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="SWIFT / BIC Code"
+              value={form.swiftCode}
+              onChange={f('swiftCode')}
+              hint="Optional for local transfers"
+            />
+          </FormFull>
+
         </FormSection>
-        <FormSection title="Payout Preference">
-          <Select label="Preferred Payout Method" options={['Weekly Bank Transfer','Bi-weekly Bank Transfer','Monthly Bank Transfer']} value={form.payout} onChange={f('payout')} />
-        </FormSection>
+
       </Card>
 
-      {/* Verification status */}
-      <Card style={{ padding:20, border:`1.5px solid ${verified?C.success+'40':C.border}`, background:verified?`${C.success}04`:C.surface }}>
-        <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-          <div style={{ width:44, height:44, borderRadius:14, background:verified?`${C.success}10`:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:verified?C.success:C.primary, flexShrink:0 }}>
-            <span style={{display:'flex',transform:'scale(1.2)'}}>{I.bank}</span>
-          </div>
-          <div style={{ flex:1 }}>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{verified?'Bank Account Verified':'Bank Verification Pending'}</p>
-            <p style={{ fontSize:12, color:C.muted }}>{verified?'Your account details have been confirmed.':'A small test deposit will be sent to verify your account.'}</p>
-          </div>
-          {!verified&&<Btn label="Verify Now" variant="secondary" small onClick={()=>setVerified(true)} />}
-          {verified&&<Bdg label="Verified" color={C.success} />}
-        </div>
+      <Card style={{ padding:22, marginBottom:18 }}>
+
+        <FormSection title="Payout Preference">
+
+          <FormFull>
+            <Select
+              label="Preferred Payout Method"
+              options={[
+                'Bank Transfer'
+              ]}
+              value={form.payoutPreference}
+              onChange={f('payoutPreference')}
+            />
+          </FormFull>
+
+        </FormSection>
+
       </Card>
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginBottom:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
+
 
 // ─── Step 7: Availability ─────────────────────────────────────────────────────
 function Step7({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {

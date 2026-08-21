@@ -602,3 +602,108 @@ export async function getMyIdentityDocuments() {
 
   return data
 }
+
+
+
+export type BankAccountInput = {
+  bank_name: string
+  branch: string
+  account_name: string
+  account_number: string
+  swift_code?: string
+  payout_preference?: string
+}
+
+export async function getMyBankAccount() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("bank_accounts")
+    .select("*")
+    .eq("agent_id", user.id)
+    .eq("is_default", true)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveMyBankAccount(input: BankAccountInput) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  // Check whether this agent already has a default bank account
+  const { data: existing, error: findError } = await supabase
+    .from("bank_accounts")
+    .select("id")
+    .eq("agent_id", user.id)
+    .eq("is_default", true)
+    .maybeSingle()
+
+  if (findError) {
+    throw findError
+  }
+
+  // Existing account → update it
+  if (existing) {
+    const { data, error } = await supabase
+      .from("bank_accounts")
+      .update({
+        bank_name: input.bank_name,
+        branch: input.branch,
+        account_name: input.account_name,
+        account_number: input.account_number,
+        swift_code: input.swift_code || null,
+        payout_preference: input.payout_preference || null,
+
+        // Bank details changed → require verification again
+        verification_status: "pending",
+        verified_at: null,
+        verified_by: null,
+      })
+      .eq("id", existing.id)
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    return data
+  }
+
+  // No account yet → create one
+  const { data, error } = await supabase
+    .from("bank_accounts")
+    .insert({
+      agent_id: user.id,
+      bank_name: input.bank_name,
+      branch: input.branch,
+      account_name: input.account_name,
+      account_number: input.account_number,
+      swift_code: input.swift_code || null,
+      payout_preference: input.payout_preference || null,
+      is_default: true,
+
+      // New bank account must be checked by Admin / Finance
+      verification_status: "pending",
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
