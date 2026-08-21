@@ -13,7 +13,9 @@ import {
   saveMyIdentityDocument,
   getMyIdentityDocuments,
   getMyBankAccount,
-  saveMyBankAccount
+  saveMyBankAccount,
+  getMyAvailability,
+  saveMyAvailability
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -927,7 +929,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
   })
 
   const [langs, setLangs] = useState<string[]>([])
-  const [radius, setRadius] = useState(20)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
@@ -998,7 +999,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
             : []
         )
 
-        setRadius(details.travel_radius_km || 20)
 
       } catch (error) {
         console.error('Failed to load professional profile:', error)
@@ -1055,7 +1055,6 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         current_employer: form.employment.trim(),
         previous_employment: form.prevEmployment.trim(),
         service_areas: serviceAreas,
-        travel_radius_km: radius,
       })
 
       onNext()
@@ -1105,19 +1104,8 @@ function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
       {/* Travel radius */}
       <Card style={{ padding:20 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Preferred Working Areas & Travel Radius</p>
+        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Preferred Working Areas</p>
         <Input label="Preferred Working Areas" value={form.areas} onChange={f('areas')} hint="e.g. Colombo, Dehiwela, Moratuwa" />
-        <div style={{ marginTop:16 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-            <label style={{ fontSize:12, fontWeight:700, color:C.muted }}>Maximum Travel Distance</label>
-            <span style={{ fontSize:13, fontWeight:800, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{radius} km</span>
-          </div>
-          <input type="range" min={5} max={100} step={5} value={radius} onChange={e=>setRadius(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer' }} />
-          <div style={{ display:'flex', justifyContent:'space-between', marginTop:4 }}>
-            <p style={{fontSize:11,color:C.muted}}>5 km</p>
-            <p style={{fontSize:11,color:C.muted}}>100 km</p>
-          </div>
-        </div>
       </Card>
 
 
@@ -2769,84 +2757,587 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
 
 // ─── Step 7: Availability ─────────────────────────────────────────────────────
-function Step7({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
-  const [activeDays, setActiveDays] = useState(new Set(['Mon','Tue','Wed','Thu','Fri']))
-  const [shift, setShift] = useState<'morning'|'afternoon'|'evening'|'night'>('morning')
-  const [emergency, setEmergency] = useState(true)
+function Step7({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
+
+  const days = [
+    'Mon',
+    'Tue',
+    'Wed',
+    'Thu',
+    'Fri',
+    'Sat',
+    'Sun'
+  ]
+
+  const [activeDays, setActiveDays] = useState<Set<string>>(
+    new Set()
+  )
+
+  const [shift, setShift] = useState<
+    'morning' | 'afternoon' | 'evening' | 'night'
+  >('morning')
+
+  const [emergency, setEmergency] = useState(false)
   const [holiday, setHoliday] = useState(false)
   const [maxHours, setMaxHours] = useState(40)
   const [maxDist, setMaxDist] = useState(20)
+
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
   const shifts = [
-    {k:'morning'  as const, l:'Morning',   t:'6 AM – 12 PM'},
-    {k:'afternoon'as const, l:'Afternoon', t:'12 PM – 6 PM'},
-    {k:'evening'  as const, l:'Evening',   t:'6 PM – 10 PM'},
-    {k:'night'    as const, l:'Night',     t:'10 PM – 6 AM'},
+    {
+      k:'morning' as const,
+      l:'Morning',
+      t:'6 AM – 12 PM'
+    },
+    {
+      k:'afternoon' as const,
+      l:'Afternoon',
+      t:'12 PM – 6 PM'
+    },
+    {
+      k:'evening' as const,
+      l:'Evening',
+      t:'6 PM – 10 PM'
+    },
+    {
+      k:'night' as const,
+      l:'Night',
+      t:'10 PM – 6 AM'
+    }
   ]
+
+  useEffect(() => {
+    const loadAvailability = async () => {
+      try {
+        const data = await getMyAvailability()
+
+        if (data) {
+          setActiveDays(
+            new Set(
+              Array.isArray(data.working_days)
+                ? data.working_days
+                : []
+            )
+          )
+
+          setShift(
+            data.preferred_shift || 'morning'
+          )
+
+          setEmergency(
+            data.emergency_available ?? false
+          )
+
+          setHoliday(
+            data.holiday_available ?? false
+          )
+
+          setMaxHours(
+            data.max_weekly_hours ?? 40
+          )
+
+          setMaxDist(
+            data.max_travel_distance_km ?? 20
+          )
+        }
+
+      } catch (error) {
+        console.error(
+          'Failed to load availability:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved availability'
+        )
+
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadAvailability()
+  }, [])
+
+  const toggleDay = (day: string) => {
+    setActiveDays(prev => {
+      const updated = new Set(prev)
+
+      if (updated.has(day)) {
+        updated.delete(day)
+      } else {
+        updated.add(day)
+      }
+
+      return updated
+    })
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+
+      // Required field validation
+      if (activeDays.size === 0) {
+        throw new Error('Please select at least one working day')
+      }
+
+      if (!shift) {
+        throw new Error('Please select a preferred shift')
+      }
+  
+      if (!maxHours || maxHours < 10) {
+        throw new Error('Please select maximum weekly hours')
+      }
+
+      if (!maxDist || maxDist < 5) {
+        throw new Error('Please select maximum travel distance')
+      }
+
+      setSaving(true)
+
+      await saveMyAvailability({
+        working_days: Array.from(activeDays),
+        preferred_shift: shift,
+        emergency_available: emergency,
+        holiday_available: holiday,
+        max_weekly_hours: maxHours,
+        max_travel_distance_km: maxDist
+      })
+
+      onNext()
+
+    } catch (error) {
+      console.error(
+        'Failed to save availability:',
+        error
+      )
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError(
+          'Failed to save availability'
+        )
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <StepWrap
+        step={7}
+        total={11}
+        title="Availability"
+        desc="Tell us when you're available so we can match you with the right clients."
+        onBack={onBack}
+        onNext={() => {}}
+      >
+        <Card
+          style={{
+            padding:30,
+            textAlign:'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading availability...
+          </p>
+        </Card>
+      </StepWrap>
+    )
+  }
+
   return (
-    <StepWrap step={7} total={11} title="Availability" desc="Tell us when you're available so we can match you with the right clients." onBack={onBack} onNext={onNext}>
-      {/* Days */}
-      <Card style={{ padding:22, marginBottom:14 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:14 }}>Working Days</p>
-        <div style={{ display:'flex', gap:8 }}>
-          {days.map(d=>(
-            <button key={d} onClick={()=>setActiveDays(p=>{ const n=new Set(p); n.has(d)?n.delete(d):n.add(d); return n })}
-              style={{ flex:1, paddingTop:10, paddingBottom:10, borderRadius:12, border:`2px solid ${activeDays.has(d)?C.primary:C.border}`, background:activeDays.has(d)?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:activeDays.has(d)?800:500, color:activeDays.has(d)?C.primary:C.sub, transition:'all 0.12s' }}>
-              {d}
+    <StepWrap
+      step={7}
+      total={11}
+      title="Availability"
+      desc="Tell us when you're available so we can match you with the right clients."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+    >
+
+      {/* Working Days */}
+      <Card
+        style={{
+          padding:22,
+          marginBottom:14
+        }}
+      >
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+            textTransform:'uppercase',
+            letterSpacing:'0.08em',
+            marginBottom:14
+          }}
+        >
+          Working Days <span style={{ color:C.error }}>*</span>
+        </p>
+
+        <div
+          style={{
+            display:'flex',
+            gap:8
+          }}
+        >
+          {days.map(day => (
+            <button
+              key={day}
+              onClick={() => toggleDay(day)}
+              style={{
+                flex:1,
+                paddingTop:10,
+                paddingBottom:10,
+                borderRadius:12,
+                border:`2px solid ${
+                  activeDays.has(day)
+                    ? C.primary
+                    : C.border
+                }`,
+                background:activeDays.has(day)
+                  ? `${C.primary}08`
+                  : 'transparent',
+                cursor:'pointer',
+                fontFamily:'Manrope,sans-serif',
+                fontSize:12,
+                fontWeight:activeDays.has(day)
+                  ? 800
+                  : 500,
+                color:activeDays.has(day)
+                  ? C.primary
+                  : C.sub
+              }}
+            >
+              {day}
             </button>
           ))}
         </div>
       </Card>
 
-      {/* Shifts */}
-      <Card style={{ padding:22, marginBottom:14 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:14 }}>Preferred Shift</p>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10 }} className="cao-2col">
-          {shifts.map(s=>(
-            <button key={s.k} onClick={()=>setShift(s.k)}
-              style={{ padding:'14px 16px', borderRadius:13, border:`2px solid ${shift===s.k?C.primary:C.border}`, background:shift===s.k?`${C.primary}06`:'transparent', cursor:'pointer', textAlign:'left' as const }}>
-              <p style={{ fontSize:13, fontWeight:800, color:shift===s.k?C.primary:C.type, marginBottom:2, fontFamily:'Manrope,sans-serif' }}>{s.l}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{s.t}</p>
-              {shift===s.k&&<span style={{marginTop:8,display:'inline-flex',background:`${C.primary}15`,color:C.primary,padding:'2px 8px',borderRadius:99,fontSize:10,fontWeight:700}}>Selected</span>}
+      {/* Preferred Shift */}
+      <Card
+        style={{
+          padding:22,
+          marginBottom:14
+        }}
+      >
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+            textTransform:'uppercase',
+            letterSpacing:'0.08em',
+            marginBottom:14
+          }}
+        >
+          Preferred Shift <span style={{ color:C.error }}>*</span>
+        </p>
+
+        <div
+          style={{
+            display:'grid',
+            gridTemplateColumns:'repeat(2,1fr)',
+            gap:10
+          }}
+          className="cao-2col"
+        >
+          {shifts.map(item => (
+            <button
+              key={item.k}
+              onClick={() => setShift(item.k)}
+              style={{
+                padding:'14px 16px',
+                borderRadius:13,
+                border:`2px solid ${
+                  shift === item.k
+                    ? C.primary
+                    : C.border
+                }`,
+                background:
+                  shift === item.k
+                    ? `${C.primary}06`
+                    : 'transparent',
+                cursor:'pointer',
+                textAlign:'left' as const
+              }}
+            >
+              <p
+                style={{
+                  fontSize:13,
+                  fontWeight:800,
+                  color:
+                    shift === item.k
+                      ? C.primary
+                      : C.type,
+                  marginBottom:2,
+                  fontFamily:'Manrope,sans-serif'
+                }}
+              >
+                {item.l}
+              </p>
+
+              <p
+                style={{
+                  fontSize:11,
+                  color:C.muted
+                }}
+              >
+                {item.t}
+              </p>
+
+              {shift === item.k && (
+                <span
+                  style={{
+                    marginTop:8,
+                    display:'inline-flex',
+                    background:`${C.primary}15`,
+                    color:C.primary,
+                    padding:'2px 8px',
+                    borderRadius:99,
+                    fontSize:10,
+                    fontWeight:700
+                  }}
+                >
+                  Selected
+                </span>
+              )}
             </button>
           ))}
         </div>
       </Card>
 
-      {/* Toggles + sliders */}
+      {/* Availability Settings */}
       <Card style={{ padding:22 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:`1px solid ${C.border}` }}>
+
+        <div
+          style={{
+            display:'flex',
+            justifyContent:'space-between',
+            alignItems:'center',
+            padding:'12px 0',
+            borderBottom:`1px solid ${C.border}`
+          }}
+        >
           <div>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Emergency Availability</p>
-            <p style={{ fontSize:11, color:C.muted }}>Available for urgent same-day requests</p>
+            <p
+              style={{
+                fontSize:13,
+                fontWeight:700,
+                color:C.type
+              }}
+            >
+              Emergency Availability
+            </p>
+
+            <p
+              style={{
+                fontSize:11,
+                color:C.muted
+              }}
+            >
+              Available for urgent same-day requests
+            </p>
           </div>
-          <Toggle on={emergency} onToggle={()=>setEmergency(v=>!v)} />
+
+          <Toggle
+            on={emergency}
+            onToggle={() =>
+              setEmergency(value => !value)
+            }
+          />
         </div>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:`1px solid ${C.border}` }}>
+
+        <div
+          style={{
+            display:'flex',
+            justifyContent:'space-between',
+            alignItems:'center',
+            padding:'12px 0',
+            borderBottom:`1px solid ${C.border}`
+          }}
+        >
           <div>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Holiday Availability</p>
-            <p style={{ fontSize:11, color:C.muted }}>Available on Poya days and public holidays</p>
+            <p
+              style={{
+                fontSize:13,
+                fontWeight:700,
+                color:C.type
+              }}
+            >
+              Holiday Availability
+            </p>
+
+            <p
+              style={{
+                fontSize:11,
+                color:C.muted
+              }}
+            >
+              Available on Poya days and public holidays
+            </p>
           </div>
-          <Toggle on={holiday} onToggle={()=>setHoliday(v=>!v)} />
+
+          <Toggle
+            on={holiday}
+            onToggle={() =>
+              setHoliday(value => !value)
+            }
+          />
         </div>
-        <div style={{ padding:'16px 0 8px' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Maximum Weekly Hours</p>
-            <span style={{ fontSize:13, fontWeight:800, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{maxHours} hrs</span>
+
+        {/* Maximum Weekly Hours */}
+        <div
+          style={{
+            padding:'16px 0 8px'
+          }}
+        >
+          <div
+            style={{
+              display:'flex',
+              justifyContent:'space-between',
+              marginBottom:8
+            }}
+          >
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.muted
+              }}
+            >
+              Maximum Weekly Hours <span style={{ color:C.error }}>*</span>
+            </p>
+
+            <span
+              style={{
+                fontSize:13,
+                fontWeight:800,
+                color:C.primary,
+                fontFamily:'Manrope,sans-serif'
+              }}
+            >
+              {maxHours} hrs
+            </span>
           </div>
-          <input type="range" min={10} max={80} step={5} value={maxHours} onChange={e=>setMaxHours(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer' }} />
+
+          <input
+            type="range"
+            min={10}
+            max={80}
+            step={5}
+            value={maxHours}
+            onChange={event =>
+              setMaxHours(+event.target.value)
+            }
+            style={{
+              width:'100%',
+              accentColor:C.primary,
+              cursor:'pointer'
+            }}
+          />
         </div>
-        <div style={{ padding:'8px 0' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Maximum Travel Distance</p>
-            <span style={{ fontSize:13, fontWeight:800, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{maxDist} km</span>
+
+        {/* Maximum Travel Distance */}
+        <div
+          style={{
+            padding:'8px 0'
+          }}
+        >
+          <div
+            style={{
+              display:'flex',
+              justifyContent:'space-between',
+              marginBottom:8
+            }}
+          >
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.muted
+              }}
+            >
+              Maximum Travel Distance <span style={{ color:C.error }}>*</span>
+            </p>
+
+            <span
+              style={{
+                fontSize:13,
+                fontWeight:800,
+                color:C.primary,
+                fontFamily:'Manrope,sans-serif'
+              }}
+            >
+              {maxDist} km
+            </span>
           </div>
-          <input type="range" min={5} max={100} step={5} value={maxDist} onChange={e=>setMaxDist(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer' }} />
+
+          <input
+            type="range"
+            min={5}
+            max={100}
+            step={5}
+            value={maxDist}
+            onChange={event =>
+              setMaxDist(+event.target.value)
+            }
+            style={{
+              width:'100%',
+              accentColor:C.primary,
+              cursor:'pointer'
+            }}
+          />
         </div>
+
       </Card>
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
+
 
 // ─── Step 8: Equipment & Transport ────────────────────────────────────────────
 function Step8({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {

@@ -195,7 +195,6 @@ export async function saveMyAgentDetails(details: {
   current_employer?: string
   previous_employment?: string
   service_areas?: string[]
-  travel_radius_km?: number
 }) {
   const user = await getCurrentUser()
 
@@ -698,6 +697,73 @@ export async function saveMyBankAccount(input: BankAccountInput) {
       // New bank account must be checked by Admin / Finance
       verification_status: "pending",
     })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+
+
+export type AgentAvailabilityInput = {
+  working_days: string[]
+  preferred_shift: 'morning' | 'afternoon' | 'evening' | 'night'
+  emergency_available: boolean
+  holiday_available: boolean
+  max_weekly_hours: number
+  max_travel_distance_km: number
+}
+
+export async function getMyAvailability() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_availability")
+    .select("*")
+    .eq("agent_id", user.id)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveMyAvailability(
+  input: AgentAvailabilityInput
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_availability")
+    .upsert(
+      {
+        agent_id: user.id,
+        working_days: input.working_days,
+        preferred_shift: input.preferred_shift,
+        emergency_available: input.emergency_available,
+        holiday_available: input.holiday_available,
+        max_weekly_hours: input.max_weekly_hours,
+        max_travel_distance_km: input.max_travel_distance_km,
+        updated_at: new Date().toISOString()
+      },
+      {
+        onConflict: "agent_id"
+      }
+    )
     .select()
     .single()
 
