@@ -17,7 +17,12 @@ import {
   getMyAvailability,
   saveMyAvailability,
   getMyEquipmentTransport,
-  saveMyEquipmentTransport
+  saveMyEquipmentTransport,
+  getMyReferences,
+  saveMyReferences,
+  getMyRecommendationLetter,
+  saveMyRecommendationLetter,
+  deleteMyRecommendationLetter
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -3690,44 +3695,569 @@ function Step8({
 
 
 // ─── Step 9: References ───────────────────────────────────────────────────────
-function Step9({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  type Ref = { name:string; org:string; type:string; phone:string; email:string }
+function Step9({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
+
+  type Ref = {
+    name:string
+    org:string
+    type:string
+    phone:string
+    email:string
+  }
+
+  const emptyReference = (): Ref => ({
+    name:'',
+    org:'',
+    type:'',
+    phone:'',
+    email:''
+  })
+
   const [refs, setRefs] = useState<Ref[]>([
-    { name:'Dr. Priya Fernando', org:'Nawaloka Hospital, Colombo', type:'Doctor / Employer', phone:'+94 11 544 4444', email:'p.fernando@nawaloka.lk' },
-    { name:'Nimal Jayasinghe', org:'Sri Lanka Red Cross Society', type:'Employer', phone:'+94 11 269 1095', email:'n.jayasinghe@redcross.lk' },
+    emptyReference(),
+    emptyReference()
   ])
-  const [letterStatus, setLetterStatus] = useState<'idle'|'done'>('done')
-  const addRef = () => setRefs(p=>[...p,{name:'',org:'',type:'',phone:'',email:''}])
+
+  const [letterFile, setLetterFile] = useState<File | null>(null)
+  const [letterFileName, setLetterFileName] = useState('')
+  const [letterExisting, setLetterExisting] = useState(false)
+  const [letterRemoved, setLetterRemoved] = useState(false)
+
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  // Load saved references + recommendation letter
+  useEffect(() => {
+    const loadStep9 = async () => {
+      try {
+        const [savedRefs, savedLetter] = await Promise.all([
+          getMyReferences(),
+          getMyRecommendationLetter()
+        ])
+
+        if (savedRefs && savedRefs.length > 0) {
+          setRefs(
+            savedRefs.map(reference => ({
+              name: reference.full_name || '',
+              org: reference.organisation || '',
+              type: reference.relationship || '',
+              phone: reference.phone || '',
+              email: reference.email || ''
+            }))
+          )
+        }
+
+        if (savedLetter) {
+          setLetterExisting(true)
+          setLetterRemoved(false)
+
+          setLetterFileName(
+            savedLetter.file_url
+              ? savedLetter.file_url.split('/').pop() || 'Recommendation Letter'
+              : 'Recommendation Letter'
+          )
+        }
+
+      } catch (error) {
+        console.error('Failed to load references:', error)
+        setSaveError('Failed to load saved references')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadStep9()
+  }, [])
+
+  const addRef = () => {
+    setRefs(prev => [
+      ...prev,
+      emptyReference()
+    ])
+  }
+
+  const removeRef = (index:number) => {
+    if (refs.length <= 2) {
+      setSaveError('At least two professional references are required')
+      return
+    }
+
+    setRefs(prev =>
+      prev.filter((_, i) => i !== index)
+    )
+  }
+
+  const updateRef = (
+    index:number,
+    key:keyof Ref,
+    value:string
+  ) => {
+    setRefs(prev =>
+      prev.map((reference, i) =>
+        i === index
+          ? {
+              ...reference,
+              [key]:value
+            }
+          : reference
+      )
+    )
+
+    setSaveError('')
+  }
+
+  const handleLetterSelect = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0]
+
+    if (!file) return
+
+    const allowedTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ]
+
+    if (!allowedTypes.includes(file.type)) {
+      setSaveError('Recommendation letter must be PDF, DOC or DOCX')
+      return
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setSaveError('Recommendation letter must be smaller than 10MB')
+      return
+    }
+
+    setSaveError('')
+    setLetterFile(file)
+    setLetterFileName(file.name)
+    setLetterRemoved(false)
+  }
+
+  const handleRemoveLetter = () => {
+
+    // New unsaved file
+    if (letterFile && !letterExisting) {
+      setLetterFile(null)
+      setLetterFileName('')
+      setLetterRemoved(false)
+      return
+    }
+
+    // Already saved file
+    if (letterExisting) {
+      setLetterFile(null)
+      setLetterFileName('')
+      setLetterExisting(false)
+      setLetterRemoved(true)
+    }
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+
+      if (refs.length < 2) {
+        throw new Error(
+          'At least two professional references are required'
+        )
+      }
+
+      for (let i = 0; i < refs.length; i++) {
+        const reference = refs[i]
+
+        if (!reference.name.trim()) {
+          throw new Error(
+            `Reference ${i + 1}: Full name is required`
+          )
+        }
+
+        if (!reference.org.trim()) {
+          throw new Error(
+            `Reference ${i + 1}: Organisation is required`
+          )
+        }
+
+        if (!reference.type) {
+          throw new Error(
+            `Reference ${i + 1}: Relationship is required`
+          )
+        }
+
+        if (!reference.phone.trim()) {
+          throw new Error(
+            `Reference ${i + 1}: Phone number is required`
+          )
+        }
+      }
+
+      setSaving(true)
+
+      await saveMyReferences(
+        refs.map(reference => ({
+          full_name: reference.name.trim(),
+          organisation: reference.org.trim(),
+          relationship: reference.type,
+          phone: reference.phone.trim(),
+          email: reference.email.trim()
+        }))
+      )
+
+      // Delete saved recommendation letter if removed
+      if (letterRemoved) {
+        await deleteMyRecommendationLetter()
+      }
+
+      // Upload new/replacement recommendation letter
+      if (letterFile) {
+        await saveMyRecommendationLetter(letterFile)
+      }
+
+      onNext()
+
+    } catch (error) {
+      console.error(
+        'Failed to save references:',
+        error
+      )
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError('Failed to save references')
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <StepWrap
+        step={9}
+        total={11}
+        title="References"
+        desc="Provide at least two professional references who can verify your experience."
+        onBack={onBack}
+        onNext={() => {}}
+      >
+        <Card
+          style={{
+            padding:30,
+            textAlign:'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading references...
+          </p>
+        </Card>
+      </StepWrap>
+    )
+  }
+
   return (
-    <StepWrap step={9} total={11} title="References" desc="Provide at least two professional references who can verify your experience." onBack={onBack} onNext={onNext}>
-      <div style={{ display:'flex', flexDirection:'column', gap:16, marginBottom:20 }}>
-        {refs.map((r,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Reference {i+1}</p>
-              {refs.length>1&&<button onClick={()=>setRefs(p=>p.filter((_,j)=>j!==i))} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>{I.trash}</button>}
+    <StepWrap
+      step={9}
+      total={11}
+      title="References"
+      desc="Provide at least two professional references who can verify your experience."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+    >
+
+      <div
+        style={{
+          display:'flex',
+          flexDirection:'column',
+          gap:16,
+          marginBottom:20
+        }}
+      >
+        {refs.map((reference, index) => (
+
+          <Card
+            key={index}
+            style={{ padding:22 }}
+          >
+            <div
+              style={{
+                display:'flex',
+                justifyContent:'space-between',
+                alignItems:'center',
+                marginBottom:14
+              }}
+            >
+              <p
+                style={{
+                  fontSize:13,
+                  fontWeight:800,
+                  color:C.type,
+                  fontFamily:'Manrope,sans-serif'
+                }}
+              >
+                Reference {index + 1}
+              </p>
+
+              {refs.length > 2 && (
+                <button
+                  type="button"
+                  onClick={() => removeRef(index)}
+                  style={{
+                    background:'none',
+                    border:'none',
+                    cursor:'pointer',
+                    color:C.muted,
+                    display:'flex'
+                  }}
+                >
+                  {I.trash}
+                </button>
+              )}
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="cao-2col">
-              <Input label="Full Name" value={r.name} onChange={v=>setRefs(p=>p.map((x,j)=>j===i?{...x,name:v}:x))} required />
-              <Input label="Organisation / Hospital" value={r.org} onChange={v=>setRefs(p=>p.map((x,j)=>j===i?{...x,org:v}:x))} required />
-              <Select label="Relationship" options={['Employer','Hospital','Doctor','Previous Client','Colleague','Other']} value={r.type} onChange={v=>setRefs(p=>p.map((x,j)=>j===i?{...x,type:v}:x))} />
-              <Input label="Phone Number" value={r.phone} onChange={v=>setRefs(p=>p.map((x,j)=>j===i?{...x,phone:v}:x))} />
-              <Input label="Email Address" type="email" value={r.email} onChange={v=>setRefs(p=>p.map((x,j)=>j===i?{...x,email:v}:x))} />
+
+            <div
+              style={{
+                display:'grid',
+                gridTemplateColumns:'1fr 1fr',
+                gap:12
+              }}
+              className="cao-2col"
+            >
+
+              <Input
+                label="Full Name"
+                value={reference.name}
+                onChange={value =>
+                  updateRef(index, 'name', value)
+                }
+                required
+              />
+
+              <Input
+                label="Organisation / Hospital"
+                value={reference.org}
+                onChange={value =>
+                  updateRef(index, 'org', value)
+                }
+                required
+              />
+
+              <Select
+                label="Relationship *"
+                options={[
+                  'Employer',
+                  'Hospital',
+                  'Doctor',
+                  'Previous Client',
+                  'Colleague',
+                  'Other'
+                ]}
+                value={reference.type}
+                onChange={value =>
+                  updateRef(index, 'type', value)
+                }
+              />
+
+              <Input
+                label="Phone Number"
+                type="tel"
+                value={reference.phone}
+                onChange={value =>
+                  updateRef(index, 'phone', value)
+                }
+                required
+              />
+
+              <Input
+                label="Email Address"
+                type="email"
+                value={reference.email}
+                onChange={value =>
+                  updateRef(index, 'email', value)
+                }
+              />
+
             </div>
           </Card>
         ))}
       </div>
-      <button onClick={addRef} style={{ width:'100%', padding:'14px', borderRadius:12, border:`2px dashed ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', gap:8, justifyContent:'center', alignItems:'center', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, color:C.primary }}>
-        <span style={{display:'flex'}}>{I.plus}</span>Add Another Reference
+
+      <button
+        type="button"
+        onClick={addRef}
+        style={{
+          width:'100%',
+          padding:'14px',
+          borderRadius:12,
+          border:`2px dashed ${C.border}`,
+          background:'transparent',
+          cursor:'pointer',
+          display:'flex',
+          gap:8,
+          justifyContent:'center',
+          alignItems:'center',
+          fontFamily:'Manrope,sans-serif',
+          fontSize:13,
+          fontWeight:700,
+          color:C.primary
+        }}
+      >
+        <span style={{ display:'flex' }}>
+          {I.plus}
+        </span>
+
+        Add Another Reference
       </button>
 
-      <Card style={{ padding:20, marginTop:16 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Recommendation Letter (Optional)</p>
-        <UploadBox label="Upload Recommendation Letter" desc="PDF or Word document · Max 10MB" file={letterStatus==='done'?'Recommendation_Letter.pdf':undefined} status={letterStatus==='done'?'done':'idle'} onUpload={()=>setLetterStatus('done')} />
+      {/* Recommendation Letter */}
+      <Card
+        style={{
+          padding:20,
+          marginTop:16
+        }}
+      >
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+            textTransform:'uppercase',
+            letterSpacing:'0.08em',
+            marginBottom:12
+          }}
+        >
+          Recommendation Letter (Optional)
+        </p>
+
+        <label
+          style={{
+            display:'block',
+            padding:'20px',
+            borderRadius:14,
+            border:`2px dashed ${
+              letterFile || letterExisting
+                ? C.success
+                : C.border
+            }`,
+            background:
+              letterFile || letterExisting
+                ? `${C.success}06`
+                : C.bg,
+            cursor:'pointer',
+            textAlign:'center' as const
+          }}
+        >
+
+          <div
+            style={{
+              width:40,
+              height:40,
+              borderRadius:13,
+              background:`${C.primary}10`,
+              display:'flex',
+              alignItems:'center',
+              justifyContent:'center',
+              color:C.primary,
+              margin:'0 auto 10px'
+            }}
+          >
+            {I.upload}
+          </div>
+
+          <p
+            style={{
+              fontSize:13,
+              fontWeight:700,
+              color:C.type
+            }}
+          >
+            {letterFile
+              ? letterFileName
+              : letterExisting
+                ? 'Change Recommendation Letter'
+                : 'Upload Recommendation Letter'}
+          </p>
+
+          <p
+            style={{
+              fontSize:11,
+              color:C.muted,
+              marginTop:4
+            }}
+          >
+            PDF, DOC or DOCX · Max 10MB
+          </p>
+
+          <input
+            type="file"
+            accept=".pdf,.doc,.docx"
+            onChange={handleLetterSelect}
+            style={{ display:'none' }}
+          />
+
+        </label>
+
+        {(letterFile || letterExisting) && (
+          <button
+            type="button"
+            onClick={handleRemoveLetter}
+            style={{
+              marginTop:10,
+              background:'none',
+              border:'none',
+              color:C.error,
+              fontSize:12,
+              fontWeight:700,
+              cursor:'pointer'
+            }}
+          >
+            Remove file
+          </button>
+        )}
+
       </Card>
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
+
+
 
 // ─── Step 10: Agreements ──────────────────────────────────────────────────────
 function Step10({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {

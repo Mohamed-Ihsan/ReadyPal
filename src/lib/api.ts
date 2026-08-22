@@ -851,3 +851,177 @@ export async function saveMyEquipmentTransport(
 
   return data
 }
+
+
+
+export type AgentReferenceInput = {
+  full_name: string
+  organisation: string
+  relationship: string
+  phone: string
+  email?: string
+}
+
+export async function getMyReferences() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_references")
+    .select("*")
+    .eq("agent_id", user.id)
+    .order("created_at", { ascending: true })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveMyReferences(
+  references: AgentReferenceInput[]
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  // Remove previous reference rows
+  const { error: deleteError } = await supabase
+    .from("agent_references")
+    .delete()
+    .eq("agent_id", user.id)
+
+  if (deleteError) {
+    throw deleteError
+  }
+
+  const rows = references.map(reference => ({
+    agent_id: user.id,
+    full_name: reference.full_name,
+    organisation: reference.organisation,
+    relationship: reference.relationship,
+    phone: reference.phone,
+    email: reference.email || null,
+  }))
+
+  const { data, error } = await supabase
+    .from("agent_references")
+    .insert(rows)
+    .select()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+
+export async function getMyRecommendationLetter() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("verification_documents")
+    .select("*")
+    .eq("agent_id", user.id)
+    .eq("doc_type", "recommendation-letter")
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveMyRecommendationLetter(file: File) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const allowedTypes = [
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ]
+
+  if (!allowedTypes.includes(file.type)) {
+    throw new Error("Only PDF, DOC and DOCX files are allowed")
+  }
+
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error("Recommendation letter must be smaller than 10MB")
+  }
+
+  const filePath = `${user.id}/references/recommendation-letter`
+
+  const { error: uploadError } = await supabase.storage
+    .from("verification-documents")
+    .upload(filePath, file, {
+      upsert: true,
+      contentType: file.type,
+      cacheControl: "0",
+    })
+
+  if (uploadError) {
+    throw uploadError
+  }
+
+  const { data: existing, error: findError } = await supabase
+    .from("verification_documents")
+    .select("id")
+    .eq("agent_id", user.id)
+    .eq("doc_type", "recommendation-letter")
+    .maybeSingle()
+
+  if (findError) {
+    throw findError
+  }
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from("verification_documents")
+      .update({
+        file_url: filePath,
+        status: "pending",
+      })
+      .eq("id", existing.id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return data
+  }
+
+  const { data, error } = await supabase
+    .from("verification_documents")
+    .insert({
+      agent_id: user.id,
+      doc_type: "recommendation-letter",
+      file_url: filePath,
+      status: "pending",
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return data
+}
+
+export async function deleteMyRecommendationLetter() {
+  return deleteMyCertification("recommendation-letter")
+}
