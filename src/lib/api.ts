@@ -1025,3 +1025,83 @@ export async function saveMyRecommendationLetter(file: File) {
 export async function deleteMyRecommendationLetter() {
   return deleteMyCertification("recommendation-letter")
 }
+
+
+
+export type AgentAgreementsInput = {
+  terms_accepted: boolean
+  privacy_accepted: boolean
+  conduct_accepted: boolean
+  care_standards_accepted: boolean
+  background_check_accepted: boolean
+}
+
+export async function getMyAgreements() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_agreements")
+    .select("*")
+    .eq("agent_id", user.id)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveMyAgreements(
+  input: AgentAgreementsInput
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const allAccepted =
+    input.terms_accepted &&
+    input.privacy_accepted &&
+    input.conduct_accepted &&
+    input.care_standards_accepted &&
+    input.background_check_accepted
+
+  const { data, error } = await supabase
+    .from("agent_agreements")
+    .upsert(
+      {
+        agent_id: user.id,
+
+        terms_accepted: input.terms_accepted,
+        privacy_accepted: input.privacy_accepted,
+        conduct_accepted: input.conduct_accepted,
+        care_standards_accepted:
+          input.care_standards_accepted,
+        background_check_accepted:
+          input.background_check_accepted,
+
+        accepted_at: allAccepted
+          ? new Date().toISOString()
+          : null,
+
+        updated_at: new Date().toISOString()
+      },
+      {
+        onConflict: "agent_id"
+      }
+    )
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}

@@ -22,7 +22,9 @@ import {
   saveMyReferences,
   getMyRecommendationLetter,
   saveMyRecommendationLetter,
-  deleteMyRecommendationLetter
+  deleteMyRecommendationLetter,
+  getMyAgreements,
+  saveMyAgreements
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -4260,55 +4262,769 @@ function Step9({
 
 
 // ─── Step 10: Agreements ──────────────────────────────────────────────────────
-function Step10({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const [agreed, setAgreed] = useState({ terms:false, privacy:false, conduct:false, care:false, background:false })
-  const all = Object.values(agreed).every(Boolean)
-  const toggle = (k:keyof typeof agreed) => setAgreed(p=>({...p,[k]:!p[k]}))
-  const docs = [
-    { k:'terms'   as const, title:'Terms & Conditions',  desc:'Governs your use of the ReadyPal platform, payment terms, and agent obligations.' },
-    { k:'privacy' as const, title:'Privacy Policy',      desc:'How we collect, use, and protect your personal and professional data.' },
-    { k:'conduct' as const, title:'Code of Conduct',     desc:'Professional behaviour standards expected of all ReadyPal Care Agents.' },
-    { k:'care'    as const, title:'Care Standards',      desc:'Minimum quality standards for all care services delivered through ReadyPal.' },
-    { k:'background'as const,title:'Background Check Consent', desc:'You consent to identity verification and police record checks.' },
+function Step10({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
+
+  type AgreementKey =
+    | 'terms'
+    | 'privacy'
+    | 'conduct'
+    | 'care'
+    | 'background'
+
+  const [agreed, setAgreed] = useState<Record<AgreementKey, boolean>>({
+    terms:false,
+    privacy:false,
+    conduct:false,
+    care:false,
+    background:false
+  })
+
+  const [readDocs, setReadDocs] = useState<Record<AgreementKey, boolean>>({
+    terms:false,
+    privacy:false,
+    conduct:false,
+    care:false,
+    background:false
+  })
+
+  const [openDocument, setOpenDocument] =
+    useState<AgreementKey | null>(null)
+
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const allAgreed = Object.values(agreed).every(Boolean)
+  const allRead = Object.values(readDocs).every(Boolean)
+
+  const documents = [
+    {
+      k:'terms' as AgreementKey,
+      title:'Terms & Conditions',
+      desc:'Governs your use of the ReadyPal platform, payment terms, and agent obligations.',
+      sections:[
+        {
+          heading:'1. Introduction',
+          text:'These Terms & Conditions govern your use of the ReadyPal platform as a Care Agent. By using ReadyPal, you agree to follow the platform rules and provide accurate information.'
+        },
+        {
+          heading:'2. Care Agent Responsibilities',
+          text:'Care Agents must provide services professionally, safely, respectfully, and according to the details agreed with the client.'
+        },
+        {
+          heading:'3. Account Information',
+          text:'You must provide accurate personal, professional, banking, identity, and qualification information during registration.'
+        },
+        {
+          heading:'4. Payments',
+          text:'Payments and payouts will be processed according to ReadyPal platform rules and the payout method connected to your account.'
+        },
+        {
+          heading:'5. Platform Conduct',
+          text:'Fraud, harassment, misuse of client information, unsafe care, or other serious violations may result in suspension or removal from the platform.'
+        }
+      ]
+    },
+
+    {
+      k:'privacy' as AgreementKey,
+      title:'Privacy Policy',
+      desc:'How we collect, use, and protect your personal and professional data.',
+      sections:[
+        {
+          heading:'1. Information We Collect',
+          text:'ReadyPal may collect personal details, contact information, professional qualifications, identity documents, bank information, availability, references, and platform activity.'
+        },
+        {
+          heading:'2. How Information Is Used',
+          text:'Your information may be used for account management, identity verification, matching with clients, safety, payments, support, and platform administration.'
+        },
+        {
+          heading:'3. Sensitive Documents',
+          text:'Identity, certification, banking, and verification documents are used only for relevant verification and operational purposes.'
+        },
+        {
+          heading:'4. Access to Information',
+          text:'Access to sensitive information is restricted to authorized users and ReadyPal staff according to their responsibilities.'
+        }
+      ]
+    },
+
+    {
+      k:'conduct' as AgreementKey,
+      title:'Code of Conduct',
+      desc:'Professional behaviour standards expected of all ReadyPal Care Agents.',
+      sections:[
+        {
+          heading:'1. Respect',
+          text:'Care Agents must treat clients, beneficiaries, families, staff, and other users with dignity and respect.'
+        },
+        {
+          heading:'2. Professional Behaviour',
+          text:'Agents must be punctual, responsible, honest, and professional while performing care services.'
+        },
+        {
+          heading:'3. Confidentiality',
+          text:'Personal, medical, financial, and household information learned while providing care must be kept confidential.'
+        },
+        {
+          heading:'4. Safety',
+          text:'Care Agents must follow reasonable safety requirements and immediately report serious incidents or emergencies.'
+        }
+      ]
+    },
+
+    {
+      k:'care' as AgreementKey,
+      title:'Care Standards',
+      desc:'Minimum quality standards for all care services delivered through ReadyPal.',
+      sections:[
+        {
+          heading:'1. Quality of Care',
+          text:'Care Agents must provide services with appropriate care, attention, patience, and professionalism.'
+        },
+        {
+          heading:'2. Client Instructions',
+          text:'Agents should follow agreed service instructions unless an instruction is unsafe, illegal, or outside the agreed scope.'
+        },
+        {
+          heading:'3. Medication and Health Tasks',
+          text:'Agents should perform only tasks that they are qualified and authorized to perform.'
+        },
+        {
+          heading:'4. Emergency Situations',
+          text:'In an emergency, the Care Agent should prioritize immediate safety and follow the appropriate emergency and reporting process.'
+        }
+      ]
+    },
+
+    {
+      k:'background' as AgreementKey,
+      title:'Background Check Consent',
+      desc:'You consent to identity verification and police record checks.',
+      sections:[
+        {
+          heading:'1. Consent',
+          text:'You authorize ReadyPal to review the information and documents submitted as part of your Care Agent application.'
+        },
+        {
+          heading:'2. Identity Verification',
+          text:'Your identity information and submitted identification documents may be checked for authenticity and consistency.'
+        },
+        {
+          heading:'3. Police Clearance',
+          text:'Your submitted police clearance information may be reviewed as part of the Care Agent approval process.'
+        },
+        {
+          heading:'4. Professional Verification',
+          text:'ReadyPal may review submitted qualifications, certificates, employment details, and professional references.'
+        }
+      ]
+    }
   ]
+
+  useEffect(() => {
+    const loadAgreements = async () => {
+      try {
+        const data = await getMyAgreements()
+
+        if (data) {
+          const saved = {
+            terms: data.terms_accepted ?? false,
+            privacy: data.privacy_accepted ?? false,
+            conduct: data.conduct_accepted ?? false,
+            care: data.care_standards_accepted ?? false,
+            background:
+              data.background_check_accepted ?? false
+          }
+
+          setAgreed(saved)
+
+          setReadDocs({
+            terms: saved.terms,
+            privacy: saved.privacy,
+            conduct: saved.conduct,
+            care: saved.care,
+            background: saved.background
+          })
+        }
+
+      } catch (error) {
+        console.error(
+          'Failed to load agreements:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved agreements'
+        )
+
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadAgreements()
+  }, [])
+
+  const openAgreement = (key: AgreementKey) => {
+    setOpenDocument(key)
+    setSaveError('')
+  }
+
+  const markAsReadAndClose = () => {
+    if (!openDocument) return
+
+    setReadDocs(prev => ({
+      ...prev,
+      [openDocument]: true
+    }))
+
+    setOpenDocument(null)
+  }
+
+  const toggleAgreement = (key: AgreementKey) => {
+
+    if (!readDocs[key]) {
+      setSaveError(
+        'Please read this agreement before accepting it'
+      )
+
+      setOpenDocument(key)
+      return
+    }
+
+    setAgreed(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }))
+
+    setSaveError('')
+  }
+
+  const handleAcceptAll = () => {
+    if (!allRead) {
+      setSaveError(
+        'Please read all agreements before accepting all'
+      )
+      return
+    }
+
+    setAgreed({
+      terms:true,
+      privacy:true,
+      conduct:true,
+      care:true,
+      background:true
+    })
+
+    setSaveError('')
+  }
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+
+      if (!allRead) {
+        throw new Error(
+          'Please read all agreements before continuing'
+        )
+      }
+
+      if (!allAgreed) {
+        throw new Error(
+          'You must agree to all documents before continuing'
+        )
+      }
+
+      setSaving(true)
+
+      await saveMyAgreements({
+        terms_accepted: agreed.terms,
+        privacy_accepted: agreed.privacy,
+        conduct_accepted: agreed.conduct,
+        care_standards_accepted: agreed.care,
+        background_check_accepted: agreed.background
+      })
+
+      onNext()
+
+    } catch (error) {
+      console.error(
+        'Failed to save agreements:',
+        error
+      )
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError(
+          'Failed to save agreements'
+        )
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const currentDocument = documents.find(
+    document => document.k === openDocument
+  )
+
+  if (loading) {
+    return (
+      <StepWrap
+        step={10}
+        total={11}
+        title="Agreements & Consent"
+        desc="Please read and agree to all documents before submitting your application."
+        onBack={onBack}
+        onNext={() => {}}
+      >
+        <Card
+          style={{
+            padding:30,
+            textAlign:'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading agreements...
+          </p>
+        </Card>
+      </StepWrap>
+    )
+  }
+
   return (
-    <StepWrap step={10} total={11} title="Agreements & Consent" desc="Please read and agree to all documents before submitting your application." onBack={onBack} onNext={onNext} nextLabel={all?'Save & Continue':'Agree to All First'}>
-      <div style={{ display:'flex', flexDirection:'column', gap:12, marginBottom:20 }}>
-        {docs.map(d=>(
-          <Card key={d.k} style={{ padding:20, border:`1.5px solid ${agreed[d.k]?C.success+'40':C.border}`, background:agreed[d.k]?`${C.success}04`:C.surface }}>
-            <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-              <button onClick={()=>toggle(d.k)} style={{ width:22, height:22, borderRadius:6, background:agreed[d.k]?C.primary:'transparent', border:`2px solid ${agreed[d.k]?C.primary:C.border}`, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, marginTop:1, transition:'all 0.15s' }}>
-                {agreed[d.k]&&<span style={{color:'#fff',display:'flex',transform:'scale(0.75)'}}>{I.check}</span>}
-              </button>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{d.title}</p>
-                  <button style={{ fontSize:11, fontWeight:700, color:C.primary, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Read →</button>
+    <>
+      <StepWrap
+        step={10}
+        total={11}
+        title="Agreements & Consent"
+        desc="Please read and agree to all documents before submitting your application."
+        onBack={onBack}
+        onNext={handleSaveAndContinue}
+        nextLabel={
+          saving
+            ? 'Saving...'
+            : allAgreed
+              ? 'Save & Continue'
+              : 'Agree to All First'
+        }
+      >
+
+        <div
+          style={{
+            display:'flex',
+            flexDirection:'column',
+            gap:12,
+            marginBottom:20
+          }}
+        >
+          {documents.map(document => (
+            <Card
+              key={document.k}
+              style={{
+                padding:20,
+                border:`1.5px solid ${
+                  agreed[document.k]
+                    ? C.success + '40'
+                    : C.border
+                }`,
+                background:
+                  agreed[document.k]
+                    ? `${C.success}04`
+                    : C.surface
+              }}
+            >
+              <div
+                style={{
+                  display:'flex',
+                  gap:14,
+                  alignItems:'flex-start'
+                }}
+              >
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    toggleAgreement(document.k)
+                  }
+                  style={{
+                    width:22,
+                    height:22,
+                    borderRadius:6,
+                    background:
+                      agreed[document.k]
+                        ? C.primary
+                        : 'transparent',
+                    border:`2px solid ${
+                      agreed[document.k]
+                        ? C.primary
+                        : C.border
+                    }`,
+                    cursor:'pointer',
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    flexShrink:0,
+                    marginTop:1
+                  }}
+                >
+                  {agreed[document.k] && (
+                    <span
+                      style={{
+                        color:'#fff',
+                        display:'flex',
+                        transform:'scale(0.75)'
+                      }}
+                    >
+                      {I.check}
+                    </span>
+                  )}
+                </button>
+
+                <div style={{ flex:1 }}>
+
+                  <div
+                    style={{
+                      display:'flex',
+                      gap:8,
+                      alignItems:'center',
+                      marginBottom:4,
+                      flexWrap:'wrap'
+                    }}
+                  >
+                    <p
+                      style={{
+                        fontSize:13,
+                        fontWeight:700,
+                        color:C.type
+                      }}
+                    >
+                      {document.title}
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openAgreement(document.k)
+                      }
+                      style={{
+                        fontSize:11,
+                        fontWeight:700,
+                        color:C.primary,
+                        background:'none',
+                        border:'none',
+                        cursor:'pointer',
+                        fontFamily:'Manrope,sans-serif'
+                      }}
+                    >
+                      {readDocs[document.k]
+                        ? 'Read Again →'
+                        : 'Read →'}
+                    </button>
+
+                    {readDocs[document.k] && (
+                      <span
+                        style={{
+                          fontSize:10,
+                          fontWeight:700,
+                          color:C.success
+                        }}
+                      >
+                        ✓ Read
+                      </span>
+                    )}
+                  </div>
+
+                  <p
+                    style={{
+                      fontSize:12,
+                      color:C.muted,
+                      lineHeight:1.6
+                    }}
+                  >
+                    {document.desc}
+                  </p>
+
                 </div>
-                <p style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{d.desc}</p>
               </div>
+            </Card>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={handleAcceptAll}
+          style={{
+            width:'100%',
+            padding:'12px',
+            borderRadius:12,
+            border:`1.5px solid ${
+              allAgreed
+                ? C.success
+                : C.border
+            }`,
+            background:
+              allAgreed
+                ? `${C.success}04`
+                : 'transparent',
+            cursor:allRead
+              ? 'pointer'
+              : 'not-allowed',
+            fontFamily:'Manrope,sans-serif',
+            fontSize:13,
+            fontWeight:700,
+            color:
+              allAgreed
+                ? C.success
+                : allRead
+                  ? C.primary
+                  : C.muted,
+            marginBottom:16
+          }}
+        >
+          {allAgreed
+            ? '✓ All Agreements Accepted'
+            : allRead
+              ? 'Accept All Agreements'
+              : 'Read All Agreements First'}
+        </button>
+
+        {saveError && (
+          <div
+            style={{
+              padding:'12px 14px',
+              marginBottom:16,
+              borderRadius:10,
+              background:`${C.error}08`,
+              border:`1px solid ${C.error}30`,
+              color:C.error,
+              fontSize:12,
+              fontWeight:600
+            }}
+          >
+            {saveError}
+          </div>
+        )}
+
+        <Card
+          style={{
+            padding:22,
+            opacity:0.7
+          }}
+        >
+          <div
+            style={{
+              display:'flex',
+              justifyContent:'space-between',
+              alignItems:'center',
+              marginBottom:10
+            }}
+          >
+            <p
+              style={{
+                fontSize:13,
+                fontWeight:800,
+                color:C.type,
+                fontFamily:'Manrope,sans-serif'
+              }}
+            >
+              Digital Signature
+            </p>
+
+            <Bdg
+              label="Coming Soon"
+              color={C.info}
+            />
+          </div>
+
+          <div
+            style={{
+              height:80,
+              borderRadius:12,
+              border:`2px dashed ${C.border}`,
+              background:C.bg,
+              display:'flex',
+              alignItems:'center',
+              justifyContent:'center'
+            }}
+          >
+            <p
+              style={{
+                fontSize:12,
+                color:C.muted
+              }}
+            >
+              Draw or type your signature
+              (available in next release)
+            </p>
+          </div>
+        </Card>
+
+      </StepWrap>
+
+      {currentDocument && (
+        <div
+          onClick={() => setOpenDocument(null)}
+          style={{
+            position:'fixed',
+            inset:0,
+            zIndex:9999,
+            background:'rgba(15,23,42,0.55)',
+            display:'flex',
+            alignItems:'center',
+            justifyContent:'center',
+            padding:20
+          }}
+        >
+          <div
+            onClick={event =>
+              event.stopPropagation()
+            }
+            style={{
+              width:'100%',
+              maxWidth:680,
+              maxHeight:'85vh',
+              background:C.surface,
+              borderRadius:18,
+              boxShadow:'0 24px 70px rgba(0,0,0,0.22)',
+              display:'flex',
+              flexDirection:'column',
+              overflow:'hidden'
+            }}
+          >
+
+            <div
+              style={{
+                padding:'20px 24px',
+                borderBottom:`1px solid ${C.border}`
+              }}
+            >
+              <p
+                style={{
+                  fontSize:17,
+                  fontWeight:900,
+                  color:C.type
+                }}
+              >
+                {currentDocument.title}
+              </p>
+
+              <p
+                style={{
+                  fontSize:11,
+                  color:C.muted,
+                  marginTop:3
+                }}
+              >
+                Please review this document before accepting.
+              </p>
             </div>
-          </Card>
-        ))}
-      </div>
 
-      <button onClick={()=>setAgreed({terms:true,privacy:true,conduct:true,care:true,background:true})} style={{ width:'100%', padding:'12px', borderRadius:12, border:`1.5px solid ${all?C.success:C.border}`, background:all?`${C.success}04`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, color:all?C.success:C.sub, transition:'all 0.15s', marginBottom:16 }}>
-        {all?'✓ All Agreements Accepted':'Accept All Agreements'}
-      </button>
+            <div
+              style={{
+                padding:'22px 24px',
+                overflowY:'auto'
+              }}
+            >
+              {currentDocument.sections.map(
+                (section, index) => (
+                  <div
+                    key={index}
+                    style={{
+                      marginBottom:18
+                    }}
+                  >
+                    <p
+                      style={{
+                        fontSize:14,
+                        fontWeight:800,
+                        color:C.type,
+                        marginBottom:6
+                      }}
+                    >
+                      {section.heading}
+                    </p>
 
-      {/* Digital signature placeholder */}
-      <Card style={{ padding:22, opacity:0.7 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-          <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Digital Signature</p>
-          <Bdg label="Coming Soon" color={C.info} />
+                    <p
+                      style={{
+                        fontSize:13,
+                        color:C.sub,
+                        lineHeight:1.7
+                      }}
+                    >
+                      {section.text}
+                    </p>
+                  </div>
+                )
+              )}
+            </div>
+
+            <div
+              style={{
+                padding:'16px 24px',
+                borderTop:`1px solid ${C.border}`,
+                display:'flex',
+                justifyContent:'flex-end',
+                gap:10
+              }}
+            >
+              <button
+                type="button"
+                onClick={() =>
+                  setOpenDocument(null)
+                }
+                style={{
+                  padding:'10px 16px',
+                  borderRadius:10,
+                  border:`1px solid ${C.border}`,
+                  background:C.surface,
+                  color:C.sub,
+                  cursor:'pointer',
+                  fontWeight:700
+                }}
+              >
+                Close
+              </button>
+
+              <button
+                type="button"
+                onClick={markAsReadAndClose}
+                style={{
+                  padding:'10px 18px',
+                  borderRadius:10,
+                  border:'none',
+                  background:C.primary,
+                  color:'#fff',
+                  cursor:'pointer',
+                  fontWeight:800
+                }}
+              >
+                I Have Read This Document
+              </button>
+            </div>
+
+          </div>
         </div>
-        <div style={{ height:80, borderRadius:12, border:`2px dashed ${C.border}`, background:C.bg, display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <p style={{ fontSize:12, color:C.muted }}>Draw or type your signature (available in next release)</p>
-        </div>
-      </Card>
-    </StepWrap>
+      )}
+    </>
   )
 }
+
 
 // ─── Step 11: Review & Submit ─────────────────────────────────────────────────
 function Step11({ onBack, onSubmit }:{ onBack:()=>void; onSubmit:()=>void }) {
