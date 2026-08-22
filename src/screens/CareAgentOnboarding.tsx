@@ -15,7 +15,9 @@ import {
   getMyBankAccount,
   saveMyBankAccount,
   getMyAvailability,
-  saveMyAvailability
+  saveMyAvailability,
+  getMyEquipmentTransport,
+  saveMyEquipmentTransport
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -3340,38 +3342,352 @@ function Step7({
 
 
 // ─── Step 8: Equipment & Transport ────────────────────────────────────────────
-function Step8({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const [toggles, setToggles] = useState({ car:false, motorbike:false, threeWheeler:false, publicTransport:true, wheelchair:false, medEquipment:false, smartphone:true, internet:true })
-  const tog = (k:keyof typeof toggles) => setToggles(p=>({...p,[k]:!p[k]}))
+function Step8({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
+
+  const [toggles, setToggles] = useState({
+    car: false,
+    motorbike: false,
+    threeWheeler: false,
+    publicTransport: false,
+    wheelchair: false,
+    medEquipment: false,
+    smartphone: false,
+    internet: false
+  })
+
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const tog = (key: keyof typeof toggles) => {
+    setToggles(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }))
+
+    setSaveError('')
+  }
+
   const items = [
-    { k:'car'           as const, icon:'🚗',  l:'Car',                     d:'Own vehicle for transporting clients' },
-    { k:'motorbike'     as const, icon:'🏍️', l:'Motorbike',               d:'For quick local trips' },
-    { k:'threeWheeler'  as const, icon:'🛺',  l:'Three-Wheeler',           d:'Tuk-tuk for short distances' },
-    { k:'publicTransport'as const,icon:'🚌', l:'Public Transport',         d:'Bus, train, or metro' },
-    { k:'wheelchair'    as const, icon:'♿', l:'Wheelchair Equipment',     d:'Manual or electric wheelchair' },
-    { k:'medEquipment'  as const, icon:'🩺',  l:'Medical Equipment',       d:'Blood pressure, glucose monitor, etc.' },
-    { k:'smartphone'    as const, icon:'📱',  l:'Smartphone',              d:'Required for the ReadyPal app' },
-    { k:'internet'      as const, icon:'📶',  l:'Internet Access',         d:'Mobile data or home broadband' },
+    {
+      k:'car' as const,
+      icon:'🚗',
+      l:'Car',
+      d:'Own vehicle for transporting clients',
+      required:false
+    },
+    {
+      k:'motorbike' as const,
+      icon:'🏍️',
+      l:'Motorbike',
+      d:'For quick local trips',
+      required:false
+    },
+    {
+      k:'threeWheeler' as const,
+      icon:'🛺',
+      l:'Three-Wheeler',
+      d:'Tuk-tuk for short distances',
+      required:false
+    },
+    {
+      k:'publicTransport' as const,
+      icon:'🚌',
+      l:'Public Transport',
+      d:'Bus, train, or other public transport',
+      required:false
+    },
+    {
+      k:'wheelchair' as const,
+      icon:'♿',
+      l:'Wheelchair Equipment',
+      d:'Manual or electric wheelchair',
+      required:false
+    },
+    {
+      k:'medEquipment' as const,
+      icon:'🩺',
+      l:'Medical Equipment',
+      d:'Blood pressure, glucose monitor, etc.',
+      required:false
+    },
+    {
+      k:'smartphone' as const,
+      icon:'📱',
+      l:'Smartphone',
+      d:'Required for the ReadyPal app',
+      required:true
+    },
+    {
+      k:'internet' as const,
+      icon:'📶',
+      l:'Internet Access',
+      d:'Mobile data or home broadband',
+      required:true
+    }
   ]
+
+  // Load previously saved data
+  useEffect(() => {
+    const loadEquipmentTransport = async () => {
+      try {
+        const data = await getMyEquipmentTransport()
+
+        if (data) {
+          setToggles({
+            car: data.has_car ?? false,
+            motorbike: data.has_motorbike ?? false,
+            threeWheeler:
+              data.has_three_wheeler ?? false,
+            publicTransport:
+              data.uses_public_transport ?? false,
+            wheelchair:
+              data.has_wheelchair_equipment ?? false,
+            medEquipment:
+              data.has_medical_equipment ?? false,
+            smartphone:
+              data.has_smartphone ?? false,
+            internet:
+              data.has_internet_access ?? false
+          })
+        }
+
+      } catch (error) {
+        console.error(
+          'Failed to load equipment and transport:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved equipment and transport details'
+        )
+
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadEquipmentTransport()
+  }, [])
+
+  const handleSaveAndContinue = async () => {
+    try {
+      setSaveError('')
+
+      // Required validation
+      if (!toggles.smartphone) {
+        throw new Error(
+          'Smartphone is required to use ReadyPal'
+        )
+      }
+
+      if (!toggles.internet) {
+        throw new Error(
+          'Internet Access is required to use ReadyPal'
+        )
+      }
+
+      setSaving(true)
+
+      await saveMyEquipmentTransport({
+        has_car: toggles.car,
+        has_motorbike: toggles.motorbike,
+        has_three_wheeler: toggles.threeWheeler,
+        uses_public_transport: toggles.publicTransport,
+
+        has_wheelchair_equipment:
+          toggles.wheelchair,
+
+        has_medical_equipment:
+          toggles.medEquipment,
+
+        has_smartphone: toggles.smartphone,
+        has_internet_access: toggles.internet
+      })
+
+      onNext()
+
+    } catch (error) {
+      console.error(
+        'Failed to save equipment and transport:',
+        error
+      )
+
+      if (error instanceof Error) {
+        setSaveError(error.message)
+      } else {
+        setSaveError(
+          'Failed to save equipment and transport details'
+        )
+      }
+
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <StepWrap
+        step={8}
+        total={11}
+        title="Equipment & Transport"
+        desc="Let clients know how you can travel and what equipment you have available."
+        onBack={onBack}
+        onNext={() => {}}
+      >
+        <Card
+          style={{
+            padding:30,
+            textAlign:'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading equipment and transport details...
+          </p>
+        </Card>
+      </StepWrap>
+    )
+  }
+
   return (
-    <StepWrap step={8} total={11} title="Equipment & Transport" desc="Let clients know how you can travel and what equipment you have available." onBack={onBack} onNext={onNext}>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="cao-2col">
-        {items.map(item=>(
-          <Card key={item.k} style={{ padding:18, border:`1.5px solid ${toggles[item.k]?C.primary+'30':C.border}`, background:toggles[item.k]?`${C.primary}04`:C.surface }}>
-            <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:6 }}>
-              <div style={{ width:38, height:38, borderRadius:12, background:`${C.primary}08`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{item.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{item.l}</p>
-                <p style={{ fontSize:11, color:C.muted, lineHeight:1.4 }}>{item.d}</p>
+    <StepWrap
+      step={8}
+      total={11}
+      title="Equipment & Transport"
+      desc="Let clients know how you can travel and what equipment you have available."
+      onBack={onBack}
+      onNext={handleSaveAndContinue}
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+    >
+
+      <div
+        style={{
+          display:'grid',
+          gridTemplateColumns:'1fr 1fr',
+          gap:12
+        }}
+        className="cao-2col"
+      >
+        {items.map(item => (
+          <Card
+            key={item.k}
+            style={{
+              padding:18,
+              border:`1.5px solid ${
+                toggles[item.k]
+                  ? C.primary + '30'
+                  : C.border
+              }`,
+              background:
+                toggles[item.k]
+                  ? `${C.primary}04`
+                  : C.surface
+            }}
+          >
+            <div
+              style={{
+                display:'flex',
+                gap:12,
+                alignItems:'center',
+                marginBottom:6
+              }}
+            >
+              <div
+                style={{
+                  width:38,
+                  height:38,
+                  borderRadius:12,
+                  background:`${C.primary}08`,
+                  display:'flex',
+                  alignItems:'center',
+                  justifyContent:'center',
+                  fontSize:20,
+                  flexShrink:0
+                }}
+              >
+                {item.icon}
               </div>
-              <Toggle on={toggles[item.k]} onToggle={()=>tog(item.k)} />
+
+              <div style={{ flex:1 }}>
+                <p
+                  style={{
+                    fontSize:13,
+                    fontWeight:700,
+                    color:C.type
+                  }}
+                >
+                  {item.l}
+
+                  {item.required && (
+                    <span
+                      style={{
+                        color:C.error,
+                        marginLeft:3
+                      }}
+                    >
+                      *
+                    </span>
+                  )}
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.muted,
+                    lineHeight:1.4
+                  }}
+                >
+                  {item.d}
+                </p>
+              </div>
+
+              <Toggle
+                on={toggles[item.k]}
+                onToggle={() => tog(item.k)}
+              />
             </div>
           </Card>
         ))}
       </div>
+
+      {saveError && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+            background:`${C.error}08`,
+            border:`1px solid ${C.error}30`,
+            color:C.error,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
+
+
 
 // ─── Step 9: References ───────────────────────────────────────────────────────
 function Step9({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {

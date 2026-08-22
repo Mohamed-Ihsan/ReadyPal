@@ -773,3 +773,81 @@ export async function saveMyAvailability(
 
   return data
 }
+
+
+
+export type AgentEquipmentTransportInput = {
+  has_car: boolean
+  has_motorbike: boolean
+  has_three_wheeler: boolean
+  uses_public_transport: boolean
+  has_wheelchair_equipment: boolean
+  has_medical_equipment: boolean
+  has_smartphone: boolean
+  has_internet_access: boolean
+}
+
+export async function getMyEquipmentTransport() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_equipment_transport")
+    .select("*")
+    .eq("agent_id", user.id)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveMyEquipmentTransport(
+  input: AgentEquipmentTransportInput
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_equipment_transport")
+    .upsert(
+      {
+        agent_id: user.id,
+
+        has_car: input.has_car,
+        has_motorbike: input.has_motorbike,
+        has_three_wheeler: input.has_three_wheeler,
+        uses_public_transport: input.uses_public_transport,
+
+        has_wheelchair_equipment:
+          input.has_wheelchair_equipment,
+
+        has_medical_equipment:
+          input.has_medical_equipment,
+
+        has_smartphone: input.has_smartphone,
+        has_internet_access: input.has_internet_access,
+
+        updated_at: new Date().toISOString()
+      },
+      {
+        onConflict: "agent_id"
+      }
+    )
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
