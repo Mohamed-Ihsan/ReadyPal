@@ -1,5 +1,8 @@
-import { useState, useRef, useCallback, type ReactNode, type CSSProperties } from 'react'
+import { useState, useRef, useCallback, type ReactNode, type CSSProperties, useEffect } from 'react'
 import logoFull from '@/imports/20260723_170707.png'
+import { supabase } from '../lib/supabaseClient'
+import { createCareRequestFromWizard } from '../lib/api'
+import { getBeneficiaries, createBeneficiary } from '../lib/api'
 
 // ─── Brand ───────────────────────────────────────────────────────────────────
 const C = {
@@ -312,34 +315,40 @@ function StepShell({ title, sub, children, step, total, onBack, onNext, onSaveDr
 // ══════════════════════════════════════════════════════════════════════════════
 // STEP 1 — SELECT BENEFICIARY
 // ══════════════════════════════════════════════════════════════════════════════
-function Step1({ data, setData, onNext, onClose }: { data: WizardData; setData: SetData; onNext: ()=>void; onClose: ()=>void }) {
+function Step1({ data, setData, onNext, onClose, clientId }: { data: WizardData; setData: SetData; onNext: ()=>void; onClose: ()=>void; clientId: string }) {
   const [search, setSearch] = useState('')
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [newAge, setNewAge] = useState('')
   const [newRel, setNewRel] = useState('')
   const [newLoc, setNewLoc] = useState('')
+  const [beneficiaries, setBeneficiaries] = useState<any[]>([])
 
-  const beneficiaries = [
-    { id:'b1', name:'Amara Fernando',   age:74, rel:'Mother',      loc:'Colombo 07', health:'Stable',          notes:'Diabetes, hypertension' },
-    { id:'b2', name:'Nimal Perera',     age:81, rel:'Father',      loc:'Kandy',       health:'Needs Attention', notes:'Cataract surgery recovery' },
-    { id:'b3', name:'Kamala Fernando',  age:68, rel:'Aunt',        loc:'Galle',       health:'Good',            notes:'Active, needs transport only' },
-    { id:'b4', name:'Sunil Jayasinghe', age:78, rel:'Grandfather', loc:'Negombo',    health:'Stable',          notes:'Regular medication checks' },
-  ]
+  useEffect(() => {
+    if (!clientId) return
+    getBeneficiaries(clientId).then(setBeneficiaries).catch(console.error)
+  }, [clientId])
 
-  const healthColor = { 'Stable':'#22C55E', 'Good':'#3B82F6', 'Needs Attention':'#F59E0B' }
-  const filtered = beneficiaries.filter(b => b.name.toLowerCase().includes(search.toLowerCase()))
+  const healthColor: Record<string,string> = { 'active':'#22C55E', 'pending':'#F59E0B', 'archived':'#9AAAB0' }
+  const filtered = beneficiaries.filter(b => (b.name||'').toLowerCase().includes(search.toLowerCase()))
+
+  const handleAdd = async () => {
+    if (!newName) return
+    const row = await createBeneficiary({ name: newName, age: newAge ? Number(newAge) : null, relationship: newRel, city: newLoc }, clientId)
+    setBeneficiaries(prev => [...prev, row])
+    setData(d => ({ ...d, beneficiaryId: row.id, beneficiaryName: row.name }))
+    setShowNew(false)
+    setNewName(''); setNewAge(''); setNewRel(''); setNewLoc('')
+  }
 
   return (
     <StepShell title="Who needs care?" sub="Select the person who will receive care, or add a new beneficiary." step={1} total={7} onNext={onNext} onSaveDraft={() => {}} nextDisabled={!data.beneficiaryId} onClose={onClose}>
-      {/* Search */}
       <div style={{ position:'relative', marginBottom:20 }}>
         <span style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', color:C.muted, display:'flex' }}>{I.search}</span>
         <input placeholder="Search beneficiaries…" value={search} onChange={e => setSearch(e.target.value)}
           style={{ width:'100%', padding:'11px 14px 11px 36px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#FAFAFA', boxSizing:'border-box' }} />
       </div>
 
-      {/* Beneficiary cards */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:20 }} className="bene-2col">
         {filtered.map(b => {
           const selected = data.beneficiaryId === b.id
@@ -351,36 +360,31 @@ function Step1({ data, setData, onNext, onClose }: { data: WizardData; setData: 
               )}
               <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:12 }}>
                 <div style={{ width:48, height:48, borderRadius:'50%', background:`${C.primary}14`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, fontWeight:900, fontSize:18, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
-                  {b.name.split(' ').map(w => w[0]).join('').slice(0,2)}
+                  {(b.name||'?').split(' ').map((w:string) => w[0]).join('').slice(0,2)}
                 </div>
                 <div style={{ flex:1, minWidth:0 }}>
                   <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{b.name}</p>
-                  <p style={{ fontSize:12, color:C.muted }}>Age {b.age} · {b.rel}</p>
+                  <p style={{ fontSize:12, color:C.muted }}>{b.relationship || 'Beneficiary'}</p>
                 </div>
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8 }}>
                 <span style={{ display:'flex', color:C.muted }}>{I.pin}</span>
-                <span style={{ fontSize:12, color:C.sub }}>{b.loc}</span>
+                <span style={{ fontSize:12, color:C.sub }}>{b.city || '—'}</span>
               </div>
               <div style={{ display:'flex', gap:6 }}>
-                <span style={{ padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:700, background:`${(healthColor as Record<string,string>)[b.health]}14`, color:(healthColor as Record<string,string>)[b.health] }}>{b.health}</span>
+                <span style={{ padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:700, background:`${healthColor[b.status]||'#9AAAB0'}14`, color:healthColor[b.status]||'#9AAAB0' }}>{b.status || 'active'}</span>
               </div>
-              <p style={{ fontSize:12, color:C.muted, marginTop:8, lineHeight:1.4 }}>{b.notes}</p>
             </div>
           )
         })}
 
-        {/* Add new card */}
-        <div onClick={() => setShowNew(true)} style={{ padding:20, borderRadius:16, border:`2px dashed ${C.border}`, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:8, minHeight:140, transition:'border-color 0.15s' }}
-          onMouseEnter={e => (e.currentTarget.style.borderColor = C.primary)}
-          onMouseLeave={e => (e.currentTarget.style.borderColor = C.border)}>
+        <div onClick={() => setShowNew(true)} style={{ padding:20, borderRadius:16, border:`2px dashed ${C.border}`, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:8, minHeight:140 }}>
           <div style={{ width:44, height:44, borderRadius:'50%', background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary }}>{I.plus}</div>
           <p style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>Add Beneficiary</p>
           <p style={{ fontSize:12, color:C.muted, textAlign:'center' }}>Register a new person to receive care</p>
         </div>
       </div>
 
-      {/* Add new form */}
       {showNew && (
         <div style={{ padding:24, borderRadius:16, border:`1.5px solid ${C.border}`, background:'#FAFAFA', marginBottom:20 }}>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
@@ -394,9 +398,7 @@ function Step1({ data, setData, onNext, onClose }: { data: WizardData; setData: 
             <SelectField label="City / Town" value={newLoc} onChange={setNewLoc} options={['Colombo','Kandy','Galle','Negombo','Kurunegala','Jaffna','Batticaloa']} icon={I.pin} />
           </div>
           <div style={{ marginTop:14 }}>
-            <Btn label="Add Beneficiary" variant="primary" onClick={() => {
-              if (newName) { setData(d => ({ ...d, beneficiaryId:'new', beneficiaryName: newName })); setShowNew(false) }
-            }} />
+            <Btn label="Add Beneficiary" variant="primary" onClick={handleAdd} />
           </div>
         </div>
       )}
@@ -1060,7 +1062,26 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
 
   const saveDraft = () => { setDraftSaved(true); setTimeout(() => setDraftSaved(false), 2500) }
 
-  const stepProps = { data, setData, onNext: next, onBack: back, onClose: handleClose }
+  const [submitError, setSubmitError] = useState('')
+
+  const submitRequest = async () => {
+    setSubmitError('')
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSubmitError('You must be logged in.'); return }
+    try {
+      await createCareRequestFromWizard(data, user.id)
+      next()
+    } catch (err: any) {
+      setSubmitError(err.message)
+    }
+  }
+
+  const [clientId, setClientId] = useState('')
+  useEffect(() => {
+  supabase.auth.getUser().then(({ data }) => setClientId(data.user?.id || ''))
+  }, [])
+
+  const stepProps = { data, setData, onNext: next, onBack: back, onClose: handleClose, onSaveDraft: saveDraft, clientId }
 
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden', fontFamily:'Manrope,sans-serif', background:C.bg }}>
@@ -1080,7 +1101,7 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
               {step === 4 && <Step4 {...stepProps} />}
               {step === 5 && <Step5 {...stepProps} />}
               {step === 6 && <Step6 {...stepProps} />}
-              {step === 7 && <Step7 {...stepProps} goTo={goTo} />}
+              {step === 7 && <Step7 {...stepProps} onNext={submitRequest} goTo={goTo} />}
             </>
           )
           : <Step8 onDashboard={handleClose} onViewRequests={handleClose} />
@@ -1091,6 +1112,13 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
       {draftSaved && (
         <div style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:C.success, color:'#fff', padding:'10px 20px', borderRadius:12, fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', boxShadow:'0 4px 16px rgba(0,0,0,0.15)', display:'flex', alignItems:'center', gap:8, zIndex:1000 }}>
           {I.check} Draft saved successfully
+        </div>
+      )}
+
+      {/* Error toast */}
+      {submitError && (
+        <div style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:C.error, color:'#fff', padding:'10px 20px', borderRadius:12, fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', boxShadow:'0 4px 16px rgba(0,0,0,0.15)', display:'flex', alignItems:'center', gap:8, zIndex:1000 }}>
+          {I.alert} {submitError}
         </div>
       )}
     </div>

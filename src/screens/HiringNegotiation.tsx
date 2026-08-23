@@ -1,4 +1,7 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useParams } from 'react-router-dom'
+import { supabase } from '../lib/supabaseClient'
+import { getCareRequestDetail, getApplicationsForRequest, updateApplicationStatus, hireApplication } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -163,7 +166,7 @@ const APPLICATIONS: Application[] = [
   },
 ]
 
-const CARE_REQUEST = {
+let CARE_REQUEST = {
   title:'Home Wellness Care — Amara Fernando',
   service:'Hospital Companion + Medication Management',
   beneficiary:'Amara Fernando, 74 · Colombo 07',
@@ -1107,14 +1110,33 @@ function SuccessScreen({ app, onDashboard }: { app:Application; onDashboard:()=>
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
 export default function HiringNegotiation() {
+  const { id } = useParams()
+  const [, forceUpdate] = useState(0)
   const [subView, setSubView]           = useState<SubView>('dashboard')
-  const [selectedId, setSelectedId]     = useState<string>('ap1')
-  const [shortlist, setShortlist]       = useState<Set<string>>(new Set(['ap1']))
+  const [selectedId, setSelectedId]     = useState<string>('')
+  const [shortlist, setShortlist]       = useState<Set<string>>(new Set())
   const [compareIds, setCompareIds]     = useState<Set<string>>(new Set())
   const [showHireModal, setShowHireModal] = useState(false)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectId, setRejectId]         = useState<string>('')
-  const [apps, setApps]                 = useState<Application[]>(APPLICATIONS)
+  const [apps, setApps]                 = useState<Application[]>([])
+  const [clientId, setClientId]         = useState('')
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setClientId(data.user?.id || ''))
+  }, [])
+
+  useEffect(() => {
+    if (!id) return
+    getCareRequestDetail(id).then(real => {
+      Object.assign(CARE_REQUEST, real)
+      forceUpdate(n => n + 1)
+    }).catch(console.error)
+    getApplicationsForRequest(id).then(loaded => {
+      setApps(loaded)
+      if (loaded[0]) setSelectedId(loaded[0].id)
+    }).catch(console.error)
+  }, [id])
 
   const selected = apps.find(a=>a.id===selectedId) ?? apps[0]
 
@@ -1126,8 +1148,19 @@ export default function HiringNegotiation() {
   const doNegotiate = (id:string) => { setSelectedId(id); setSubView('negotiate') }
   const viewProposal = (id:string) => { setSelectedId(id); setSubView('proposal') }
 
-  const confirmHire = () => { setShowHireModal(false); setSubView('success') }
-  const confirmReject = () => {
+  const confirmHire = async () => {
+    const app: any = apps.find(a => a.id === selectedId)
+    if (!app || !id) return
+    try {
+      await hireApplication(selectedId, id, app.agentId, clientId, '')
+      setShowHireModal(false)
+      setSubView('success')
+    } catch (err) {
+      console.error(err)
+    }
+  }
+  const confirmReject = async () => {
+    await updateApplicationStatus(rejectId, 'declined')
     setApps(prev=>prev.map(a=>a.id===rejectId?{...a,status:'Rejected' as const}:a))
     setShowRejectModal(false)
   }

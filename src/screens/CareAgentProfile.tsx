@@ -1,4 +1,6 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useParams } from 'react-router-dom'
+import { getAgentDetail } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -812,9 +814,19 @@ function JourneyTimeline() {
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
 export default function CareAgentProfile() {
+  const { id } = useParams()
+  const [, forceUpdate] = useState(0)
   const [tab, setTab] = useState<Tab>('overview')
   const [fav, setFav] = useState(false)
   const [hired, setHired] = useState(false)
+
+  useEffect(() => {
+    if (!id) return
+    getAgentDetail(id).then(real => {
+      Object.assign(AGENT, real)
+      forceUpdate(n => n + 1)
+    }).catch(console.error)
+  }, [id])
 
   return (
     <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>

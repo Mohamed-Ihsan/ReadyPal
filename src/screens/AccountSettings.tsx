@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { getCurrentProfile, updateProfile } from '../lib/api'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -321,7 +322,7 @@ function AccountHome({ onNav }: { onNav:(s:Section)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // PROFILE
 // ──────────────────────────────────────────────────────────────────────────────
-function Profile({ onToast }: { onToast:(m:string)=>void }) {
+function Profile({ profile, onSave }: { profile:any; onSave:(f:Record<string,any>)=>void }) {
   return (
     <Page>
       <SectionHeader title="Profile" desc="Your public-facing identity on ReadyPal." />
@@ -334,20 +335,21 @@ function Profile({ onToast }: { onToast:(m:string)=>void }) {
         </div>
         <div style={{ padding:'0 28px 28px', position:'relative' }}>
           <div style={{ position:'relative', width:88, marginTop:-44, marginBottom:16, display:'inline-block' }}>
-            <div style={{ width:88, height:88, borderRadius:'50%', background:`${C.primary}18`, border:`4px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:30, color:C.primary, fontFamily:'Manrope,sans-serif', boxShadow:'0 4px 16px rgba(44,62,67,0.14)' }}>MI</div>
+            <div style={{ width:88, height:88, borderRadius:'50%', background:`${C.primary}18`, border:`4px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:30, color:C.primary, fontFamily:'Manrope,sans-serif', boxShadow:'0 4px 16px rgba(44,62,67,0.14)' }}>
+              {(profile.full_name || '?').split(' ').map((n:string)=>n[0]).join('').slice(0,2).toUpperCase()}
+            </div>
             <button style={{ position:'absolute', bottom:2, right:2, width:26, height:26, borderRadius:'50%', background:C.primary, border:`2px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'#fff' }}>
               <span style={{ display:'flex', transform:'scale(0.75)' }}>{I.camera}</span>
             </button>
           </div>
-          <Field label="Full Name"       value="Mohamed Ihsan"   onSave={()=>onToast('Profile updated')} />
-          <Field label="Preferred Name"  value="Ihsan"           onSave={()=>onToast('Profile updated')} />
-          <Field label="Email Address"   value="ihsan.m@gmail.com" verified onSave={()=>onToast('Email updated — verify new address')} />
-          <Field label="Phone Number"    value="+94 77 123 4567" verified onSave={()=>onToast('Phone updated')} />
-          <Field label="Country"         value="Sri Lanka"       onSave={()=>onToast('Profile updated')} />
-          <Field label="Timezone"        value="Asia/Colombo (GMT+5:30)" onSave={()=>onToast('Timezone updated')} />
+          <Field label="Full Name"       value={profile.full_name || ''}     onSave={v=>onSave({full_name:v})} />
+          <Field label="Preferred Name"  value={profile.preferred_name || ''} onSave={v=>onSave({preferred_name:v})} />
+          <Field label="Email Address"   value={profile.email || ''}          verified onSave={v=>onSave({email:v})} />
+          <Field label="Phone Number"    value={profile.phone || ''}          verified onSave={v=>onSave({phone:v})} />
+          <Field label="Country"         value={profile.nationality || ''}    onSave={v=>onSave({nationality:v})} />
           <div style={{ padding:'14px 0' }}>
             <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:4 }}>Member Since</p>
-            <p style={{ fontSize:14, color:C.type }}>January 2024</p>
+            <p style={{ fontSize:14, color:C.type }}>{profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US',{month:'long',year:'numeric'}) : '—'}</p>
           </div>
           <div style={{ display:'flex', gap:8, alignItems:'center', marginTop:4 }}>
             <Bdg label="Verified Account" color={C.success} />
@@ -362,19 +364,17 @@ function Profile({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // PERSONAL INFORMATION
 // ──────────────────────────────────────────────────────────────────────────────
-function PersonalInfo({ onToast }: { onToast:(m:string)=>void }) {
+function PersonalInfo({ profile, onSave }: { profile:any; onSave:(f:Record<string,any>)=>void }) {
   return (
     <Page>
       <SectionHeader title="Personal Information" desc="Used to personalise your care experience." />
       <Card style={{ padding:'8px 24px 24px' }}>
-        <Field label="Full Name"                    value="Mohamed Ihsan"        onSave={()=>onToast('Saved')} />
-        <Field label="Date of Birth"                value="15 March 1985"        onSave={()=>onToast('Saved')} />
-        <Field label="Gender"                       value="Male"                 onSave={()=>onToast('Saved')} />
-        <Field label="Nationality"                  value="Sri Lankan"           onSave={()=>onToast('Saved')} />
-        <Field label="Occupation"                   value="Software Engineer"    onSave={()=>onToast('Saved')} />
-        <Field label="Preferred Language"           value="English"              onSave={()=>onToast('Saved')} />
-        <Field label="Relationship to Beneficiary"  value="Son"                  onSave={()=>onToast('Saved')} />
-        <Field label="Emergency Contact"            value="Fathima Ihsan · +94 77 987 6543" onSave={()=>onToast('Saved')} />
+        <Field label="Full Name"                    value={profile.full_name || ''}   onSave={v=>onSave({full_name:v})} />
+        <Field label="Date of Birth"                 value={profile.dob || ''}          onSave={v=>onSave({dob:v})} />
+        <Field label="Gender"                        value={profile.gender || ''}       onSave={v=>onSave({gender:v})} />
+        <Field label="Nationality"                   value={profile.nationality || ''} onSave={v=>onSave({nationality:v})} />
+        <Field label="NIC"                            value={profile.nic || ''}          onSave={v=>onSave({nic:v})} />
+        <Field label="Emergency Contact"              value={profile.emergency_contact ? `${profile.emergency_contact.name} · ${profile.emergency_contact.phone}` : ''} onSave={v=>onSave({emergency_contact:{name:v.split('·')[0]?.trim(), phone:v.split('·')[1]?.trim()}})} />
       </Card>
     </Page>
   )
@@ -383,20 +383,16 @@ function PersonalInfo({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // CONTACT INFORMATION
 // ──────────────────────────────────────────────────────────────────────────────
-function ContactInfo({ onToast }: { onToast:(m:string)=>void }) {
+function ContactInfo({ profile, onSave }: { profile:any; onSave:(f:Record<string,any>)=>void }) {
   return (
     <Page>
       <SectionHeader title="Contact Information" desc="How we and your care agents can reach you." />
       <Card style={{ padding:'8px 24px 24px' }}>
-        <Field label="Primary Email"   value="ihsan.m@gmail.com"        verified onSave={()=>onToast('Saved — verify your new email')} hint="Used for login and important account notices." />
-        <Field label="Secondary Email" value="ihsan.work@company.lk"    onSave={()=>onToast('Saved')} hint="Optional backup email." />
-        <Field label="Primary Phone"   value="+94 77 123 4567"          verified onSave={()=>onToast('Saved')} hint="Used for SMS alerts and 2FA." />
-        <Field label="Secondary Phone" value="+94 11 234 5678"          onSave={()=>onToast('Saved')} />
-        <Field label="Address Line 1"  value="12 Rosemead Place"        onSave={()=>onToast('Saved')} />
-        <Field label="Address Line 2"  value="Colombo 07"               onSave={()=>onToast('Saved')} />
-        <Field label="City"            value="Colombo"                  onSave={()=>onToast('Saved')} />
-        <Field label="Country"         value="Sri Lanka"                onSave={()=>onToast('Saved')} />
-        <Field label="Postal Code"     value="00700"                    onSave={()=>onToast('Saved')} />
+        <Field label="Primary Email"   value={profile.email || ''}        verified onSave={v=>onSave({email:v})} hint="Used for login and important account notices." />
+        <Field label="Primary Phone"   value={profile.phone || ''}        verified onSave={v=>onSave({phone:v})} hint="Used for SMS alerts and 2FA." />
+        <Field label="Full Address"    value={profile.full_address || ''} onSave={v=>onSave({full_address:v})} />
+        <Field label="City"            value={profile.city || ''}         onSave={v=>onSave({city:v})} />
+        <Field label="Postal Code"     value={profile.postal_code || ''}  onSave={v=>onSave({postal_code:v})} />
       </Card>
     </Page>
   )
@@ -1096,20 +1092,33 @@ export default function AccountSettings() {
   const [section, setSection] = useState<Section>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [profile, setProfile] = useState<any>(null)
+
+  useEffect(() => {
+    getCurrentProfile().then(setProfile).catch(console.error)
+  }, [])
 
   const showToast = (msg:string) => {
     setToast(msg)
     setTimeout(()=>setToast(null), 2800)
   }
 
+  const save = async (fields: Record<string, any>) => {
+    await updateProfile(fields)
+    setProfile((p: any) => ({ ...p, ...fields }))
+    showToast('Saved')
+  }
+
   const groups = [...new Set(NAV_ITEMS.map(n=>n.group))]
+
+  if (!profile) return <p style={{ padding: 40 }}>Loading...</p>
 
   const renderSection = () => {
     switch(section) {
       case 'home':          return <AccountHome onNav={s=>setSection(s)} />
-      case 'profile':       return <Profile onToast={showToast} />
-      case 'personal':      return <PersonalInfo onToast={showToast} />
-      case 'contact':       return <ContactInfo onToast={showToast} />
+      case 'profile':       return <Profile profile={profile} onSave={save} />
+      case 'personal':      return <PersonalInfo profile={profile} onSave={save} />
+      case 'contact':       return <ContactInfo profile={profile} onSave={save} />
       case 'security':      return <Security onToast={showToast} />
       case 'loginHistory':  return <LoginHistory onToast={showToast} />
       case 'devices':       return <Devices onToast={showToast} />
