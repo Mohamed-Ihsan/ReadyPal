@@ -219,7 +219,13 @@ const STEPS = [
 
 // ─── Progress sidebar ─────────────────────────────────────────────────────────
 function ProgressSidebar({ current, onGoto, completed }:{ current:number; onGoto:(n:number)=>void; completed:Set<number> }) {
-  const pct = Math.round((completed.size / STEPS.length) * 100)
+  const REGISTRATION_STEPS = 10
+  const pct = Math.min(
+    100,
+    Math.round(
+      (completed.size / REGISTRATION_STEPS) * 100
+    )
+  )
   return (
     <div style={{ width:240, background:C.surface, borderRight:`1px solid ${C.border}`, padding:'28px 0', display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
       <div style={{ padding:'0 20px 20px' }}>
@@ -12467,8 +12473,299 @@ export default function CareAgentOnboarding() {
   const [editingFromReview, setEditingFromReview] = useState(false)
   const [toast, setToast] = useState<string|null>(null)
   const [submitted, setSubmitted] = useState(false)
+  const [progressLoading, setProgressLoading] = useState(true)
 
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),2800) }
+
+  useEffect(() => {
+    let cancelled = false
+    const loadRegistrationProgress = async () => {
+      try {
+        setProgressLoading(true)
+        const [
+          profile,
+          agentDetails,
+          skills,
+          certifications,
+          identityDocs,
+          bankAccount,
+          availability,
+          equipment,
+          references,
+          agreements
+        ] = await Promise.all([
+
+          getMyProfile(),
+          getMyAgentDetails(),
+          getMyAgentSkills(),
+          getMyCertifications(),
+          getMyIdentityDocuments(),
+          getMyBankAccount(),
+          getMyAvailability(),
+          getMyEquipmentTransport(),
+          getMyReferences(),
+          getMyAgreements()
+        ])
+
+        if (cancelled) return
+
+        const restoredCompleted =
+          new Set<number>()
+
+        // ─────────────────────────────
+        // STEP 1 — Personal Information
+        // ─────────────────────────────
+        const step1Complete =
+          Boolean(profile?.full_name?.trim()) &&
+          Boolean(profile?.nic?.trim()) &&
+          Boolean(profile?.date_of_birth) &&
+          Boolean(profile?.email?.trim()) &&
+          Boolean(profile?.phone?.trim()) &&
+          Boolean(profile?.address?.trim()) &&
+          Boolean(profile?.city?.trim())
+
+        if (step1Complete) {
+          restoredCompleted.add(1)
+        }
+
+        // ─────────────────────────────
+        // STEP 2 — Professional Profile
+        // ─────────────────────────────
+        const step2Complete =
+          Boolean(
+            agentDetails
+              ?.professional_headline
+              ?.trim()
+          ) &&
+          Boolean(
+            agentDetails
+              ?.bio
+              ?.trim()
+          ) &&
+          agentDetails
+            ?.experience_years != null &&
+          Array.isArray(
+            agentDetails?.languages
+          ) &&
+          agentDetails.languages.length > 0
+
+        if (step2Complete) {
+          restoredCompleted.add(2)
+        }
+
+        // ─────────────────────────────
+        // STEP 3 — Skills & Services
+        // ─────────────────────────────
+        const step3Complete =
+          Array.isArray(skills) &&
+          skills.length > 0
+
+        if (step3Complete) {
+          restoredCompleted.add(3)
+        }
+
+        // ─────────────────────────────
+        // STEP 4 — Certifications
+        // ─────────────────────────────
+        const step4Complete =
+          Array.isArray(certifications) &&
+          certifications.length > 0
+
+        if (step4Complete) {
+          restoredCompleted.add(4)
+        }
+
+        // ─────────────────────────────
+        // STEP 5 — Identity Verification
+        // ─────────────────────────────
+        const identityTypes =
+          Array.isArray(identityDocs)
+            ? identityDocs.map(
+                (doc:any) =>
+                  doc.doc_type
+              )
+            : []
+
+        const requiredIdentityTypes = [
+          'nic-front',
+          'nic-back',
+          'police-clearance-certificate',
+          'medical-fitness-certificate'
+        ]
+
+        const step5Complete =
+          requiredIdentityTypes.every(
+            type =>
+              identityTypes.includes(type)
+          )
+
+        if (step5Complete) {
+          restoredCompleted.add(5)
+        }
+
+        // ─────────────────────────────
+        // STEP 6 — Banking & Payouts
+        // ─────────────────────────────
+        const step6Complete =
+          Boolean(
+            bankAccount
+              ?.bank_name
+              ?.trim()
+          ) &&
+          Boolean(
+            bankAccount
+              ?.branch
+              ?.trim()
+          ) &&
+          Boolean(
+            bankAccount
+              ?.account_name
+              ?.trim()
+          ) &&
+          Boolean(
+            bankAccount
+              ?.account_number
+              ?.trim()
+          )
+
+        if (step6Complete) {
+          restoredCompleted.add(6)
+        }
+
+        // ─────────────────────────────
+        // STEP 7 — Availability
+        // ─────────────────────────────
+        const step7Complete =
+          Array.isArray(
+            availability?.working_days
+          ) &&
+          availability.working_days.length > 0 &&
+          Boolean(
+            availability?.preferred_shift
+          ) &&
+          availability
+            ?.max_weekly_hours != null &&
+          availability.max_weekly_hours >= 10 &&
+          availability
+            ?.max_travel_distance_km != null &&
+          availability.max_travel_distance_km >= 5
+
+        if (step7Complete) {
+          restoredCompleted.add(7)
+        }
+
+        // ─────────────────────────────
+        // STEP 8 — Equipment & Transport
+        // ─────────────────────────────
+        const step8Complete =
+          equipment?.has_smartphone === true &&
+          equipment?.has_internet_access === true
+
+        if (step8Complete) {
+          restoredCompleted.add(8)
+        }
+
+        // ─────────────────────────────
+        // STEP 9 — References
+        // ─────────────────────────────
+        const validReferences =
+          Array.isArray(references)
+            ? references.filter(
+                (reference:any) =>
+                  Boolean(
+                    reference
+                      ?.full_name
+                      ?.trim()
+                  ) &&
+                  Boolean(
+                    reference
+                      ?.organisation
+                      ?.trim()
+                  ) &&
+                  Boolean(
+                    reference
+                      ?.relationship
+                      ?.trim()
+                  ) &&
+                  (
+                    Boolean(
+                      reference
+                        ?.phone
+                        ?.trim()
+                    ) ||
+                    Boolean(
+                      reference
+                        ?.email
+                        ?.trim()
+                    )
+                  )
+              )
+            : []
+
+        const step9Complete =
+          validReferences.length >= 2
+
+        if (step9Complete) {
+          restoredCompleted.add(9)
+        }
+
+        // ─────────────────────────────
+        // STEP 10 — Agreements
+        // ─────────────────────────────
+        const step10Complete =
+          agreements?.terms_accepted === true &&
+          agreements?.privacy_accepted === true &&
+          agreements?.conduct_accepted === true &&
+          agreements?.care_standards_accepted === true &&
+          agreements?.background_check_accepted === true
+
+        if (step10Complete) {
+          restoredCompleted.add(10)
+        }
+
+        setCompleted(
+          restoredCompleted
+        )
+
+        const firstIncompleteStep = [
+          1,2,3,4,5,6,7,8,9,10
+        ].find(
+          stepNumber =>
+            !restoredCompleted.has(stepNumber)
+        )
+
+        if (firstIncompleteStep) {
+          setStep(firstIncompleteStep)
+        } else {
+          setStep(11)
+        }
+
+      } catch (error) {
+
+        console.error(
+          'Failed to restore registration progress:',
+          error
+        )
+
+        // Progress load fail unath
+        // onboarding page eka block karanne naha.
+
+      } finally {
+
+        if (!cancelled) {
+          setProgressLoading(false)
+        }
+
+      }
+    }
+
+    loadRegistrationProgress()
+
+    return () => {
+      cancelled = true
+    }
+
+  }, [])
 
   const advance = (n:number) => {
     setCompleted(p => new Set([...p, n]))
@@ -12508,6 +12805,23 @@ export default function CareAgentOnboarding() {
       case 11: return (<Step11 onBack={() => setStep(10)} onGoto={editFromReview} onSubmit={() => setSubmitted(true)}/>)
       default: return <Step1 onBack={()=>setSub('home')} onNext={()=>advance(1)} />
     }
+  }
+
+  if (progressLoading) {
+    return (
+      <div
+        style={{
+          minHeight:'100vh',
+          display:'flex',
+          alignItems:'center',
+          justifyContent:'center'
+        }}
+      >
+        <p style={{ color:C.muted }}>
+          Loading your registration...
+        </p>
+      </div>
+    )
   }
 
   return (
