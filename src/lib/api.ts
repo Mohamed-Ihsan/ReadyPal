@@ -81,7 +81,7 @@ export async function getMyAgentDetails() {
     .from("agent_details")
     .select("*")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (error) {
     throw error
@@ -1096,6 +1096,32 @@ export async function saveMyAgreements(
         onConflict: "agent_id"
       }
     )
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+
+
+export async function submitMyCareAgentApplication() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_details")
+    .update({
+      application_status: "under_review",
+      submitted_at: new Date().toISOString()
+    })
+    .eq("id", user.id)
     .select()
     .single()
 

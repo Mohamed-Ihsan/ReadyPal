@@ -1,4 +1,4 @@
-import { useState,useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useState,useEffect, type ReactNode,useRef, type CSSProperties } from 'react'
 import { 
   updateMyProfile,
   uploadProfilePhoto,
@@ -24,7 +24,8 @@ import {
   saveMyRecommendationLetter,
   deleteMyRecommendationLetter,
   getMyAgreements,
-  saveMyAgreements
+  saveMyAgreements,
+  submitMyCareAgentApplication
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -367,7 +368,28 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
 }
 
 // ─── Step wrapper ─────────────────────────────────────────────────────────────
-function StepWrap({ step, total, title, desc, children, onBack, onNext, nextLabel='Save & Continue' }:{ step:number; total:number; title:string; desc:string; children:ReactNode; onBack:()=>void; onNext:()=>void; nextLabel?:string }) {
+function StepWrap({
+  step,
+  total,
+  title,
+  desc,
+  children,
+  onBack,
+  onNext,
+  nextLabel='Save & Continue',
+  nextDisabled=false
+}:{
+  step:number
+  total:number
+  title:string
+  desc:string
+  children:ReactNode
+  onBack:()=>void
+  onNext:()=>void
+  nextLabel?:string
+  nextDisabled?:boolean
+})
+{
   return (
     <div style={{ flex:1, overflowY:'auto', padding:'32px 36px 80px' }}>
       <div style={{ maxWidth:680 }}>
@@ -383,7 +405,7 @@ function StepWrap({ step, total, title, desc, children, onBack, onNext, nextLabe
         {/* Nav */}
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:32, paddingTop:24, borderTop:`1px solid ${C.border}` }}>
           <Btn label="Back" variant="ghost" icon={I.chevL} onClick={onBack} />
-          <Btn label={nextLabel} icon={I.chevR} onClick={onNext} />
+          <Btn label={nextLabel} icon={I.chevR} onClick={onNext} disabled={nextDisabled}/>
         </div>
       </div>
     </div>
@@ -391,7 +413,15 @@ function StepWrap({ step, total, title, desc, children, onBack, onNext, nextLabe
 }
 
 // ─── Step 1: Personal Information ─────────────────────────────────────────────
-function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
+// ─── Step 1: Personal Information ─────────────────────────────────────────────
+function Step1({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
+
   const [photoUrl, setPhotoUrl] = useState('')
   const [selectedPhoto, setSelectedPhoto] = useState<File | null>(null)
   const [photoUploading, setPhotoUploading] = useState(false)
@@ -418,23 +448,68 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
-  const f = (k:string) => (v:string) =>
-    setForm(p => ({ ...p, [k]: v }))
+  // Used to detect whether the user changed saved data
+  const [initialData, setInitialData] = useState('')
+  const [hasSavedData, setHasSavedData] = useState(false)
+  const [loadingProfile, setLoadingProfile] = useState(true)
 
+  const f = (key:string) => (value:string) => {
+    setForm(prev => ({
+      ...prev,
+      [key]: value
+    }))
+  }
 
+  // Current editable values
+  // For a newly selected photo we use the file metadata instead of
+  // the temporary browser object URL.
+  const currentData = JSON.stringify({
+    form,
+    photo: selectedPhoto
+      ? {
+          name: selectedPhoto.name,
+          size: selectedPhoto.size,
+          type: selectedPhoto.type,
+          lastModified: selectedPhoto.lastModified
+        }
+      : photoUrl
+  })
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  // First-time user → can save.
+  // Existing saved data → must change something first.
+  const canSave =
+    !loadingProfile &&
+    (!hasSavedData || hasChanges)
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Load saved Personal Information
+  // ────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const loadProfile = async () => {
       try {
+        setLoadingProfile(true)
+
         const profile = await getMyProfile()
 
-        if (!profile) return
+        if (!profile) {
+          setHasSavedData(false)
+          return
+        }
 
-        const nameParts = (profile.full_name || '').trim().split(' ')
+        const nameParts =
+          (profile.full_name || '')
+            .trim()
+            .split(' ')
+            .filter(Boolean)
 
         const firstName = nameParts[0] || ''
         const lastName = nameParts.slice(1).join(' ')
 
-        setForm({
+        const loadedForm = {
           firstName,
           lastName,
           preferred: profile.preferred_name || '',
@@ -450,22 +525,53 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
           district: profile.district || '',
           city: profile.city || '',
           postal: profile.postal_code || ''
-        })
-
-        if (profile.avatar_url) {
-          setPhotoUrl(profile.avatar_url)
         }
 
+        const loadedPhotoUrl =
+          profile.avatar_url || ''
+
+        setForm(loadedForm)
+        setPhotoUrl(loadedPhotoUrl)
+        setSelectedPhoto(null)
+
+        // Consider it saved only when Step 1 actually contains data.
+        const profileHasData =
+          Boolean(profile.full_name) ||
+          Boolean(profile.nic) ||
+          Boolean(profile.date_of_birth) ||
+          Boolean(profile.phone) ||
+          Boolean(profile.address)
+
+        setHasSavedData(profileHasData)
+
+        setInitialData(
+          JSON.stringify({
+            form: loadedForm,
+            photo: loadedPhotoUrl
+          })
+        )
+
       } catch (error) {
-        console.error('Failed to load personal information:', error)
+        console.error(
+          'Failed to load personal information:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved personal information'
+        )
+
+      } finally {
+        setLoadingProfile(false)
       }
     }
 
     loadProfile()
   }, [])
 
-
-
+  // ────────────────────────────────────────────────────────────────────────────
+  // Select / Change profile photo
+  // ────────────────────────────────────────────────────────────────────────────
   const handlePhotoUpload = (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -479,98 +585,193 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     }
 
     if (file.size > 5 * 1024 * 1024) {
-      setPhotoError('Image must be smaller than 5MB')
+      setPhotoError(
+        'Image must be smaller than 5MB'
+      )
       return
     }
 
     setPhotoError('')
+    setSaveError('')
     setSelectedPhoto(file)
 
-    const previewUrl = URL.createObjectURL(file)
+    const previewUrl =
+      URL.createObjectURL(file)
+
     setPhotoUrl(previewUrl)
+
+    // Allows selecting the same file again later.
+    event.target.value = ''
   }
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Save Step 1
+  // ────────────────────────────────────────────────────────────────────────────
   const handleSaveAndContinue = async () => {
     try {
+      if (!canSave || saving) {
+        return
+      }
+
       setSaving(true)
       setSaveError('')
+      setPhotoError('')
 
+      // Required field validation
       if (!form.firstName.trim()) {
-        throw new Error('First name is required')
+        throw new Error(
+          'First name is required'
+        )
       }
 
       if (!form.lastName.trim()) {
-        throw new Error('Last name is required')
+        throw new Error(
+          'Last name is required'
+        )
       }
 
       if (!form.nic.trim()) {
-        throw new Error('NIC is required')
+        throw new Error(
+          'NIC is required'
+        )
       }
 
       if (!form.dob) {
-        throw new Error('Date of birth is required')
+        throw new Error(
+          'Date of birth is required'
+        )
       }
 
       if (!form.email.trim()) {
-        throw new Error('Email is required')
+        throw new Error(
+          'Email is required'
+        )
       }
 
       if (!form.phone.trim()) {
-        throw new Error('Phone number is required')
+        throw new Error(
+          'Phone number is required'
+        )
       }
 
       if (!form.address.trim()) {
-        throw new Error('Address is required')
+        throw new Error(
+          'Address is required'
+        )
       }
 
       if (!form.city.trim()) {
-        throw new Error('City is required')
+        throw new Error(
+          'City is required'
+        )
       }
 
-      let uploadedAvatarUrl: string | undefined
+      let finalPhotoUrl = photoUrl
+      let uploadedAvatarUrl:
+        string | undefined
 
+      // Upload only when user selected a new photo
       if (selectedPhoto) {
         setPhotoUploading(true)
 
-        const photoResult = await uploadProfilePhoto(selectedPhoto)
+        const photoResult =
+          await uploadProfilePhoto(selectedPhoto)
 
-        uploadedAvatarUrl = photoResult.avatarUrl
+        uploadedAvatarUrl =
+          photoResult.avatarUrl
 
-        setPhotoUrl(uploadedAvatarUrl)
+        finalPhotoUrl =
+          uploadedAvatarUrl
+
+        setPhotoUrl(
+          uploadedAvatarUrl
+        )
       }
 
       await updateMyProfile({
-        full_name: `${form.firstName.trim()} ${form.lastName.trim()}`,
-        preferred_name: form.preferred.trim(),
-        nic: form.nic.trim(),
-        date_of_birth: form.dob,
-        gender: form.gender,
-        nationality: form.nationality,
-        email: form.email.trim(),
-        phone: form.phone.trim(),
-        emergency_contact: form.emergency.trim(),
-        address: form.address.trim(),
-        province: form.province,
-        district: form.district,
-        city: form.city.trim(),
-        postal_code: form.postal.trim(),
+        full_name:
+          `${form.firstName.trim()} ${form.lastName.trim()}`,
+
+        preferred_name:
+          form.preferred.trim(),
+
+        nic:
+          form.nic.trim(),
+
+        date_of_birth:
+          form.dob,
+
+        gender:
+          form.gender,
+
+        nationality:
+          form.nationality,
+
+        email:
+          form.email.trim(),
+
+        phone:
+          form.phone.trim(),
+
+        emergency_contact:
+          form.emergency.trim(),
+
+        address:
+          form.address.trim(),
+
+        province:
+          form.province,
+
+        district:
+          form.district,
+
+        city:
+          form.city.trim(),
+
+        postal_code:
+          form.postal.trim(),
 
         ...(uploadedAvatarUrl && {
-          avatar_url: uploadedAvatarUrl
+          avatar_url:
+            uploadedAvatarUrl
         })
       })
 
+      // Reset dirty state after successful save
+      setSelectedPhoto(null)
+      setHasSavedData(true)
+
+      setInitialData(
+        JSON.stringify({
+          form,
+          photo: finalPhotoUrl
+        })
+      )
+
+      // Parent decides:
+      // normal onboarding → Step 2
+      // review edit mode → Step 11
       onNext()
+
     } catch (error) {
-      console.error('Failed to save personal information:', error)
+      console.error(
+        'Failed to save personal information:',
+        error
+      )
 
       if (error instanceof Error) {
-        setSaveError(error.message)
+        setSaveError(
+          error.message
+        )
       } else {
-        setSaveError('Failed to save personal information')
+        setSaveError(
+          'Failed to save personal information'
+        )
       }
+
     } finally {
       setSaving(false)
+      setPhotoUploading(false)
     }
   }
 
@@ -582,10 +783,25 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       desc="Tell us about yourself. This information will be verified against your official documents."
       onBack={onBack}
       onNext={handleSaveAndContinue}
-      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving ||
+        photoUploading
+      }
     >
-      {/* Photo */}
-      <Card style={{ padding:20, marginBottom:24 }}>
+
+      {/* Profile Photo */}
+      <Card
+        style={{
+          padding:20,
+          marginBottom:24
+        }}
+      >
         <p
           style={{
             fontSize:12,
@@ -612,7 +828,11 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
               height:80,
               borderRadius:'50%',
               background:`${C.primary}10`,
-              border:`3px solid ${photoUrl ? C.success : C.border}`,
+              border:`3px solid ${
+                photoUrl
+                  ? C.success
+                  : C.border
+              }`,
               display:'flex',
               alignItems:'center',
               justifyContent:'center',
@@ -673,7 +893,10 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
                 fontSize:12,
                 fontWeight:700,
                 color:C.primary,
-                cursor:'pointer'
+                cursor:
+                  photoUploading
+                    ? 'not-allowed'
+                    : 'pointer'
               }}
             >
               {photoUploading
@@ -686,9 +909,25 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
                 type="file"
                 accept="image/*"
                 onChange={handlePhotoUpload}
-                style={{ display:'none' }}
+                disabled={photoUploading}
+                style={{
+                  display:'none'
+                }}
               />
             </label>
+
+            {selectedPhoto && (
+              <p
+                style={{
+                  marginTop:6,
+                  fontSize:11,
+                  color:C.primary,
+                  fontWeight:600
+                }}
+              >
+                New photo selected — save changes to update it.
+              </p>
+            )}
 
             {photoError && (
               <p
@@ -705,18 +944,32 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
           {photoUrl && (
             <Bdg
-              label="Photo Uploaded"
-              color={C.success}
+              label={
+                selectedPhoto
+                  ? 'New Photo Selected'
+                  : 'Photo Uploaded'
+              }
+              color={
+                selectedPhoto
+                  ? C.info
+                  : C.success
+              }
             />
           )}
         </div>
       </Card>
 
-      <Card style={{
-        padding:'4px 20px 20px',
-        marginBottom:20
-      }}>
+      {/* Personal Information */}
+      <Card
+        style={{
+          padding:'4px 20px 20px',
+          marginBottom:20
+        }}
+      >
+
+        {/* Full Name */}
         <FormSection title="Full Name">
+
           <Input
             label="First Name"
             value={form.firstName}
@@ -744,9 +997,12 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
             onChange={f('nic')}
             required
           />
+
         </FormSection>
 
+        {/* Personal Details */}
         <FormSection title="Personal Details">
+
           <Input
             label="Date of Birth"
             type="date"
@@ -775,9 +1031,12 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
             value={form.nationality}
             onChange={f('nationality')}
           />
+
         </FormSection>
 
+        {/* Contact */}
         <FormSection title="Contact">
+
           <Input
             label="Email Address"
             type="email"
@@ -802,9 +1061,12 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
               hint="Name and phone number"
             />
           </FormFull>
+
         </FormSection>
 
+        {/* Address */}
         <FormSection title="Residential Address">
+
           <FormFull>
             <Input
               label="Address"
@@ -860,33 +1122,39 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
             value={form.postal}
             onChange={f('postal')}
           />
+
         </FormSection>
 
+        {/* Save Error */}
         {saveError && (
-          <div style={{
-            padding:'12px 14px',
-            marginBottom:16,
-            borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
-            color:C.error,
-            fontSize:12,
-            fontWeight:600
-          }}>
+          <div
+            style={{
+              padding:'12px 14px',
+              marginBottom:16,
+              borderRadius:10,
+              background:`${C.error}08`,
+              border:`1px solid ${C.error}30`,
+              color:C.error,
+              fontSize:12,
+              fontWeight:600
+            }}
+          >
             {saveError}
           </div>
         )}
 
-        {/* Live photo placeholder */}
-        <div style={{
-          padding:'14px 16px',
-          borderRadius:12,
-          background:`${C.info}06`,
-          border:`1px solid ${C.info}20`,
-          display:'flex',
-          gap:10,
-          alignItems:'center'
-        }}>
+        {/* Live verification placeholder */}
+        <div
+          style={{
+            padding:'14px 16px',
+            borderRadius:12,
+            background:`${C.info}06`,
+            border:`1px solid ${C.info}20`,
+            display:'flex',
+            gap:10,
+            alignItems:'center'
+          }}
+        >
           <span
             style={{
               color:C.info,
@@ -897,249 +1165,1106 @@ function Step1({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
           </span>
 
           <div>
-            <p style={{
-              fontSize:12,
-              fontWeight:700,
-              color:C.info
-            }}>
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.info
+              }}
+            >
               Live Verification Photo{' '}
+
               <Bdg
                 label="Coming Soon"
                 color={C.info}
               />
             </p>
 
-            <p style={{
-              fontSize:11,
-              color:C.muted
-            }}>
+            <p
+              style={{
+                fontSize:11,
+                color:C.muted
+              }}
+            >
               Real-time selfie verification will be available
               in the next update.
             </p>
           </div>
         </div>
+
       </Card>
+
     </StepWrap>
   )
 }
 
 // ─── Step 2: Professional Profile ─────────────────────────────────────────────
-function Step2({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
-  const [form, setForm] = useState({
-    headline: '',
-    bio: '',
-    years: '',
-    employment: '',
-    prevEmployment: '',
-    edu: '',
-    hourlyRate: '',
-    maxRate: '',
-    areas: ''
-  })
+function Step2({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
 
-  const [langs, setLangs] = useState<string[]>([])
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
-
-  const f = (key: string) => (value: string) => {
-    setForm(prev => ({
-      ...prev,
-      [key]: value
-    }))
+  const emptyForm = {
+    headline:'',
+    bio:'',
+    years:'',
+    employment:'',
+    prevEmployment:'',
+    edu:'',
+    hourlyRate:'',
+    maxRate:'',
+    areas:''
   }
 
+  const [form, setForm] = useState(emptyForm)
 
-  const convertExperienceToYears = (value: string) => {
+  const [langs, setLangs] =
+    useState<string[]>([])
+
+  const [saving, setSaving] =
+    useState(false)
+
+  const [saveError, setSaveError] =
+    useState('')
+
+  const [loadingDetails, setLoadingDetails] =
+    useState(true)
+
+  // Dirty-state tracking
+  const [initialData, setInitialData] =
+    useState('')
+
+  const [hasSavedData, setHasSavedData] =
+    useState(false)
+
+  // ─────────────────────────────────────────────
+  // Form field update
+  // ─────────────────────────────────────────────
+  const f =
+    (key:keyof typeof form) =>
+    (value:string) => {
+
+      setForm(prev => ({
+        ...prev,
+        [key]:value
+      }))
+
+      setSaveError('')
+    }
+
+  // ─────────────────────────────────────────────
+  // Language toggle
+  // ─────────────────────────────────────────────
+  const toggleLanguage = (
+    language:string
+  ) => {
+
+    setLangs(prev =>
+      prev.includes(language)
+        ? prev.filter(
+            item =>
+              item !== language
+          )
+        : [
+            ...prev,
+            language
+          ]
+    )
+
+    setSaveError('')
+  }
+
+  // ─────────────────────────────────────────────
+  // Experience helpers
+  // ─────────────────────────────────────────────
+  const convertExperienceToYears = (
+    value:string
+  ) => {
+
     switch (value) {
+
       case 'Less than 1 year':
         return 0
+
       case '1–2 years':
         return 1
+
       case '3–5 years':
         return 3
+
       case '5–8 years':
         return 5
+
       case '8–10 years':
         return 8
+
       case '10+ years':
         return 10
+
       default:
         return 0
     }
   }
 
-  const convertYearsToOption = (years: number | null) => {
-    if (years === null || years === undefined) return ''
+  const convertYearsToOption = (
+    years:number | null | undefined
+  ) => {
 
-    if (years < 1) return 'Less than 1 year'
-    if (years <= 2) return '1–2 years'
-    if (years <= 5) return '3–5 years'
-    if (years <= 8) return '5–8 years'
-    if (years <= 10) return '8–10 years'
+    if (
+      years === null ||
+      years === undefined
+    ) {
+      return ''
+    }
+
+    if (years < 1) {
+      return 'Less than 1 year'
+    }
+
+    if (years <= 2) {
+      return '1–2 years'
+    }
+
+    if (years <= 5) {
+      return '3–5 years'
+    }
+
+    if (years <= 8) {
+      return '5–8 years'
+    }
+
+    if (years <= 10) {
+      return '8–10 years'
+    }
 
     return '10+ years'
   }
 
+  // ─────────────────────────────────────────────
+  // Dirty-state snapshot
+  // ─────────────────────────────────────────────
+  const createSnapshot = (
+    formData:typeof form,
+    languages:string[]
+  ) => {
 
+    return JSON.stringify({
+      form:formData,
+      langs:[
+        ...languages
+      ].sort()
+    })
+  }
+
+  const currentData =
+    createSnapshot(
+      form,
+      langs
+    )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  // First-time user:
+  // Save enabled after loading.
+  //
+  // Existing saved user:
+  // Save enabled only when something changes.
+  const canSave =
+    !loadingDetails &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
+  // Load saved Step 2 data
+  // ─────────────────────────────────────────────
   useEffect(() => {
-    const loadAgentDetails = async () => {
-      try {
-        const details = await getMyAgentDetails()
 
-        if (!details) return
+    let cancelled = false
 
-        setForm({
-          headline: details.professional_headline || '',
-          bio: details.bio || '',
-          years: convertYearsToOption(details.experience_years),
-          employment: details.current_employer || '',
-          prevEmployment: details.previous_employment || '',
-          edu: details.education || '',
-          hourlyRate: details.hourly_rate?.toString() || '',
-          maxRate: details.max_rate?.toString() || '',
-          areas: Array.isArray(details.service_areas)
-            ? details.service_areas.join(', ')
-            : ''
-        })
+    const loadAgentDetails =
+      async () => {
 
-        setLangs(
-          Array.isArray(details.languages)
-            ? details.languages
-            : []
-        )
+        try {
 
+          setLoadingDetails(true)
+          setSaveError('')
 
-      } catch (error) {
-        console.error('Failed to load professional profile:', error)
+          const details =
+            await getMyAgentDetails()
+
+          if (cancelled) return
+
+          // ─────────────────────────────
+          // NEW USER
+          // No agent_details row yet.
+          // This is NOT an error.
+          // ─────────────────────────────
+          if (!details) {
+
+            setForm(
+              emptyForm
+            )
+
+            setLangs(
+              []
+            )
+
+            setHasSavedData(
+              false
+            )
+
+            setInitialData(
+              createSnapshot(
+                emptyForm,
+                []
+              )
+            )
+
+            return
+          }
+
+          // ─────────────────────────────
+          // EXISTING USER
+          // Load saved details
+          // ─────────────────────────────
+          const loadedForm = {
+
+            headline:
+              details.professional_headline ||
+              '',
+
+            bio:
+              details.bio ||
+              '',
+
+            years:
+              convertYearsToOption(
+                details.experience_years
+              ),
+
+            employment:
+              details.current_employer ||
+              '',
+
+            prevEmployment:
+              details.previous_employment ||
+              '',
+
+            edu:
+              details.education ||
+              '',
+
+            hourlyRate:
+              details.hourly_rate
+                ?.toString() ||
+              '',
+
+            maxRate:
+              details.max_rate
+                ?.toString() ||
+              '',
+
+            areas:
+              Array.isArray(
+                details.service_areas
+              )
+                ? details
+                    .service_areas
+                    .join(', ')
+                : ''
+          }
+
+          const loadedLangs =
+            Array.isArray(
+              details.languages
+            )
+              ? details.languages
+              : []
+
+          setForm(
+            loadedForm
+          )
+
+          setLangs(
+            loadedLangs
+          )
+
+          const detailsHaveData =
+            Boolean(
+              details.professional_headline
+            ) ||
+            Boolean(
+              details.bio
+            ) ||
+            details.experience_years !== null ||
+            (
+              Array.isArray(
+                details.languages
+              ) &&
+              details.languages.length > 0
+            )
+
+          setHasSavedData(
+            detailsHaveData
+          )
+
+          setInitialData(
+            createSnapshot(
+              loadedForm,
+              loadedLangs
+            )
+          )
+
+        } catch (error:any) {
+
+          if (cancelled) return
+
+          console.error(
+            'Failed to load professional profile:',
+            error
+          )
+
+          // ─────────────────────────────
+          // Supabase "no rows found"
+          // should be treated as a new user,
+          // not as a visible error.
+          // ─────────────────────────────
+          const isNoRowError =
+            error?.code === 'PGRST116' ||
+            error?.status === 406 ||
+            String(
+              error?.message || ''
+            )
+              .toLowerCase()
+              .includes(
+                '0 rows'
+              ) ||
+            String(
+              error?.message || ''
+            )
+              .toLowerCase()
+              .includes(
+                'no rows'
+              ) ||
+            String(
+              error?.message || ''
+            )
+              .toLowerCase()
+              .includes(
+                'multiple (or no) rows returned'
+              )
+
+          if (isNoRowError) {
+
+            setForm(
+              emptyForm
+            )
+
+            setLangs(
+              []
+            )
+
+            setHasSavedData(
+              false
+            )
+
+            setInitialData(
+              createSnapshot(
+                emptyForm,
+                []
+              )
+            )
+
+            // IMPORTANT:
+            // Do NOT show red error message
+            setSaveError('')
+
+            return
+          }
+
+          // Real database / network / RLS error
+          setSaveError(
+            'Failed to load saved professional profile'
+          )
+
+        } finally {
+
+          if (!cancelled) {
+            setLoadingDetails(
+              false
+            )
+          }
+
+        }
       }
-    }
 
     loadAgentDetails()
+
+    return () => {
+      cancelled = true
+    }
+
   }, [])
 
+  // ─────────────────────────────────────────────
+  // Save Step 2
+  // ─────────────────────────────────────────────
+  const handleSaveAndContinue =
+    async () => {
 
+      try {
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
-      setSaving(true)
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
+        }
 
-      if (!form.headline.trim()) {
-        throw new Error('Professional headline is required')
+        setSaveError('')
+
+        // Required validation
+        if (
+          !form.headline.trim()
+        ) {
+          throw new Error(
+            'Professional headline is required'
+          )
+        }
+
+        if (
+          form.bio
+            .trim()
+            .length < 100
+        ) {
+          throw new Error(
+            'Biography must be at least 100 characters'
+          )
+        }
+
+        if (
+          !form.years
+        ) {
+          throw new Error(
+            'Please select your years of experience'
+          )
+        }
+
+        if (
+          langs.length === 0
+        ) {
+          throw new Error(
+            'Please select at least one language'
+          )
+        }
+
+        // Optional validation
+        if (
+          form.hourlyRate &&
+          Number(
+            form.hourlyRate
+          ) < 0
+        ) {
+          throw new Error(
+            'Hourly rate cannot be negative'
+          )
+        }
+
+        if (
+          form.maxRate &&
+          Number(
+            form.maxRate
+          ) < 0
+        ) {
+          throw new Error(
+            'Maximum rate cannot be negative'
+          )
+        }
+
+        if (
+          form.hourlyRate &&
+          form.maxRate &&
+          Number(
+            form.maxRate
+          ) <
+          Number(
+            form.hourlyRate
+          )
+        ) {
+          throw new Error(
+            'Maximum rate cannot be lower than hourly rate'
+          )
+        }
+
+        setSaving(
+          true
+        )
+
+        const serviceAreas =
+          form.areas
+            .split(',')
+            .map(
+              area =>
+                area.trim()
+            )
+            .filter(Boolean)
+
+        await saveMyAgentDetails({
+
+          professional_headline:
+            form.headline.trim(),
+
+          bio:
+            form.bio.trim(),
+
+          education:
+            form.edu.trim(),
+
+          experience_years:
+            convertExperienceToYears(
+              form.years
+            ),
+
+          hourly_rate:
+            form.hourlyRate
+              ? Number(
+                  form.hourlyRate
+                )
+              : undefined,
+
+          max_rate:
+            form.maxRate
+              ? Number(
+                  form.maxRate
+                )
+              : undefined,
+
+          languages:
+            langs,
+
+          current_employer:
+            form.employment.trim(),
+
+          previous_employment:
+            form.prevEmployment.trim(),
+
+          service_areas:
+            serviceAreas
+        })
+
+        // Normalize local state
+        // to exactly match what was saved.
+        const savedForm = {
+
+          ...form,
+
+          headline:
+            form.headline.trim(),
+
+          bio:
+            form.bio.trim(),
+
+          employment:
+            form.employment.trim(),
+
+          prevEmployment:
+            form.prevEmployment.trim(),
+
+          edu:
+            form.edu.trim(),
+
+          areas:
+            serviceAreas.join(', ')
+        }
+
+        setForm(
+          savedForm
+        )
+
+        setHasSavedData(
+          true
+        )
+
+        setInitialData(
+          createSnapshot(
+            savedForm,
+            langs
+          )
+        )
+
+        // Normal onboarding:
+        // Step 2 → Step 3
+        //
+        // Review edit mode:
+        // Step 2 → Step 11
+        onNext()
+
+      } catch (error) {
+
+        console.error(
+          'Failed to save professional profile:',
+          error
+        )
+
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save professional profile'
+          )
+        }
+
+      } finally {
+
+        setSaving(
+          false
+        )
+
       }
-
-      if (form.bio.trim().length < 100) {
-        throw new Error('Biography must be at least 100 characters')
-      }
-
-      if (!form.years) {
-        throw new Error('Please select your years of experience')
-      }
-
-      if (langs.length === 0) {
-        throw new Error('Please select at least one language')
-      }
-
-
-      const serviceAreas = form.areas
-        .split(',')
-        .map(area => area.trim())
-        .filter(Boolean)
-
-      await saveMyAgentDetails({
-        professional_headline: form.headline.trim(),
-        bio: form.bio.trim(),
-        education: form.edu.trim(),
-        experience_years: convertExperienceToYears(form.years),
-
-        hourly_rate: form.hourlyRate
-          ? Number(form.hourlyRate)
-          : undefined,
-
-        max_rate: form.maxRate
-          ? Number(form.maxRate)
-          : undefined,
-
-        languages: langs,
-        current_employer: form.employment.trim(),
-        previous_employment: form.prevEmployment.trim(),
-        service_areas: serviceAreas,
-      })
-
-      onNext()
-    } catch (error) {
-      console.error('Failed to save professional profile:', error)
-
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError('Failed to save professional profile')
-      }
-    } finally {
-      setSaving(false)
     }
+
+  // ─────────────────────────────────────────────
+  // Loading UI
+  // ─────────────────────────────────────────────
+  if (loadingDetails) {
+
+    return (
+      <StepWrap
+        step={2}
+        total={11}
+        title="Professional Profile"
+        desc="Showcase your expertise to attract the right clients."
+        onBack={onBack}
+        onNext={() => {}}
+        nextDisabled={true}
+      >
+
+        <Card
+          style={{
+            padding:30,
+            textAlign:
+              'center' as const
+          }}
+        >
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading professional profile...
+          </p>
+        </Card>
+
+      </StepWrap>
+    )
   }
 
   return (
-    <StepWrap step={2} total={11} title="Professional Profile" desc="Showcase your expertise to attract the right clients." onBack={onBack} onNext={handleSaveAndContinue} nextLabel={saving ? 'Saving...' : 'Save & Continue'}>
-      <Card style={{ padding:'4px 20px 20px', marginBottom:20 }}>
+    <StepWrap
+      step={2}
+      total={11}
+      title="Professional Profile"
+      desc="Showcase your expertise to attract the right clients."
+      onBack={onBack}
+      onNext={
+        handleSaveAndContinue
+      }
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving
+      }
+    >
+
+      {/* Main Professional Profile */}
+      <Card
+        style={{
+          padding:
+            '4px 20px 20px',
+
+          marginBottom:20
+        }}
+      >
+
+        {/* Headline & Bio */}
         <FormSection title="Headline & Bio">
-          <FormFull><Input label="Professional Headline" value={form.headline} onChange={f('headline')} hint="One sentence that sums up your expertise" required /></FormFull>
-          <FormFull><Textarea label="Biography" value={form.bio} onChange={f('bio')} rows={5} hint="Write in first person. Minimum 100 characters." /></FormFull>
+
+          <FormFull>
+            <Input
+              label="Professional Headline"
+
+              value={
+                form.headline
+              }
+
+              onChange={
+                f('headline')
+              }
+
+              hint="One sentence that sums up your expertise"
+
+              required
+            />
+          </FormFull>
+
+          <FormFull>
+            <Textarea
+              label="Biography"
+
+              value={
+                form.bio
+              }
+
+              onChange={
+                f('bio')
+              }
+
+              rows={5}
+
+              hint="Write in first person. Minimum 100 characters."
+            />
+          </FormFull>
+
         </FormSection>
+
+        {/* Experience */}
         <FormSection title="Experience">
-          <Select label="Years of Experience" options={['Less than 1 year','1–2 years','3–5 years','5–8 years','8–10 years','10+ years']} value={form.years} onChange={f('years')}/>
-          <Input label="Current Employer / Organisation" value={form.employment} onChange={f('employment')} hint="Hospital, clinic, or self-employed" />
-          <FormFull><Input label="Previous Employment" value={form.prevEmployment} onChange={f('prevEmployment')} hint="Most recent previous employer and dates" /></FormFull>
-          <FormFull><Input label="Education / Qualifications" value={form.edu} onChange={f('edu')} /></FormFull>
-          <FormFull><Input label="Hourly Rate (LKR)" type="number" value={form.hourlyRate} onChange={f('hourlyRate')} hint="Your standard hourly rate"/></FormFull>
-          <FormFull><Input label="Maximum Rate (LKR)" type="number" value={form.maxRate} onChange={f('maxRate')} hint="Maximum hourly rate for complex or urgent care"/></FormFull>
+
+          <Select
+            label="Years of Experience"
+
+            options={[
+              'Less than 1 year',
+              '1–2 years',
+              '3–5 years',
+              '5–8 years',
+              '8–10 years',
+              '10+ years'
+            ]}
+
+            value={
+              form.years
+            }
+
+            onChange={
+              f('years')
+            }
+          />
+
+          <Input
+            label="Current Employer / Organisation"
+
+            value={
+              form.employment
+            }
+
+            onChange={
+              f('employment')
+            }
+
+            hint="Hospital, clinic, or self-employed"
+          />
+
+          <FormFull>
+            <Input
+              label="Previous Employment"
+
+              value={
+                form.prevEmployment
+              }
+
+              onChange={
+                f('prevEmployment')
+              }
+
+              hint="Most recent previous employer and dates"
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="Education / Qualifications"
+
+              value={
+                form.edu
+              }
+
+              onChange={
+                f('edu')
+              }
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="Hourly Rate (LKR)"
+
+              type="number"
+
+              value={
+                form.hourlyRate
+              }
+
+              onChange={
+                f('hourlyRate')
+              }
+
+              hint="Your standard hourly rate"
+            />
+          </FormFull>
+
+          <FormFull>
+            <Input
+              label="Maximum Rate (LKR)"
+
+              type="number"
+
+              value={
+                form.maxRate
+              }
+
+              onChange={
+                f('maxRate')
+              }
+
+              hint="Maximum hourly rate for complex or urgent care"
+            />
+          </FormFull>
+
         </FormSection>
+
       </Card>
 
       {/* Languages */}
-      <Card style={{ padding:20, marginBottom:14 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Languages Spoken</p>
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap' as const, marginBottom:10 }}>
-          {['English','Sinhala','Tamil','Hindi'].map(l=>(
-            <button key={l} onClick={()=>setLangs(p=>p.includes(l)?p.filter(x=>x!==l):[...p,l])}
-              style={{ padding:'7px 14px', borderRadius:99, border:`1.5px solid ${langs.includes(l)?C.primary:C.border}`, background:langs.includes(l)?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:langs.includes(l)?700:500, color:langs.includes(l)?C.primary:C.sub, transition:'all 0.12s' }}>
-              {l}
-            </button>
-          ))}
+      <Card
+        style={{
+          padding:20,
+          marginBottom:14
+        }}
+      >
+
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+
+            textTransform:
+              'uppercase',
+
+            letterSpacing:
+              '0.08em',
+
+            marginBottom:12
+          }}
+        >
+          Languages Spoken *
+        </p>
+
+        <div
+          style={{
+            display:'flex',
+            gap:8,
+
+            flexWrap:
+              'wrap' as const,
+
+            marginBottom:10
+          }}
+        >
+
+          {[
+            'English',
+            'Sinhala',
+            'Tamil',
+            'Hindi'
+          ].map(
+            language => (
+
+              <button
+                type="button"
+
+                key={
+                  language
+                }
+
+                onClick={() =>
+                  toggleLanguage(
+                    language
+                  )
+                }
+
+                style={{
+                  padding:
+                    '7px 14px',
+
+                  borderRadius:99,
+
+                  border:
+                    `1.5px solid ${
+                      langs.includes(
+                        language
+                      )
+                        ? C.primary
+                        : C.border
+                    }`,
+
+                  background:
+                    langs.includes(
+                      language
+                    )
+                      ? `${C.primary}08`
+                      : 'transparent',
+
+                  cursor:'pointer',
+
+                  fontFamily:
+                    'Manrope,sans-serif',
+
+                  fontSize:12,
+
+                  fontWeight:
+                    langs.includes(
+                      language
+                    )
+                      ? 700
+                      : 500,
+
+                  color:
+                    langs.includes(
+                      language
+                    )
+                      ? C.primary
+                      : C.sub,
+
+                  transition:
+                    'all 0.12s'
+                }}
+              >
+
+                {langs.includes(
+                  language
+                ) && (
+                  <span
+                    style={{
+                      marginRight:5
+                    }}
+                  >
+                    ✓
+                  </span>
+                )}
+
+                {language}
+
+              </button>
+
+            )
+          )}
+
         </div>
+
       </Card>
 
+      {/* Preferred Working Areas */}
+      <Card
+        style={{
+          padding:20
+        }}
+      >
 
-      {/* Travel radius */}
-      <Card style={{ padding:20 }}>
-        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:12 }}>Preferred Working Areas</p>
-        <Input label="Preferred Working Areas" value={form.areas} onChange={f('areas')} hint="e.g. Colombo, Dehiwela, Moratuwa" />
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.muted,
+
+            textTransform:
+              'uppercase',
+
+            letterSpacing:
+              '0.08em',
+
+            marginBottom:12
+          }}
+        >
+          Preferred Working Areas
+        </p>
+
+        <Input
+          label="Preferred Working Areas"
+
+          value={
+            form.areas
+          }
+
+          onChange={
+            f('areas')
+          }
+
+          hint="e.g. Colombo, Dehiwela, Moratuwa"
+        />
+
       </Card>
 
-
+      {/* Error */}
       {saveError && (
         <div
           style={{
-            padding: '12px 14px',
-            marginTop: 16,
-            borderRadius: 10,
-            background: `${C.error}08`,
-            border: `1px solid ${C.error}30`,
-            color: C.error,
-            fontSize: 12,
-            fontWeight: 600
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
+            color:C.error,
+
+            fontSize:12,
+            fontWeight:600
           }}
         >
           {saveError}
         </div>
       )}
+
     </StepWrap>
   )
 }
 
+
 // ─── Step 3: Skills & Services ────────────────────────────────────────────────
-function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
+function Step3({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
+
+  type SkillData = {
+    level:string
+    years:string
+    certified:boolean
+  }
 
   const services = [
     'Hospital Companion',
@@ -1157,102 +2282,276 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     'Bill Payments'
   ]
 
-  const [selected, setSelected] = useState<Record<
-    string,
-    {
-      level: string
-      years: string
-      certified: boolean
-    }
-  >>({})
+  const [selected, setSelected] = useState<
+    Record<string, SkillData>
+  >({})
 
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [loadingSkills, setLoadingSkills] = useState(true)
 
-  const toggle = (service: string) => {
+  // Dirty-state tracking
+  const [initialData, setInitialData] = useState('')
+  const [hasSavedData, setHasSavedData] = useState(false)
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Normalize selected skills before comparing
+  // ────────────────────────────────────────────────────────────────────────────
+  const normalizeSelected = (
+    data:Record<string, SkillData>
+  ) => {
+    return Object.keys(data)
+      .sort()
+      .map(serviceName => ({
+        service_name:serviceName,
+        level:data[serviceName].level,
+        years:data[serviceName].years,
+        certified:data[serviceName].certified
+      }))
+  }
+
+  const currentData = JSON.stringify(
+    normalizeSelected(selected)
+  )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  // First-time user → Save available
+  // Previously saved Step 3 → change required first
+  const canSave =
+    !loadingSkills &&
+    (!hasSavedData || hasChanges)
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Select / remove service
+  // ────────────────────────────────────────────────────────────────────────────
+  const toggle = (service:string) => {
+    setSaveError('')
+
     if (selected[service]) {
-      const updated = { ...selected }
-      delete updated[service]
-      setSelected(updated)
+      setSelected(prev => {
+        const updated = { ...prev }
+
+        delete updated[service]
+
+        return updated
+      })
     } else {
       setSelected(prev => ({
         ...prev,
-        [service]: {
-          level: 'Beginner',
-          years: 'Less than 1',
-          certified: false
+
+        [service]:{
+          level:'Beginner',
+          years:'Less than 1',
+          certified:false
         }
       }))
     }
   }
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Update skill level
+  // ────────────────────────────────────────────────────────────────────────────
+  const updateSkillLevel = (
+    service:string,
+    value:string
+  ) => {
+    setSelected(prev => ({
+      ...prev,
+
+      [service]:{
+        ...prev[service],
+        level:value
+      }
+    }))
+
+    setSaveError('')
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Update years of experience
+  // ────────────────────────────────────────────────────────────────────────────
+  const updateSkillYears = (
+    service:string,
+    value:string
+  ) => {
+    setSelected(prev => ({
+      ...prev,
+
+      [service]:{
+        ...prev[service],
+        years:value
+      }
+    }))
+
+    setSaveError('')
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Toggle certification
+  // ────────────────────────────────────────────────────────────────────────────
+  const toggleCertification = (
+    service:string
+  ) => {
+    setSelected(prev => ({
+      ...prev,
+
+      [service]:{
+        ...prev[service],
+        certified:
+          !prev[service].certified
+      }
+    }))
+
+    setSaveError('')
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
   // Load previously saved Step 3 data
+  // ────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const loadSkills = async () => {
       try {
-        const skills = await getMyAgentSkills()
+        setLoadingSkills(true)
 
-        if (!skills || skills.length === 0) {
+        const skills =
+          await getMyAgentSkills()
+
+        if (
+          !skills ||
+          skills.length === 0
+        ) {
+          setHasSavedData(false)
+
+          setInitialData(
+            JSON.stringify([])
+          )
+
           return
         }
 
-        const loadedSkills: Record<
+        const loadedSkills:Record<
           string,
-          {
-            level: string
-            years: string
-            certified: boolean
-          }
+          SkillData
         > = {}
 
         skills.forEach(skill => {
-          loadedSkills[skill.service_name] = {
-            level: skill.skill_level || 'Beginner',
-            years: skill.experience_years || 'Less than 1',
-            certified: skill.certified ?? false
+          loadedSkills[
+            skill.service_name
+          ] = {
+            level:
+              skill.skill_level ||
+              'Beginner',
+
+            years:
+              skill.experience_years ||
+              'Less than 1',
+
+            certified:
+              skill.certified ?? false
           }
         })
 
         setSelected(loadedSkills)
+        setHasSavedData(true)
+
+        setInitialData(
+          JSON.stringify(
+            normalizeSelected(
+              loadedSkills
+            )
+          )
+        )
 
       } catch (error) {
-        console.error('Failed to load skills and services:', error)
+        console.error(
+          'Failed to load skills and services:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved skills and services'
+        )
+
+      } finally {
+        setLoadingSkills(false)
       }
     }
 
     loadSkills()
   }, [])
 
-  // Save Step 3 data
+  // ────────────────────────────────────────────────────────────────────────────
+  // Save Step 3
+  // ────────────────────────────────────────────────────────────────────────────
   const handleSaveAndContinue = async () => {
     try {
+      if (!canSave || saving) {
+        return
+      }
+
       setSaveError('')
       setSaving(true)
 
-      const selectedEntries = Object.entries(selected)
+      const selectedEntries =
+        Object.entries(selected)
 
-      if (selectedEntries.length === 0) {
-        throw new Error('Please select at least one service')
+      if (
+        selectedEntries.length === 0
+      ) {
+        throw new Error(
+          'Please select at least one service'
+        )
       }
 
-      const skills = selectedEntries.map(([serviceName, data]) => ({
-        service_name: serviceName,
-        skill_level: data.level,
-        experience_years: data.years,
-        certified: data.certified
-      }))
+      const skills =
+        selectedEntries.map(
+          ([serviceName, data]) => ({
+            service_name:serviceName,
+            skill_level:data.level,
+            experience_years:data.years,
+            certified:data.certified
+          })
+        )
 
-      await saveMyAgentSkills(skills)
+      await saveMyAgentSkills(
+        skills
+      )
 
+      // Reset dirty state after successful save
+      setHasSavedData(true)
+
+      setInitialData(
+        JSON.stringify(
+          normalizeSelected(
+            selected
+          )
+        )
+      )
+
+      // Parent decides destination:
+      // normal flow → Step 4
+      // review edit mode → Step 11
       onNext()
 
     } catch (error) {
-      console.error('Failed to save skills and services:', error)
+      console.error(
+        'Failed to save skills and services:',
+        error
+      )
 
-      if (error instanceof Error) {
-        setSaveError(error.message)
+      if (
+        error instanceof Error
+      ) {
+        setSaveError(
+          error.message
+        )
       } else {
-        setSaveError('Failed to save skills and services')
+        setSaveError(
+          'Failed to save skills and services'
+        )
       }
 
     } finally {
@@ -1268,8 +2567,17 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       desc="Select the services you offer and rate your proficiency."
       onBack={onBack}
       onNext={handleSaveAndContinue}
-      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving
+      }
     >
+
       <p
         style={{
           fontSize:13,
@@ -1281,6 +2589,7 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         and certification status.
       </p>
 
+      {/* Service selector */}
       <div
         style={{
           display:'flex',
@@ -1291,31 +2600,53 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       >
         {services.map(service => (
           <button
+            type="button"
             key={service}
-            onClick={() => toggle(service)}
+            onClick={() =>
+              toggle(service)
+            }
             style={{
               padding:'8px 16px',
               borderRadius:99,
+
               border:`1.5px solid ${
                 selected[service]
                   ? C.primary
                   : C.border
               }`,
-              background:selected[service]
-                ? `${C.primary}08`
-                : 'transparent',
+
+              background:
+                selected[service]
+                  ? `${C.primary}08`
+                  : 'transparent',
+
               cursor:'pointer',
-              fontFamily:'Manrope,sans-serif',
+
+              fontFamily:
+                'Manrope,sans-serif',
+
               fontSize:12,
-              fontWeight:selected[service] ? 700 : 500,
-              color:selected[service]
-                ? C.primary
-                : C.sub,
-              transition:'all 0.12s'
+
+              fontWeight:
+                selected[service]
+                  ? 700
+                  : 500,
+
+              color:
+                selected[service]
+                  ? C.primary
+                  : C.sub,
+
+              transition:
+                'all 0.12s'
             }}
           >
             {selected[service] && (
-              <span style={{ marginRight:4 }}>
+              <span
+                style={{
+                  marginRight:4
+                }}
+              >
                 ✓
               </span>
             )}
@@ -1325,6 +2656,7 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         ))}
       </div>
 
+      {/* Selected skill cards */}
       {Object.keys(selected).length > 0 && (
         <div
           style={{
@@ -1333,157 +2665,178 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
             gap:12
           }}
         >
-          {Object.entries(selected).map(([service, data]) => (
-            <Card
-              key={service}
-              style={{ padding:20 }}
-            >
-              <div
+          {Object.entries(selected).map(
+            ([service, data]) => (
+              <Card
+                key={service}
                 style={{
-                  display:'flex',
-                  justifyContent:'space-between',
-                  alignItems:'flex-start',
-                  marginBottom:14
+                  padding:20
                 }}
               >
-                <p
-                  style={{
-                    fontSize:14,
-                    fontWeight:800,
-                    color:C.type,
-                    fontFamily:'Manrope,sans-serif'
-                  }}
-                >
-                  {service}
-                </p>
 
-                <button
-                  onClick={() => toggle(service)}
-                  style={{
-                    width:26,
-                    height:26,
-                    borderRadius:'50%',
-                    border:`1px solid ${C.border}`,
-                    background:'transparent',
-                    cursor:'pointer',
-                    color:C.muted,
-                    display:'flex',
-                    alignItems:'center',
-                    justifyContent:'center'
-                  }}
-                >
-                  <span
-                    style={{
-                      display:'flex',
-                      transform:'scale(0.8)'
-                    }}
-                  >
-                    {I.close}
-                  </span>
-                </button>
-              </div>
-
-              <div
-                style={{
-                  display:'grid',
-                  gridTemplateColumns:'1fr 1fr',
-                  gap:12
-                }}
-                className="cao-2col"
-              >
-                <Select
-                  label="Skill Level"
-                  options={[
-                    'Beginner',
-                    'Intermediate',
-                    'Advanced',
-                    'Expert'
-                  ]}
-                  value={data.level}
-                  onChange={value =>
-                    setSelected(prev => ({
-                      ...prev,
-                      [service]: {
-                        ...prev[service],
-                        level:value
-                      }
-                    }))
-                  }
-                />
-
-                <Select
-                  label="Years of Experience"
-                  options={[
-                    'Less than 1',
-                    '1–2 years',
-                    '3–5 years',
-                    '5–8 years',
-                    '8+ years'
-                  ]}
-                  value={data.years}
-                  onChange={value =>
-                    setSelected(prev => ({
-                      ...prev,
-                      [service]: {
-                        ...prev[service],
-                        years:value
-                      }
-                    }))
-                  }
-                />
-
+                {/* Card header */}
                 <div
                   style={{
                     display:'flex',
-                    alignItems:'center',
-                    gap:10
+                    justifyContent:
+                      'space-between',
+                    alignItems:
+                      'flex-start',
+                    marginBottom:14
                   }}
                 >
-                  <Toggle
-                    on={data.certified}
-                    onToggle={() =>
-                      setSelected(prev => ({
-                        ...prev,
-                        [service]: {
-                          ...prev[service],
-                          certified:!data.certified
-                        }
-                      }))
+                  <p
+                    style={{
+                      fontSize:14,
+                      fontWeight:800,
+                      color:C.type,
+                      fontFamily:
+                        'Manrope,sans-serif'
+                    }}
+                  >
+                    {service}
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      toggle(service)
+                    }
+                    style={{
+                      width:26,
+                      height:26,
+                      borderRadius:'50%',
+
+                      border:
+                        `1px solid ${C.border}`,
+
+                      background:
+                        'transparent',
+
+                      cursor:'pointer',
+                      color:C.muted,
+
+                      display:'flex',
+                      alignItems:'center',
+                      justifyContent:
+                        'center'
+                    }}
+                  >
+                    <span
+                      style={{
+                        display:'flex',
+                        transform:
+                          'scale(0.8)'
+                      }}
+                    >
+                      {I.close}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Skill settings */}
+                <div
+                  style={{
+                    display:'grid',
+
+                    gridTemplateColumns:
+                      '1fr 1fr',
+
+                    gap:12
+                  }}
+                  className="cao-2col"
+                >
+
+                  <Select
+                    label="Skill Level"
+                    options={[
+                      'Beginner',
+                      'Intermediate',
+                      'Advanced',
+                      'Expert'
+                    ]}
+                    value={data.level}
+                    onChange={value =>
+                      updateSkillLevel(
+                        service,
+                        value
+                      )
                     }
                   />
 
-                  <div>
-                    <p
-                      style={{
-                        fontSize:12,
-                        fontWeight:700,
-                        color:C.type
-                      }}
-                    >
-                      Certification Available
-                    </p>
+                  <Select
+                    label="Years of Experience"
+                    options={[
+                      'Less than 1',
+                      '1–2 years',
+                      '3–5 years',
+                      '5–8 years',
+                      '8+ years'
+                    ]}
+                    value={data.years}
+                    onChange={value =>
+                      updateSkillYears(
+                        service,
+                        value
+                      )
+                    }
+                  />
 
-                    <p
-                      style={{
-                        fontSize:11,
-                        color:C.muted
-                      }}
-                    >
-                      I have a document to prove this
-                    </p>
+                  {/* Certification */}
+                  <div
+                    style={{
+                      display:'flex',
+                      alignItems:'center',
+                      gap:10
+                    }}
+                  >
+                    <Toggle
+                      on={
+                        data.certified
+                      }
+                      onToggle={() =>
+                        toggleCertification(
+                          service
+                        )
+                      }
+                    />
+
+                    <div>
+                      <p
+                        style={{
+                          fontSize:12,
+                          fontWeight:700,
+                          color:C.type
+                        }}
+                      >
+                        Certification Available
+                      </p>
+
+                      <p
+                        style={{
+                          fontSize:11,
+                          color:C.muted
+                        }}
+                      >
+                        I have a document to prove this
+                      </p>
+                    </div>
                   </div>
+
                 </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            )
+          )}
         </div>
       )}
 
+      {/* Empty state */}
       {Object.keys(selected).length === 0 && (
         <Card
           style={{
             padding:'40px 20px',
-            textAlign:'center' as const
+            textAlign:
+              'center' as const
           }}
         >
           <p
@@ -1516,14 +2869,20 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         </Card>
       )}
 
+      {/* Error */}
       {saveError && (
         <div
           style={{
             padding:'12px 14px',
             marginTop:16,
             borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
             color:C.error,
             fontSize:12,
             fontWeight:600
@@ -1538,12 +2897,24 @@ function Step3({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 }
 
 
+
 // ─── Step 4: Certifications ───────────────────────────────────────────────────
-function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
+function Step4({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
 
   type CertData = {
     file: File | null
     fileName: string
+
+    // Original filename saved in Supabase.
+    // Useful when cancelling a newly selected replacement file.
+    savedFileName: string
+
     existing: boolean
     removed: boolean
     issued: string
@@ -1559,79 +2930,222 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     'Other Certification'
   ]
 
-  const [docs, setDocs] = useState<Record<string, CertData>>(() => {
+  const createEmptyDocs = () => {
     const initial: Record<string, CertData> = {}
 
     certificateNames.forEach(name => {
       initial[name] = {
-        file: null,
-        fileName: '',
-        existing: false,
-        removed: false,
-        issued: '',
-        expiry: ''
+        file:null,
+        fileName:'',
+        savedFileName:'',
+        existing:false,
+        removed:false,
+        issued:'',
+        expiry:''
       }
     })
 
     return initial
-  })
+  }
+
+  const [docs, setDocs] = useState<
+    Record<string, CertData>
+  >(() => createEmptyDocs())
 
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [loadingCertifications, setLoadingCertifications] =
+    useState(true)
 
-  const slugToName: Record<string, string> = {
-    'caregiving-certificate': 'Caregiving Certificate',
-    'first-aid-certificate': 'First Aid Certificate',
-    'cpr-certificate': 'CPR Certificate',
-    'nursing-qualification': 'Nursing Qualification',
-    'medical-training-certificate': 'Medical Training Certificate',
-    'other-certification': 'Other Certification'
+  // Dirty-state tracking
+  const [initialData, setInitialData] = useState('')
+  const [hasSavedData, setHasSavedData] = useState(false)
+
+  const slugToName:Record<string,string> = {
+    'caregiving-certificate':
+      'Caregiving Certificate',
+
+    'first-aid-certificate':
+      'First Aid Certificate',
+
+    'cpr-certificate':
+      'CPR Certificate',
+
+    'nursing-qualification':
+      'Nursing Qualification',
+
+    'medical-training-certificate':
+      'Medical Training Certificate',
+
+    'other-certification':
+      'Other Certification'
   }
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Convert certificate name to database doc_type
+  // ────────────────────────────────────────────────────────────────────────────
+  const certificateToSlug = (
+    certificateName:string
+  ) => {
+    return certificateName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Normalize docs for dirty-state comparison
+  //
+  // We don't JSON stringify the File object itself.
+  // Instead we compare useful file metadata.
+  // ────────────────────────────────────────────────────────────────────────────
+  const normalizeDocs = (
+    source:Record<string, CertData>
+  ) => {
+    return certificateNames.map(name => {
+      const data = source[name]
+
+      return {
+        certificate:name,
+
+        file:data.file
+          ? {
+              name:data.file.name,
+              size:data.file.size,
+              type:data.file.type,
+              lastModified:data.file.lastModified
+            }
+          : null,
+
+        fileName:data.fileName,
+        savedFileName:data.savedFileName,
+        existing:data.existing,
+        removed:data.removed,
+        issued:data.issued,
+        expiry:data.expiry
+      }
+    })
+  }
+
+  const currentData = JSON.stringify(
+    normalizeDocs(docs)
+  )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  // First-time Step 4:
+  // Save is enabled so validation can tell user to add a certificate.
+  //
+  // Previously saved Step 4:
+  // Save only enables after something changes.
+  const canSave =
+    !loadingCertifications &&
+    (!hasSavedData || hasChanges)
+
+  // ────────────────────────────────────────────────────────────────────────────
   // Load certificates already saved in Supabase
+  // ────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
+
     const loadCertifications = async () => {
       try {
-        const savedDocs = await getMyCertifications()
+        setLoadingCertifications(true)
 
-        if (!savedDocs) return
+        const savedDocs =
+          await getMyCertifications()
 
-        setDocs(prev => {
-          const updated = { ...prev }
+        const loadedDocs =
+          createEmptyDocs()
+
+        if (
+          savedDocs &&
+          savedDocs.length > 0
+        ) {
 
           savedDocs.forEach(doc => {
-            const name = slugToName[doc.doc_type]
+
+            const name =
+              slugToName[doc.doc_type]
 
             if (!name) return
 
-            updated[name] = {
-              ...updated[name],
-              existing: true,
-              removed: false,
-              fileName: doc.file_url
-                ? doc.file_url.split('/').pop() || name
-                : name,
-              issued: doc.issue_date || '',
-              expiry: doc.expiry_date || ''
+            const storedFileName =
+              doc.file_url
+                ? doc.file_url
+                    .split('/')
+                    .pop() || name
+                : name
+
+            loadedDocs[name] = {
+              ...loadedDocs[name],
+
+              file:null,
+
+              fileName:
+                storedFileName,
+
+              savedFileName:
+                storedFileName,
+
+              existing:true,
+              removed:false,
+
+              issued:
+                doc.issue_date || '',
+
+              expiry:
+                doc.expiry_date || ''
             }
           })
 
-          return updated
-        })
+          setHasSavedData(true)
+
+        } else {
+          setHasSavedData(false)
+        }
+
+        setDocs(loadedDocs)
+
+        setInitialData(
+          JSON.stringify(
+            normalizeDocs(
+              loadedDocs
+            )
+          )
+        )
 
       } catch (error) {
-        console.error('Failed to load certifications:', error)
+
+        console.error(
+          'Failed to load certifications:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved certifications'
+        )
+
+      } finally {
+        setLoadingCertifications(false)
       }
     }
 
     loadCertifications()
+
   }, [])
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Select / Change certificate file
+  // ────────────────────────────────────────────────────────────────────────────
   const handleFileSelect = (
-    certificateName: string,
-    event: React.ChangeEvent<HTMLInputElement>
+    certificateName:string,
+    event:React.ChangeEvent<HTMLInputElement>
   ) => {
-    const file = event.target.files?.[0]
+
+    const file =
+      event.target.files?.[0]
 
     if (!file) return
 
@@ -1641,13 +3155,28 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       'image/png'
     ]
 
-    if (!allowedTypes.includes(file.type)) {
-      setSaveError('Only PDF, JPG and PNG files are allowed')
+    if (
+      !allowedTypes.includes(
+        file.type
+      )
+    ) {
+      setSaveError(
+        'Only PDF, JPG and PNG files are allowed'
+      )
+
+      event.target.value = ''
       return
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setSaveError('File must be smaller than 10MB')
+    if (
+      file.size >
+      10 * 1024 * 1024
+    ) {
+      setSaveError(
+        'File must be smaller than 10MB'
+      )
+
+      event.target.value = ''
       return
     }
 
@@ -1655,45 +3184,233 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
     setDocs(prev => ({
       ...prev,
-      [certificateName]: {
+
+      [certificateName]:{
         ...prev[certificateName],
+
         file,
-        fileName: file.name,
-        removed: false
+        fileName:file.name,
+
+        // If user had marked existing document for removal
+        // and then selected another file, cancel removal.
+        removed:false
       }
     }))
+
+    // Allows selecting the same file again later
+    event.target.value = ''
   }
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
-      setSaving(true)
+  // ────────────────────────────────────────────────────────────────────────────
+  // Remove / Cancel certificate
+  // ────────────────────────────────────────────────────────────────────────────
+  const handleRemove = (
+    certificateName:string
+  ) => {
 
-      // 1. Delete certificates that were previously saved
-      //    but the user marked for removal
-      for (const [certificateName, data] of Object.entries(docs)) {
-        if (data.removed) {
-          const docType = certificateName
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .replace(/^-|-$/g, "")
+    setSaveError('')
 
-          await deleteMyCertification(docType)
+    setDocs(prev => {
+
+      const current =
+        prev[certificateName]
+
+      // -------------------------------------------------
+      // CASE 1
+      // Existing Supabase certificate + new replacement
+      // selected but not saved yet.
+      //
+      // Remove button should cancel the new replacement,
+      // NOT delete the old saved certificate.
+      // -------------------------------------------------
+      if (
+        current.file &&
+        current.existing
+      ) {
+        return {
+          ...prev,
+
+          [certificateName]:{
+            ...current,
+
+            file:null,
+
+            fileName:
+              current.savedFileName,
+
+            removed:false
+          }
         }
       }
 
-      // 2. Get certificates that should remain/save
-      const selectedCertificates = Object.entries(docs)
-        .filter(([, data]) =>
-          !data.removed && (data.file || data.existing)
-        )
+      // -------------------------------------------------
+      // CASE 2
+      // Completely new unsaved certificate.
+      //
+      // Clear it locally only.
+      // -------------------------------------------------
+      if (
+        current.file &&
+        !current.existing
+      ) {
+        return {
+          ...prev,
 
-      if (selectedCertificates.length === 0) {
-        throw new Error('Please upload at least one certification')
+          [certificateName]:{
+            ...current,
+
+            file:null,
+            fileName:'',
+            savedFileName:'',
+            removed:false,
+            issued:'',
+            expiry:''
+          }
+        }
       }
 
-      // 3. Save new files or update existing certificate details
-      for (const [certificateName, data] of selectedCertificates) {
+      // -------------------------------------------------
+      // CASE 3
+      // Certificate already saved in Supabase.
+      //
+      // Mark it for deletion.
+      // Actual Storage + DB delete happens on Save.
+      // -------------------------------------------------
+      if (current.existing) {
+        return {
+          ...prev,
+
+          [certificateName]:{
+            ...current,
+
+            file:null,
+            fileName:'',
+
+            existing:false,
+            removed:true,
+
+            issued:'',
+            expiry:''
+          }
+        }
+      }
+
+      return prev
+    })
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Update issue date
+  // ────────────────────────────────────────────────────────────────────────────
+  const updateIssueDate = (
+    certificateName:string,
+    value:string
+  ) => {
+
+    setDocs(prev => ({
+      ...prev,
+
+      [certificateName]:{
+        ...prev[certificateName],
+        issued:value
+      }
+    }))
+
+    setSaveError('')
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Update expiry date
+  // ────────────────────────────────────────────────────────────────────────────
+  const updateExpiryDate = (
+    certificateName:string,
+    value:string
+  ) => {
+
+    setDocs(prev => ({
+      ...prev,
+
+      [certificateName]:{
+        ...prev[certificateName],
+        expiry:value
+      }
+    }))
+
+    setSaveError('')
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Save Step 4
+  // ────────────────────────────────────────────────────────────────────────────
+  const handleSaveAndContinue = async () => {
+
+    try {
+
+      if (
+        !canSave ||
+        saving
+      ) {
+        return
+      }
+
+      setSaveError('')
+      setSaving(true)
+
+      // -------------------------------------------------
+      // 1. First validate final certificate state
+      // -------------------------------------------------
+      const selectedCertificates =
+        Object.entries(docs)
+          .filter(([, data]) =>
+            !data.removed &&
+            (
+              data.file ||
+              data.existing
+            )
+          )
+
+      if (
+        selectedCertificates.length === 0
+      ) {
+        throw new Error(
+          'Please upload at least one certification'
+        )
+      }
+
+      // -------------------------------------------------
+      // 2. Delete saved certificates marked for removal
+      // -------------------------------------------------
+      for (
+        const [
+          certificateName,
+          data
+        ] of Object.entries(docs)
+      ) {
+
+        if (data.removed) {
+
+          const docType =
+            certificateToSlug(
+              certificateName
+            )
+
+          await deleteMyCertification(
+            docType
+          )
+        }
+      }
+
+      // -------------------------------------------------
+      // 3. Upload new/replacement files OR
+      // update dates on existing certificates
+      // -------------------------------------------------
+      for (
+        const [
+          certificateName,
+          data
+        ] of selectedCertificates
+      ) {
+
         await saveMyCertification(
           certificateName,
           data.file,
@@ -1702,16 +3419,35 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         )
       }
 
-      // 4. Go to Step 5 only after all database work is complete
+      // Mark this step as saved
+      setHasSavedData(true)
+
+      // Parent handles destination:
+      //
+      // Normal onboarding:
+      // Step 4 → Step 5
+      //
+      // Step 11 Review Edit:
+      // Step 4 → Step 11
       onNext()
 
     } catch (error) {
-      console.error('Failed to save certifications:', error)
 
-      if (error instanceof Error) {
-        setSaveError(error.message)
+      console.error(
+        'Failed to save certifications:',
+        error
+      )
+
+      if (
+        error instanceof Error
+      ) {
+        setSaveError(
+          error.message
+        )
       } else {
-        setSaveError('Failed to save certifications')
+        setSaveError(
+          'Failed to save certifications'
+        )
       }
 
     } finally {
@@ -1727,7 +3463,15 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       desc="Upload your professional certifications. Supported: PDF, JPG, PNG up to 10MB."
       onBack={onBack}
       onNext={handleSaveAndContinue}
-      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving
+      }
     >
 
       <div
@@ -1739,13 +3483,19 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       >
 
         {certificateNames.map(cert => {
-          const data = docs[cert]
+
+          const data =
+            docs[cert]
 
           return (
             <Card
               key={cert}
-              style={{ padding:22 }}
+              style={{
+                padding:22
+              }}
             >
+
+              {/* Certificate header */}
               <div
                 style={{
                   display:'flex',
@@ -1771,11 +3521,24 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
                     {cert}
                   </p>
 
-                  {(data.file || data.existing) && (
+                  {data.removed && (
+                    <Bdg
+                      label="Will be removed"
+                      color={C.error}
+                    />
+                  )}
+
+                  {!data.removed &&
+                    (
+                      data.file ||
+                      data.existing
+                    ) && (
                     <Bdg
                       label={
                         data.file
-                          ? 'Ready to Save'
+                          ? data.existing
+                            ? 'Replacement Selected'
+                            : 'Ready to Save'
                           : 'Saved'
                       }
                       color={
@@ -1785,118 +3548,173 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
                       }
                     />
                   )}
+
                 </div>
               </div>
 
-              <label
-                style={{
-                  display:'block',
-                  padding:'20px',
-                  borderRadius:14,
-                  border:`2px dashed ${
-                    data.file || data.existing
-                      ? C.success
-                      : C.border
-                  }`,
-                  background:
-                    data.file || data.existing
-                      ? `${C.success}06`
-                      : C.bg,
-                  cursor:'pointer',
-                  textAlign:'center' as const
-                }}
-              >
+              {/* Upload area */}
+              {!data.removed && (
+                <label
+                  style={{
+                    display:'block',
+                    padding:'20px',
+                    borderRadius:14,
 
+                    border:`2px dashed ${
+                      data.file ||
+                      data.existing
+                        ? C.success
+                        : C.border
+                    }`,
+
+                    background:
+                      data.file ||
+                      data.existing
+                        ? `${C.success}06`
+                        : C.bg,
+
+                    cursor:'pointer',
+
+                    textAlign:
+                      'center' as const
+                  }}
+                >
+
+                  <div
+                    style={{
+                      width:40,
+                      height:40,
+                      borderRadius:13,
+
+                      background:
+                        `${C.primary}10`,
+
+                      display:'flex',
+                      alignItems:'center',
+                      justifyContent:'center',
+
+                      color:C.primary,
+
+                      margin:
+                        '0 auto 10px'
+                    }}
+                  >
+                    {I.upload}
+                  </div>
+
+                  <p
+                    style={{
+                      fontSize:13,
+                      fontWeight:700,
+                      color:C.type
+                    }}
+                  >
+                    {data.file
+                      ? data.fileName
+
+                      : data.existing
+                        ? 'Change Certificate'
+
+                        : `Upload ${cert}`}
+                  </p>
+
+                  <p
+                    style={{
+                      fontSize:11,
+                      color:C.muted,
+                      marginTop:4
+                    }}
+                  >
+                    PDF, JPG or PNG · Max 10MB
+                  </p>
+
+                  <input
+                    type="file"
+                    accept=".pdf,image/jpeg,image/png"
+                    onChange={event =>
+                      handleFileSelect(
+                        cert,
+                        event
+                      )
+                    }
+                    style={{
+                      display:'none'
+                    }}
+                  />
+                </label>
+              )}
+
+              {/* Removed state */}
+              {data.removed && (
                 <div
                   style={{
-                    width:40,
-                    height:40,
-                    borderRadius:13,
-                    background:`${C.primary}10`,
-                    display:'flex',
-                    alignItems:'center',
-                    justifyContent:'center',
-                    color:C.primary,
-                    margin:'0 auto 10px'
+                    padding:16,
+                    borderRadius:12,
+                    border:
+                      `1px solid ${C.error}25`,
+                    background:
+                      `${C.error}05`
                   }}
                 >
-                  {I.upload}
+                  <p
+                    style={{
+                      fontSize:12,
+                      color:C.error,
+                      fontWeight:700
+                    }}
+                  >
+                    This certificate will be deleted when you save changes.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+
+                      setDocs(prev => ({
+                        ...prev,
+
+                        [cert]:{
+                          ...prev[cert],
+
+                          file:null,
+
+                          fileName:
+                            prev[cert]
+                              .savedFileName,
+
+                          existing:true,
+                          removed:false
+                        }
+                      }))
+
+                      setSaveError('')
+                    }}
+                    style={{
+                      marginTop:8,
+                      background:'none',
+                      border:'none',
+                      padding:0,
+                      color:C.primary,
+                      fontSize:12,
+                      fontWeight:700,
+                      cursor:'pointer'
+                    }}
+                  >
+                    Undo Remove
+                  </button>
                 </div>
+              )}
 
-                <p
-                  style={{
-                    fontSize:13,
-                    fontWeight:700,
-                    color:C.type
-                  }}
-                >
-                  {data.file
-                    ? data.fileName
-                    : data.existing
-                      ? 'Change Certificate'
-                      : `Upload ${cert}`}
-                </p>
-
-                <p
-                  style={{
-                    fontSize:11,
-                    color:C.muted,
-                    marginTop:4
-                  }}
-                >
-                  PDF, JPG or PNG · Max 10MB
-                </p>
-
-                <input
-                  type="file"
-                  accept=".pdf,image/jpeg,image/png"
-                  onChange={event =>
-                    handleFileSelect(cert, event)
-                  }
-                  style={{ display:'none' }}
-                />
-              </label>
-
-              {(data.file || data.existing) && (
+              {/* Remove / cancel button */}
+              {!data.removed &&
+                (
+                  data.file ||
+                  data.existing
+                ) && (
                 <button
                   type="button"
                   onClick={() =>
-                    setDocs(prev => {
-                      const current = prev[cert]
-
-                      // 1. Newly selected unsaved file
-                      if (current.file && !current.existing) {
-                        return {
-                          ...prev,
-                          [cert]: {
-                            ...current,
-                            file: null,
-                            fileName: '',
-                            removed: false,
-                            issued: '',
-                            expiry: ''
-                          }
-                        }
-                      }
-
-                      // 2. File already saved in Supabase
-                      if (current.existing) {
-                        return {
-                          ...prev,
-                          [cert]: {
-                            ...current,
-                            file: null,
-                            fileName: '',
-                            existing: false,
-                            removed: true,
-                            issued: '',
-                            expiry: ''
-                          }
-                        }
-                      }
-
-                      return prev
-                    })
+                    handleRemove(cert)
                   }
                   style={{
                     marginTop:10,
@@ -1908,32 +3726,38 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
                     cursor:'pointer'
                   }}
                 >
-                  Remove file
+                  {data.file && data.existing
+                    ? 'Cancel New File'
+                    : 'Remove file'}
                 </button>
               )}
 
-              {(data.file || data.existing) && (
+              {/* Dates */}
+              {!data.removed &&
+                (
+                  data.file ||
+                  data.existing
+                ) && (
                 <div
                   style={{
                     display:'grid',
-                    gridTemplateColumns:'1fr 1fr',
+                    gridTemplateColumns:
+                      '1fr 1fr',
                     gap:12,
                     marginTop:14
                   }}
                   className="cao-2col"
                 >
+
                   <Input
                     label="Issue Date"
                     type="date"
                     value={data.issued}
                     onChange={value =>
-                      setDocs(prev => ({
-                        ...prev,
-                        [cert]: {
-                          ...prev[cert],
-                          issued:value
-                        }
-                      }))
+                      updateIssueDate(
+                        cert,
+                        value
+                      )
                     }
                   />
 
@@ -1942,15 +3766,13 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
                     type="date"
                     value={data.expiry}
                     onChange={value =>
-                      setDocs(prev => ({
-                        ...prev,
-                        [cert]: {
-                          ...prev[cert],
-                          expiry:value
-                        }
-                      }))
+                      updateExpiryDate(
+                        cert,
+                        value
+                      )
                     }
                   />
+
                 </div>
               )}
 
@@ -1959,14 +3781,20 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         })}
       </div>
 
+      {/* Save error */}
       {saveError && (
         <div
           style={{
             padding:'12px 14px',
             marginTop:16,
             borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
             color:C.error,
             fontSize:12,
             fontWeight:600
@@ -1980,12 +3808,25 @@ function Step4({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
   )
 }
 
+
+
 // ─── Step 5: Identity Verification ───────────────────────────────────────────
-function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
+function Step5({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
 
   type IdentityDocData = {
     file: File | null
     fileName: string
+
+    // Previously saved filename.
+    // Used when cancelling a replacement.
+    savedFileName: string
+
     existing: boolean
     removed: boolean
   }
@@ -2006,76 +3847,239 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     'Medical Fitness Certificate'
   ]
 
-  const [docs, setDocs] = useState<Record<string, IdentityDocData>>(() => {
-    const initial: Record<string, IdentityDocData> = {}
+  const createEmptyDocs = () => {
+    const initial:Record<
+      string,
+      IdentityDocData
+    > = {}
 
     documentNames.forEach(name => {
       initial[name] = {
-        file: null,
-        fileName: '',
-        existing: false,
-        removed: false
+        file:null,
+        fileName:'',
+        savedFileName:'',
+        existing:false,
+        removed:false
       }
     })
 
     return initial
-  })
+  }
+
+  const [docs, setDocs] = useState<
+    Record<string, IdentityDocData>
+  >(() => createEmptyDocs())
 
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
-  const slugToName: Record<string, string> = {
-    'nic-front': 'NIC Front',
-    'nic-back': 'NIC Back',
-    'police-clearance-certificate': 'Police Clearance Certificate',
-    'medical-fitness-certificate': 'Medical Fitness Certificate',
-    'passport': 'Passport (Optional)',
-    'driving-licence': 'Driving Licence (Optional)'
+  const [
+    loadingDocuments,
+    setLoadingDocuments
+  ] = useState(true)
+
+  // Dirty-state tracking
+  const [initialData, setInitialData] =
+    useState('')
+
+  const [
+    hasSavedData,
+    setHasSavedData
+  ] = useState(false)
+
+  const slugToName:Record<string,string> = {
+    'nic-front':
+      'NIC Front',
+
+    'nic-back':
+      'NIC Back',
+
+    'police-clearance-certificate':
+      'Police Clearance Certificate',
+
+    'medical-fitness-certificate':
+      'Medical Fitness Certificate',
+
+    'passport':
+      'Passport (Optional)',
+
+    'driving-licence':
+      'Driving Licence (Optional)'
   }
 
-  // Load already-saved identity documents
-  useEffect(() => {
-    const loadIdentityDocuments = async () => {
-      try {
-        const savedDocs = await getMyIdentityDocuments()
+  // ─────────────────────────────────────────────
+  // Document name → doc_type
+  // ─────────────────────────────────────────────
+  const documentToSlug = (
+    documentName:string
+  ) => {
+    return documentName
+      .replace(' (Optional)', '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+  }
 
-        if (!savedDocs) return
+  // ─────────────────────────────────────────────
+  // Normalize state for change detection
+  // ─────────────────────────────────────────────
+  const normalizeDocs = (
+    source:Record<
+      string,
+      IdentityDocData
+    >
+  ) => {
 
-        setDocs(prev => {
-          const updated = { ...prev }
+    return documentNames.map(name => {
+      const data = source[name]
 
-          savedDocs.forEach(doc => {
-            const name = slugToName[doc.doc_type]
+      return {
+        document:name,
 
-            if (!name) return
-
-            updated[name] = {
-              ...updated[name],
-              file: null,
-              existing: true,
-              removed: false,
-              fileName: doc.file_url
-                ? doc.file_url.split('/').pop() || name
-                : name
+        file:data.file
+          ? {
+              name:data.file.name,
+              size:data.file.size,
+              type:data.file.type,
+              lastModified:
+                data.file.lastModified
             }
-          })
+          : null,
 
-          return updated
-        })
+        fileName:
+          data.fileName,
 
-      } catch (error) {
-        console.error('Failed to load identity documents:', error)
+        savedFileName:
+          data.savedFileName,
+
+        existing:
+          data.existing,
+
+        removed:
+          data.removed
       }
-    }
+    })
+  }
+
+  const currentData =
+    JSON.stringify(
+      normalizeDocs(docs)
+    )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  const canSave =
+    !loadingDocuments &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
+  // Load saved identity documents
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+
+    const loadIdentityDocuments =
+      async () => {
+
+        try {
+          setLoadingDocuments(true)
+
+          const savedDocs =
+            await getMyIdentityDocuments()
+
+          const loadedDocs =
+            createEmptyDocs()
+
+          if (
+            savedDocs &&
+            savedDocs.length > 0
+          ) {
+
+            savedDocs.forEach(doc => {
+
+              const name =
+                slugToName[
+                  doc.doc_type
+                ]
+
+              if (!name) return
+
+              const storedFileName =
+                doc.file_url
+                  ? doc.file_url
+                      .split('/')
+                      .pop() || name
+                  : name
+
+              loadedDocs[name] = {
+                ...loadedDocs[name],
+
+                file:null,
+
+                fileName:
+                  storedFileName,
+
+                savedFileName:
+                  storedFileName,
+
+                existing:true,
+                removed:false
+              }
+            })
+
+            setHasSavedData(true)
+
+          } else {
+            setHasSavedData(false)
+          }
+
+          setDocs(
+            loadedDocs
+          )
+
+          setInitialData(
+            JSON.stringify(
+              normalizeDocs(
+                loadedDocs
+              )
+            )
+          )
+
+        } catch (error) {
+
+          console.error(
+            'Failed to load identity documents:',
+            error
+          )
+
+          setSaveError(
+            'Failed to load saved identity documents'
+          )
+
+        } finally {
+          setLoadingDocuments(false)
+        }
+      }
 
     loadIdentityDocuments()
+
   }, [])
 
+  // ─────────────────────────────────────────────
+  // Select / replace file
+  // ─────────────────────────────────────────────
   const handleFileSelect = (
-    documentName: string,
-    event: React.ChangeEvent<HTMLInputElement>
+    documentName:string,
+    event:
+      React.ChangeEvent<HTMLInputElement>
   ) => {
-    const file = event.target.files?.[0]
+
+    const file =
+      event.target.files?.[0]
 
     if (!file) return
 
@@ -2085,13 +4089,30 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       'image/png'
     ]
 
-    if (!allowedTypes.includes(file.type)) {
-      setSaveError('Only PDF, JPG and PNG files are allowed')
+    if (
+      !allowedTypes.includes(
+        file.type
+      )
+    ) {
+
+      setSaveError(
+        'Only PDF, JPG and PNG files are allowed'
+      )
+
+      event.target.value = ''
       return
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setSaveError('File must be smaller than 10MB')
+    if (
+      file.size >
+      10 * 1024 * 1024
+    ) {
+
+      setSaveError(
+        'File must be smaller than 10MB'
+      )
+
+      event.target.value = ''
       return
     }
 
@@ -2099,42 +4120,105 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
     setDocs(prev => ({
       ...prev,
-      [documentName]: {
+
+      [documentName]:{
         ...prev[documentName],
+
         file,
-        fileName: file.name,
-        removed: false
+        fileName:file.name,
+
+        // If document was marked for removal,
+        // selecting a file cancels the removal.
+        removed:false
       }
     }))
+
+    // Allows same file to be selected later
+    event.target.value = ''
   }
 
-  const handleRemove = (documentName: string) => {
-    setDocs(prev => {
-      const current = prev[documentName]
+  // ─────────────────────────────────────────────
+  // Remove / cancel selected file
+  // ─────────────────────────────────────────────
+  const handleRemove = (
+    documentName:string
+  ) => {
 
-      // New unsaved file → clear locally only
-      if (current.file && !current.existing) {
+    setSaveError('')
+
+    setDocs(prev => {
+
+      const current =
+        prev[documentName]
+
+      // ─────────────────────────────
+      // Existing saved document +
+      // new replacement selected.
+      //
+      // Cancel replacement only.
+      // Keep original saved file.
+      // ─────────────────────────────
+      if (
+        current.file &&
+        current.existing
+      ) {
+
         return {
           ...prev,
-          [documentName]: {
+
+          [documentName]:{
             ...current,
-            file: null,
-            fileName: '',
-            removed: false
+
+            file:null,
+
+            fileName:
+              current.savedFileName,
+
+            removed:false
           }
         }
       }
 
-      // Already saved → mark for Supabase deletion
-      if (current.existing) {
+      // ─────────────────────────────
+      // Completely new unsaved file.
+      // Clear local selection only.
+      // ─────────────────────────────
+      if (
+        current.file &&
+        !current.existing
+      ) {
+
         return {
           ...prev,
-          [documentName]: {
+
+          [documentName]:{
             ...current,
-            file: null,
-            fileName: '',
-            existing: false,
-            removed: true
+
+            file:null,
+            fileName:'',
+            savedFileName:'',
+            removed:false
+          }
+        }
+      }
+
+      // ─────────────────────────────
+      // Existing Supabase document.
+      // Mark for deletion on Save.
+      // ─────────────────────────────
+      if (current.existing) {
+
+        return {
+          ...prev,
+
+          [documentName]:{
+            ...current,
+
+            file:null,
+            fileName:'',
+
+            existing:false,
+            removed:true
           }
         }
       }
@@ -2143,69 +4227,167 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
     })
   }
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
-      setSaving(true)
+  // ─────────────────────────────────────────────
+  // Undo removal
+  // ─────────────────────────────────────────────
+  const handleUndoRemove = (
+    documentName:string
+  ) => {
 
-      // Delete documents marked for removal
-      for (const [documentName, data] of Object.entries(docs)) {
-        if (data.removed) {
-          const docType = documentName
-            .replace(' (Optional)', '')
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '')
+    setSaveError('')
 
-          await deleteMyCertification(docType)
-        }
+    setDocs(prev => ({
+      ...prev,
+
+      [documentName]:{
+        ...prev[documentName],
+
+        file:null,
+
+        fileName:
+          prev[documentName]
+            .savedFileName,
+
+        existing:true,
+        removed:false
       }
-
-      // Validate required documents
-      for (const requiredDoc of requiredDocuments) {
-        const data = docs[requiredDoc]
-
-        if (
-          data.removed ||
-          (!data.file && !data.existing)
-        ) {
-          throw new Error(`${requiredDoc} is required`)
-        }
-      }
-
-      // Upload new / changed files
-      for (const [documentName, data] of Object.entries(docs)) {
-        if (!data.removed && data.file) {
-          await saveMyIdentityDocument(
-            documentName,
-            data.file
-          )
-        }
-      }
-
-      onNext()
-
-    } catch (error) {
-      console.error('Failed to save identity documents:', error)
-
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError('Failed to save identity documents')
-      }
-
-    } finally {
-      setSaving(false)
-    }
+    }))
   }
 
-  const done = Object.values(docs).filter(
-    data =>
-      !data.removed &&
-      (data.file || data.existing)
-  ).length
+  // ─────────────────────────────────────────────
+  // Save Step 5
+  // ─────────────────────────────────────────────
+  const handleSaveAndContinue =
+    async () => {
 
-  const total = documentNames.length
+      try {
+
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
+        }
+
+        setSaveError('')
+
+        // IMPORTANT:
+        // Validate BEFORE deleting anything.
+        for (
+          const requiredDoc
+          of requiredDocuments
+        ) {
+
+          const data =
+            docs[requiredDoc]
+
+          if (
+            data.removed ||
+            (
+              !data.file &&
+              !data.existing
+            )
+          ) {
+
+            throw new Error(
+              `${requiredDoc} is required`
+            )
+          }
+        }
+
+        setSaving(true)
+
+        // 1. Delete documents marked for removal
+        for (
+          const [
+            documentName,
+            data
+          ] of Object.entries(docs)
+        ) {
+
+          if (data.removed) {
+
+            const docType =
+              documentToSlug(
+                documentName
+              )
+
+            await deleteMyCertification(
+              docType
+            )
+          }
+        }
+
+        // 2. Upload new / replacement files
+        for (
+          const [
+            documentName,
+            data
+          ] of Object.entries(docs)
+        ) {
+
+          if (
+            !data.removed &&
+            data.file
+          ) {
+
+            await saveMyIdentityDocument(
+              documentName,
+              data.file
+            )
+          }
+        }
+
+        setHasSavedData(true)
+
+        // Parent decides navigation:
+        //
+        // Normal onboarding:
+        // Step 5 → Step 6
+        //
+        // Review Edit mode:
+        // Step 5 → Step 11
+        onNext()
+
+      } catch (error) {
+
+        console.error(
+          'Failed to save identity documents:',
+          error
+        )
+
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save identity documents'
+          )
+        }
+
+      } finally {
+        setSaving(false)
+      }
+    }
+
+  // ─────────────────────────────────────────────
+  // Progress
+  // ─────────────────────────────────────────────
+  const done =
+    Object.values(docs).filter(
+      data =>
+        !data.removed &&
+        (
+          data.file ||
+          data.existing
+        )
+    ).length
+
+  const total =
+    documentNames.length
 
   const tips = [
     'Ensure all text is clearly legible',
@@ -2221,36 +4403,59 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       title="Identity Verification"
       desc="KYC verification protects clients and ensures platform integrity."
       onBack={onBack}
-      onNext={handleSaveAndContinue}
-      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+      onNext={
+        handleSaveAndContinue
+      }
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving
+      }
     >
 
-      {/* Quality indicator */}
+      {/* Document progress */}
       <Card
         style={{
           padding:20,
           marginBottom:20,
-          background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`,
-          border:`1px solid ${C.primary}20`
+
+          background:
+            `linear-gradient(
+              135deg,
+              ${C.primary}06,
+              ${C.primary}02
+            )`,
+
+          border:
+            `1px solid ${C.primary}20`
         }}
       >
+
         <div
           style={{
             display:'flex',
             alignItems:'center',
-            justifyContent:'space-between',
+            justifyContent:
+              'space-between',
             marginBottom:10
           }}
         >
+
           <p
             style={{
               fontSize:13,
               fontWeight:800,
               color:C.type,
-              fontFamily:'Manrope,sans-serif'
+
+              fontFamily:
+                'Manrope,sans-serif'
             }}
           >
-            Document Quality Score
+            Document Upload Progress
           </p>
 
           <span
@@ -2258,28 +4463,48 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
               fontSize:18,
               fontWeight:900,
               color:C.success,
-              fontFamily:'Manrope,sans-serif'
+
+              fontFamily:
+                'Manrope,sans-serif'
             }}
           >
-            {Math.round((done / total) * 100)}%
+            {Math.round(
+              (done / total) *
+              100
+            )}%
           </span>
+
         </div>
 
         <div
           style={{
             height:8,
             borderRadius:99,
-            background:'rgba(0,115,122,0.1)',
+
+            background:
+              'rgba(0,115,122,0.1)',
+
             overflow:'hidden'
           }}
         >
           <div
             style={{
-              width:`${(done / total) * 100}%`,
+              width:
+                `${(done / total) * 100}%`,
+
               height:'100%',
-              background:`linear-gradient(90deg,${C.primary},${C.success})`,
+
+              background:
+                `linear-gradient(
+                  90deg,
+                  ${C.primary},
+                  ${C.success}
+                )`,
+
               borderRadius:99,
-              transition:'width 0.5s'
+
+              transition:
+                'width 0.5s'
             }}
           />
         </div>
@@ -2293,124 +4518,309 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         >
           {done} of {total} documents uploaded
         </p>
+
       </Card>
 
       {/* Documents */}
       <div
         style={{
           display:'grid',
-          gridTemplateColumns:'1fr 1fr',
+          gridTemplateColumns:
+            '1fr 1fr',
           gap:14,
           marginBottom:20
         }}
         className="cao-2col"
       >
-        {documentNames.map(doc => {
-          const data = docs[doc]
 
-          return (
-            <Card
-              key={doc}
-              style={{ padding:18 }}
-            >
-              <label
+        {documentNames.map(
+          documentName => {
+
+            const data =
+              docs[documentName]
+
+            const required =
+              requiredDocuments.includes(
+                documentName
+              )
+
+            return (
+              <Card
+                key={documentName}
                 style={{
-                  display:'block',
-                  padding:'18px',
-                  borderRadius:14,
-                  border:`2px dashed ${
-                    data.file || data.existing
-                      ? C.success
-                      : C.border
-                  }`,
-                  background:
-                    data.file || data.existing
-                      ? `${C.success}06`
-                      : C.bg,
-                  cursor:'pointer',
-                  textAlign:'center' as const
+                  padding:18
                 }}
               >
+
+                {/* Document title */}
                 <div
                   style={{
-                    width:40,
-                    height:40,
-                    borderRadius:13,
-                    background:`${C.primary}10`,
                     display:'flex',
+                    gap:7,
                     alignItems:'center',
-                    justifyContent:'center',
-                    color:C.primary,
-                    margin:'0 auto 10px'
+                    marginBottom:10,
+                    flexWrap:'wrap'
                   }}
                 >
-                  {I.upload}
+                  <p
+                    style={{
+                      fontSize:12,
+                      fontWeight:800,
+                      color:C.type
+                    }}
+                  >
+                    {documentName}
+                  </p>
+
+                  {required && (
+                    <span
+                      style={{
+                        color:C.error,
+                        fontWeight:800
+                      }}
+                    >
+                      *
+                    </span>
+                  )}
+
+                  {data.removed && (
+                    <Bdg
+                      label="Will be removed"
+                      color={C.error}
+                    />
+                  )}
+
+                  {!data.removed &&
+                    (
+                      data.file ||
+                      data.existing
+                    ) && (
+                    <Bdg
+                      label={
+                        data.file
+                          ? data.existing
+                            ? 'Replacement Selected'
+                            : 'Ready to Save'
+                          : 'Saved'
+                      }
+                      color={
+                        data.file
+                          ? C.info
+                          : C.success
+                      }
+                    />
+                  )}
                 </div>
 
-                <p
-                  style={{
-                    fontSize:13,
-                    fontWeight:700,
-                    color:C.type
-                  }}
-                >
-                  {data.file
-                    ? data.fileName
-                    : data.existing
-                      ? `Change ${doc}`
-                      : doc}
-                </p>
+                {/* Upload area */}
+                {!data.removed && (
+                  <label
+                    style={{
+                      display:'block',
+                      padding:'18px',
+                      borderRadius:14,
 
-                <p
-                  style={{
-                    fontSize:11,
-                    color:C.muted,
-                    marginTop:4
-                  }}
-                >
-                  JPG, PNG or PDF · Max 10MB
-                </p>
+                      border:
+                        `2px dashed ${
+                          data.file ||
+                          data.existing
+                            ? C.success
+                            : C.border
+                        }`,
 
-                <input
-                  type="file"
-                  accept=".pdf,image/jpeg,image/png"
-                  onChange={event =>
-                    handleFileSelect(doc, event)
-                  }
-                  style={{ display:'none' }}
-                />
-              </label>
+                      background:
+                        data.file ||
+                        data.existing
+                          ? `${C.success}06`
+                          : C.bg,
 
-              {(data.file || data.existing) && (
-                <button
-                  type="button"
-                  onClick={() => handleRemove(doc)}
-                  style={{
-                    marginTop:10,
-                    background:'none',
-                    border:'none',
-                    color:C.error,
-                    fontSize:12,
-                    fontWeight:700,
-                    cursor:'pointer'
-                  }}
-                >
-                  Remove file
-                </button>
-              )}
-            </Card>
-          )
-        })}
+                      cursor:'pointer',
+
+                      textAlign:
+                        'center' as const
+                    }}
+                  >
+
+                    <div
+                      style={{
+                        width:40,
+                        height:40,
+                        borderRadius:13,
+
+                        background:
+                          `${C.primary}10`,
+
+                        display:'flex',
+                        alignItems:'center',
+                        justifyContent:
+                          'center',
+
+                        color:C.primary,
+
+                        margin:
+                          '0 auto 10px'
+                      }}
+                    >
+                      {I.upload}
+                    </div>
+
+                    <p
+                      style={{
+                        fontSize:13,
+                        fontWeight:700,
+                        color:C.type
+                      }}
+                    >
+                      {data.file
+                        ? data.fileName
+
+                        : data.existing
+                          ? `Change ${documentName}`
+
+                          : documentName}
+                    </p>
+
+                    <p
+                      style={{
+                        fontSize:11,
+                        color:C.muted,
+                        marginTop:4
+                      }}
+                    >
+                      JPG, PNG or PDF · Max 10MB
+                    </p>
+
+                    <input
+                      type="file"
+
+                      accept=
+                        ".pdf,image/jpeg,image/png"
+
+                      onChange={event =>
+                        handleFileSelect(
+                          documentName,
+                          event
+                        )
+                      }
+
+                      style={{
+                        display:'none'
+                      }}
+                    />
+
+                  </label>
+                )}
+
+                {/* Pending removal */}
+                {data.removed && (
+                  <div
+                    style={{
+                      padding:14,
+                      borderRadius:12,
+
+                      background:
+                        `${C.error}05`,
+
+                      border:
+                        `1px solid ${C.error}25`
+                    }}
+                  >
+
+                    <p
+                      style={{
+                        fontSize:11,
+                        color:C.error,
+                        fontWeight:700,
+                        lineHeight:1.5
+                      }}
+                    >
+                      This document will be deleted when you save changes.
+                    </p>
+
+                    <button
+                      type="button"
+
+                      onClick={() =>
+                        handleUndoRemove(
+                          documentName
+                        )
+                      }
+
+                      style={{
+                        marginTop:8,
+                        padding:0,
+                        background:'none',
+                        border:'none',
+
+                        color:C.primary,
+
+                        fontSize:12,
+                        fontWeight:700,
+                        cursor:'pointer'
+                      }}
+                    >
+                      Undo Remove
+                    </button>
+
+                  </div>
+                )}
+
+                {/* Remove / cancel replacement */}
+                {!data.removed &&
+                  (
+                    data.file ||
+                    data.existing
+                  ) && (
+                  <button
+                    type="button"
+
+                    onClick={() =>
+                      handleRemove(
+                        documentName
+                      )
+                    }
+
+                    style={{
+                      marginTop:10,
+
+                      background:'none',
+                      border:'none',
+
+                      color:C.error,
+
+                      fontSize:12,
+                      fontWeight:700,
+                      cursor:'pointer'
+                    }}
+                  >
+                    {data.file &&
+                    data.existing
+                      ? 'Cancel New File'
+                      : 'Remove file'}
+                  </button>
+                )}
+
+              </Card>
+            )
+          }
+        )}
+
       </div>
 
+      {/* Error */}
       {saveError && (
         <div
           style={{
             padding:'12px 14px',
             marginBottom:16,
             borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
             color:C.error,
             fontSize:12,
             fontWeight:600
@@ -2421,47 +4831,69 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       )}
 
       {/* Verification tips */}
-      <Card style={{ padding:20 }}>
+      <Card
+        style={{
+          padding:20
+        }}
+      >
+
         <p
           style={{
             fontSize:12,
             fontWeight:800,
             color:C.muted,
-            textTransform:'uppercase',
-            letterSpacing:'0.08em',
+
+            textTransform:
+              'uppercase',
+
+            letterSpacing:
+              '0.08em',
+
             marginBottom:12
           }}
         >
           Verification Tips
         </p>
 
-        {tips.map((tip, i) => (
+        {tips.map((tip, index) => (
           <div
-            key={i}
+            key={index}
+
             style={{
               display:'flex',
               gap:8,
-              alignItems:'flex-start',
+              alignItems:
+                'flex-start',
+
               marginBottom:8
             }}
           >
+
             <div
               style={{
                 width:20,
                 height:20,
                 borderRadius:'50%',
-                background:`${C.info}10`,
+
+                background:
+                  `${C.info}10`,
+
                 display:'flex',
                 alignItems:'center',
-                justifyContent:'center',
+                justifyContent:
+                  'center',
+
                 color:C.info,
                 flexShrink:0,
+
                 fontSize:11,
                 fontWeight:800,
-                fontFamily:'Manrope,sans-serif'
+
+                fontFamily:
+                  'Manrope,sans-serif'
               }}
             >
-              {i + 1}
+              {index + 1}
             </div>
 
             <p
@@ -2473,21 +4905,29 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
             >
               {tip}
             </p>
+
           </div>
         ))}
 
+        {/* Selfie verification placeholder */}
         <div
           style={{
             marginTop:14,
             padding:'14px 16px',
             borderRadius:12,
-            background:`${C.info}06`,
-            border:`1px solid ${C.info}20`,
+
+            background:
+              `${C.info}06`,
+
+            border:
+              `1px solid ${C.info}20`,
+
             display:'flex',
             gap:10,
             alignItems:'center'
           }}
         >
+
           <span
             style={{
               color:C.info,
@@ -2506,6 +4946,7 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
               }}
             >
               Selfie Verification{' '}
+
               <Bdg
                 label="Coming Soon"
                 color={C.info}
@@ -2521,15 +4962,24 @@ function Step5({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
               Real-time liveness check will be required in future updates.
             </p>
           </div>
+
         </div>
+
       </Card>
 
     </StepWrap>
   )
 }
 
+
 // ─── Step 6: Banking & Payouts ────────────────────────────────────────────────
-function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
+function Step6({
+  onBack,
+  onNext
+}:{
+  onBack:()=>void
+  onNext:()=>void
+}) {
 
   const [form, setForm] = useState({
     bankName: '',
@@ -2544,90 +4994,294 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
-  const f = (key: keyof typeof form) => (value: string) => {
-    setForm(prev => ({
-      ...prev,
-      [key]: value
-    }))
-  }
+  // Dirty-state tracking
+  const [initialData, setInitialData] = useState('')
+  const [hasSavedData, setHasSavedData] = useState(false)
 
-  // Load previously saved bank details
+  // ─────────────────────────────────────────────
+  // Update form field
+  // ─────────────────────────────────────────────
+  const f =
+    (key:keyof typeof form) =>
+    (value:string) => {
+
+      setForm(prev => ({
+        ...prev,
+        [key]:value
+      }))
+
+      setSaveError('')
+    }
+
+  // ─────────────────────────────────────────────
+  // Dirty-state comparison
+  // ─────────────────────────────────────────────
+  const currentData =
+    JSON.stringify(form)
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  // First-time Step 6:
+  // Save is available.
+  //
+  // Existing saved bank details:
+  // Save is available only after a change.
+  const canSave =
+    !loading &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
+  // Load previously saved bank account
+  // ─────────────────────────────────────────────
   useEffect(() => {
-    const loadBankAccount = async () => {
-      try {
-        const account = await getMyBankAccount()
 
-        if (account) {
-          setForm({
-            bankName: account.bank_name || '',
-            branch: account.branch || '',
-            accountName: account.account_name || '',
-            accountNumber: account.account_number || '',
-            swiftCode: account.swift_code || '',
+    const loadBankAccount = async () => {
+
+      try {
+        setLoading(true)
+
+        const account =
+          await getMyBankAccount()
+
+        if (!account) {
+
+          setHasSavedData(false)
+
+          const emptyForm = {
+            bankName:'',
+            branch:'',
+            accountName:'',
+            accountNumber:'',
+            swiftCode:'',
             payoutPreference:
-              account.payout_preference || 'Bank Transfer'
-          })
+              'Bank Transfer'
+          }
+
+          setForm(emptyForm)
+
+          setInitialData(
+            JSON.stringify(
+              emptyForm
+            )
+          )
+
+          return
         }
 
+        const loadedForm = {
+          bankName:
+            account.bank_name || '',
+
+          branch:
+            account.branch || '',
+
+          accountName:
+            account.account_name || '',
+
+          accountNumber:
+            account.account_number || '',
+
+          swiftCode:
+            account.swift_code || '',
+
+          payoutPreference:
+            account.payout_preference ||
+            'Bank Transfer'
+        }
+
+        setForm(
+          loadedForm
+        )
+
+        // Treat it as previously saved
+        // only when meaningful bank details exist.
+        const accountHasData =
+          Boolean(account.bank_name) ||
+          Boolean(account.branch) ||
+          Boolean(account.account_name) ||
+          Boolean(account.account_number)
+
+        setHasSavedData(
+          accountHasData
+        )
+
+        // Store original state for comparison
+        setInitialData(
+          JSON.stringify(
+            loadedForm
+          )
+        )
+
       } catch (error) {
-        console.error('Failed to load bank account:', error)
-        setSaveError('Failed to load saved bank details')
+
+        console.error(
+          'Failed to load bank account:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved bank details'
+        )
+
       } finally {
         setLoading(false)
       }
     }
 
     loadBankAccount()
+
   }, [])
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
+  // ─────────────────────────────────────────────
+  // Save Step 6
+  // ─────────────────────────────────────────────
+  const handleSaveAndContinue =
+    async () => {
 
-      if (!form.bankName.trim()) {
-        throw new Error('Bank name is required')
+      try {
+
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
+        }
+
+        setSaveError('')
+
+        // Required validation
+        if (
+          !form.bankName.trim()
+        ) {
+          throw new Error(
+            'Bank name is required'
+          )
+        }
+
+        if (
+          !form.branch.trim()
+        ) {
+          throw new Error(
+            'Branch is required'
+          )
+        }
+
+        if (
+          !form.accountName.trim()
+        ) {
+          throw new Error(
+            'Account holder name is required'
+          )
+        }
+
+        if (
+          !form.accountNumber.trim()
+        ) {
+          throw new Error(
+            'Account number is required'
+          )
+        }
+
+        setSaving(true)
+
+        // Normalize final saved values
+        const savedForm = {
+          bankName:
+            form.bankName.trim(),
+
+          branch:
+            form.branch.trim(),
+
+          accountName:
+            form.accountName.trim(),
+
+          accountNumber:
+            form.accountNumber.trim(),
+
+          swiftCode:
+            form.swiftCode.trim(),
+
+          payoutPreference:
+            form.payoutPreference
+        }
+
+        await saveMyBankAccount({
+          bank_name:
+            savedForm.bankName,
+
+          branch:
+            savedForm.branch,
+
+          account_name:
+            savedForm.accountName,
+
+          account_number:
+            savedForm.accountNumber,
+
+          swift_code:
+            savedForm.swiftCode,
+
+          payout_preference:
+            savedForm.payoutPreference
+        })
+
+        // Keep local state exactly the same
+        // as the normalized values saved to Supabase.
+        setForm(
+          savedForm
+        )
+
+        setHasSavedData(true)
+
+        setInitialData(
+          JSON.stringify(
+            savedForm
+          )
+        )
+
+        // Parent navigation decides:
+        //
+        // Normal onboarding:
+        // Step 6 → Step 7
+        //
+        // Step 11 Review Edit:
+        // Step 6 → Step 11
+        onNext()
+
+      } catch (error) {
+
+        console.error(
+          'Failed to save bank account:',
+          error
+        )
+
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save bank details'
+          )
+        }
+
+      } finally {
+        setSaving(false)
       }
-
-      if (!form.branch.trim()) {
-        throw new Error('Branch is required')
-      }
-
-      if (!form.accountName.trim()) {
-        throw new Error('Account holder name is required')
-      }
-
-      if (!form.accountNumber.trim()) {
-        throw new Error('Account number is required')
-      }
-
-      setSaving(true)
-
-      await saveMyBankAccount({
-        bank_name: form.bankName.trim(),
-        branch: form.branch.trim(),
-        account_name: form.accountName.trim(),
-        account_number: form.accountNumber.trim(),
-        swift_code: form.swiftCode.trim(),
-        payout_preference: form.payoutPreference
-      })
-
-      onNext()
-
-    } catch (error) {
-      console.error('Failed to save bank account:', error)
-
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError('Failed to save bank details')
-      }
-
-    } finally {
-      setSaving(false)
     }
-  }
 
+  // ─────────────────────────────────────────────
+  // Loading UI
+  // ─────────────────────────────────────────────
   if (loading) {
+
     return (
       <StepWrap
         step={6}
@@ -2636,13 +5290,17 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
         desc="Add your bank account details for future payouts."
         onBack={onBack}
         onNext={() => {}}
+        nextDisabled={true}
       >
+
         <Card
           style={{
             padding:30,
-            textAlign:'center' as const
+            textAlign:
+              'center' as const
           }}
         >
+
           <p
             style={{
               fontSize:13,
@@ -2651,7 +5309,9 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
           >
             Loading bank details...
           </p>
+
         </Card>
+
       </StepWrap>
     )
   }
@@ -2663,11 +5323,27 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
       title="Banking & Payouts"
       desc="Add your bank account details for future payouts."
       onBack={onBack}
-      onNext={handleSaveAndContinue}
-      nextLabel={saving ? 'Saving...' : 'Save & Continue'}
+      onNext={
+        handleSaveAndContinue
+      }
+      nextLabel={
+        saving
+          ? 'Saving...'
+          : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving
+      }
     >
 
-      <Card style={{ padding:22, marginBottom:18 }}>
+      {/* Bank Account Details */}
+      <Card
+        style={{
+          padding:22,
+          marginBottom:18
+        }}
+      >
 
         <FormSection title="Bank Account Details">
 
@@ -2724,7 +5400,13 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
       </Card>
 
-      <Card style={{ padding:22, marginBottom:18 }}>
+      {/* Payout Preference */}
+      <Card
+        style={{
+          padding:22,
+          marginBottom:18
+        }}
+      >
 
         <FormSection title="Payout Preference">
 
@@ -2734,8 +5416,12 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
               options={[
                 'Bank Transfer'
               ]}
-              value={form.payoutPreference}
-              onChange={f('payoutPreference')}
+              value={
+                form.payoutPreference
+              }
+              onChange={
+                f('payoutPreference')
+              }
             />
           </FormFull>
 
@@ -2743,14 +5429,78 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 
       </Card>
 
+      {/* Security notice */}
+      <Card
+        style={{
+          padding:'14px 16px',
+          marginBottom:18,
+          background:`${C.info}05`,
+          border:`1px solid ${C.info}20`
+        }}
+      >
+
+        <div
+          style={{
+            display:'flex',
+            gap:10,
+            alignItems:'flex-start'
+          }}
+        >
+
+          <span
+            style={{
+              color:C.info,
+              display:'flex'
+            }}
+          >
+            {I.shield}
+          </span>
+
+          <div>
+
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.info,
+                marginBottom:3
+              }}
+            >
+              Your banking information is protected
+            </p>
+
+            <p
+              style={{
+                fontSize:11,
+                color:C.muted,
+                lineHeight:1.6
+              }}
+            >
+              Bank account details are used for ReadyPal payouts
+              and will be reviewed securely after your application
+              is submitted.
+            </p>
+
+          </div>
+
+        </div>
+
+      </Card>
+
+      {/* Save error */}
       {saveError && (
         <div
           style={{
             padding:'12px 14px',
             marginBottom:16,
             borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
             color:C.error,
             fontSize:12,
             fontWeight:600
@@ -2765,6 +5515,7 @@ function Step6({ onBack, onNext }:{ onBack:()=>void; onNext:()=>void }) {
 }
 
 
+
 // ─── Step 7: Availability ─────────────────────────────────────────────────────
 function Step7({
   onBack,
@@ -2773,6 +5524,12 @@ function Step7({
   onBack:()=>void
   onNext:()=>void
 }) {
+
+  type ShiftType =
+    | 'morning'
+    | 'afternoon'
+    | 'evening'
+    | 'night'
 
   const days = [
     'Mon',
@@ -2783,23 +5540,6 @@ function Step7({
     'Sat',
     'Sun'
   ]
-
-  const [activeDays, setActiveDays] = useState<Set<string>>(
-    new Set()
-  )
-
-  const [shift, setShift] = useState<
-    'morning' | 'afternoon' | 'evening' | 'night'
-  >('morning')
-
-  const [emergency, setEmergency] = useState(false)
-  const [holiday, setHoliday] = useState(false)
-  const [maxHours, setMaxHours] = useState(40)
-  const [maxDist, setMaxDist] = useState(20)
-
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
 
   const shifts = [
     {
@@ -2824,64 +5564,275 @@ function Step7({
     }
   ]
 
-  useEffect(() => {
-    const loadAvailability = async () => {
-      try {
-        const data = await getMyAvailability()
+  const [activeDays, setActiveDays] =
+    useState<Set<string>>(
+      new Set()
+    )
 
-        if (data) {
-          setActiveDays(
-            new Set(
-              Array.isArray(data.working_days)
+  const [shift, setShift] =
+    useState<ShiftType>(
+      'morning'
+    )
+
+  const [emergency, setEmergency] =
+    useState(false)
+
+  const [holiday, setHoliday] =
+    useState(false)
+
+  const [maxHours, setMaxHours] =
+    useState(40)
+
+  const [maxDist, setMaxDist] =
+    useState(20)
+
+  const [loading, setLoading] =
+    useState(true)
+
+  const [saving, setSaving] =
+    useState(false)
+
+  const [saveError, setSaveError] =
+    useState('')
+
+  // Dirty-state tracking
+  const [initialData, setInitialData] =
+    useState('')
+
+  const [hasSavedData, setHasSavedData] =
+    useState(false)
+
+  // ─────────────────────────────────────────────
+  // Normalize Availability data
+  // ─────────────────────────────────────────────
+  const createSnapshot = (
+    workingDays:Set<string>,
+    selectedShift:ShiftType,
+    emergencyAvailable:boolean,
+    holidayAvailable:boolean,
+    weeklyHours:number,
+    travelDistance:number
+  ) => {
+
+    return JSON.stringify({
+      workingDays:
+        Array.from(workingDays)
+          .sort(),
+
+      shift:
+        selectedShift,
+
+      emergency:
+        emergencyAvailable,
+
+      holiday:
+        holidayAvailable,
+
+      maxHours:
+        weeklyHours,
+
+      maxDist:
+        travelDistance
+    })
+  }
+
+  const currentData =
+    createSnapshot(
+      activeDays,
+      shift,
+      emergency,
+      holiday,
+      maxHours,
+      maxDist
+    )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  // First time user → can save
+  // Existing saved data → must change first
+  const canSave =
+    !loading &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
+  // Load saved Availability
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+
+    const loadAvailability =
+      async () => {
+
+        try {
+          setLoading(true)
+
+          const data =
+            await getMyAvailability()
+
+          if (!data) {
+
+            setHasSavedData(false)
+
+            const emptyDays =
+              new Set<string>()
+
+            setActiveDays(
+              emptyDays
+            )
+
+            setShift(
+              'morning'
+            )
+
+            setEmergency(
+              false
+            )
+
+            setHoliday(
+              false
+            )
+
+            setMaxHours(
+              40
+            )
+
+            setMaxDist(
+              20
+            )
+
+            setInitialData(
+              createSnapshot(
+                emptyDays,
+                'morning',
+                false,
+                false,
+                40,
+                20
+              )
+            )
+
+            return
+          }
+
+          const loadedDays =
+            new Set<string>(
+              Array.isArray(
+                data.working_days
+              )
                 ? data.working_days
                 : []
             )
+
+          const loadedShift =
+            (
+              data.preferred_shift ||
+              'morning'
+            ) as ShiftType
+
+          const loadedEmergency =
+            data.emergency_available ??
+            false
+
+          const loadedHoliday =
+            data.holiday_available ??
+            false
+
+          const loadedMaxHours =
+            data.max_weekly_hours ??
+            40
+
+          const loadedMaxDist =
+            data.max_travel_distance_km ??
+            20
+
+          setActiveDays(
+            loadedDays
           )
 
           setShift(
-            data.preferred_shift || 'morning'
+            loadedShift
           )
 
           setEmergency(
-            data.emergency_available ?? false
+            loadedEmergency
           )
 
           setHoliday(
-            data.holiday_available ?? false
+            loadedHoliday
           )
 
           setMaxHours(
-            data.max_weekly_hours ?? 40
+            loadedMaxHours
           )
 
           setMaxDist(
-            data.max_travel_distance_km ?? 20
+            loadedMaxDist
           )
+
+          // Determine whether Step 7
+          // has meaningful saved data
+          const availabilityHasData =
+            loadedDays.size > 0 ||
+            Boolean(
+              data.preferred_shift
+            ) ||
+            data.max_weekly_hours != null ||
+            data.max_travel_distance_km != null
+
+          setHasSavedData(
+            availabilityHasData
+          )
+
+          setInitialData(
+            createSnapshot(
+              loadedDays,
+              loadedShift,
+              loadedEmergency,
+              loadedHoliday,
+              loadedMaxHours,
+              loadedMaxDist
+            )
+          )
+
+        } catch (error) {
+
+          console.error(
+            'Failed to load availability:',
+            error
+          )
+
+          setSaveError(
+            'Failed to load saved availability'
+          )
+
+        } finally {
+          setLoading(false)
         }
-
-      } catch (error) {
-        console.error(
-          'Failed to load availability:',
-          error
-        )
-
-        setSaveError(
-          'Failed to load saved availability'
-        )
-
-      } finally {
-        setLoading(false)
       }
-    }
 
     loadAvailability()
+
   }, [])
 
-  const toggleDay = (day: string) => {
-    setActiveDays(prev => {
-      const updated = new Set(prev)
+  // ─────────────────────────────────────────────
+  // Toggle working day
+  // ─────────────────────────────────────────────
+  const toggleDay = (
+    day:string
+  ) => {
 
-      if (updated.has(day)) {
+    setActiveDays(prev => {
+
+      const updated =
+        new Set(prev)
+
+      if (
+        updated.has(day)
+      ) {
         updated.delete(day)
       } else {
         updated.add(day)
@@ -2889,62 +5840,179 @@ function Step7({
 
       return updated
     })
+
+    setSaveError('')
   }
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
+  // ─────────────────────────────────────────────
+  // Change preferred shift
+  // ─────────────────────────────────────────────
+  const handleShiftChange = (
+    newShift:ShiftType
+  ) => {
 
-      // Required field validation
-      if (activeDays.size === 0) {
-        throw new Error('Please select at least one working day')
-      }
+    setShift(
+      newShift
+    )
 
-      if (!shift) {
-        throw new Error('Please select a preferred shift')
-      }
-  
-      if (!maxHours || maxHours < 10) {
-        throw new Error('Please select maximum weekly hours')
-      }
+    setSaveError('')
+  }
 
-      if (!maxDist || maxDist < 5) {
-        throw new Error('Please select maximum travel distance')
-      }
+  // ─────────────────────────────────────────────
+  // Emergency toggle
+  // ─────────────────────────────────────────────
+  const toggleEmergency = () => {
 
-      setSaving(true)
+    setEmergency(prev =>
+      !prev
+    )
 
-      await saveMyAvailability({
-        working_days: Array.from(activeDays),
-        preferred_shift: shift,
-        emergency_available: emergency,
-        holiday_available: holiday,
-        max_weekly_hours: maxHours,
-        max_travel_distance_km: maxDist
-      })
+    setSaveError('')
+  }
 
-      onNext()
+  // ─────────────────────────────────────────────
+  // Holiday toggle
+  // ─────────────────────────────────────────────
+  const toggleHoliday = () => {
 
-    } catch (error) {
-      console.error(
-        'Failed to save availability:',
-        error
-      )
+    setHoliday(prev =>
+      !prev
+    )
 
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError(
-          'Failed to save availability'
+    setSaveError('')
+  }
+
+  // ─────────────────────────────────────────────
+  // Save Step 7
+  // ─────────────────────────────────────────────
+  const handleSaveAndContinue =
+    async () => {
+
+      try {
+
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
+        }
+
+        setSaveError('')
+
+        // Required validation
+        if (
+          activeDays.size === 0
+        ) {
+          throw new Error(
+            'Please select at least one working day'
+          )
+        }
+
+        if (!shift) {
+          throw new Error(
+            'Please select a preferred shift'
+          )
+        }
+
+        if (
+          !maxHours ||
+          maxHours < 10
+        ) {
+          throw new Error(
+            'Please select maximum weekly hours'
+          )
+        }
+
+        if (
+          !maxDist ||
+          maxDist < 5
+        ) {
+          throw new Error(
+            'Please select maximum travel distance'
+          )
+        }
+
+        setSaving(true)
+
+        const savedDays =
+          Array.from(
+            activeDays
+          )
+
+        await saveMyAvailability({
+          working_days:
+            savedDays,
+
+          preferred_shift:
+            shift,
+
+          emergency_available:
+            emergency,
+
+          holiday_available:
+            holiday,
+
+          max_weekly_hours:
+            maxHours,
+
+          max_travel_distance_km:
+            maxDist
+        })
+
+        setHasSavedData(
+          true
         )
+
+        // Reset dirty state
+        setInitialData(
+          createSnapshot(
+            activeDays,
+            shift,
+            emergency,
+            holiday,
+            maxHours,
+            maxDist
+          )
+        )
+
+        // Parent handles navigation:
+        //
+        // Normal:
+        // Step 7 → Step 8
+        //
+        // Review Edit:
+        // Step 7 → Step 11
+        onNext()
+
+      } catch (error) {
+
+        console.error(
+          'Failed to save availability:',
+          error
+        )
+
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save availability'
+          )
+        }
+
+      } finally {
+        setSaving(false)
       }
-
-    } finally {
-      setSaving(false)
     }
-  }
 
+  // ─────────────────────────────────────────────
+  // Loading UI
+  // ─────────────────────────────────────────────
   if (loading) {
+
     return (
       <StepWrap
         step={7}
@@ -2953,11 +6021,14 @@ function Step7({
         desc="Tell us when you're available so we can match you with the right clients."
         onBack={onBack}
         onNext={() => {}}
+        nextDisabled={true}
       >
+
         <Card
           style={{
             padding:30,
-            textAlign:'center' as const
+            textAlign:
+              'center' as const
           }}
         >
           <p
@@ -2969,6 +6040,7 @@ function Step7({
             Loading availability...
           </p>
         </Card>
+
       </StepWrap>
     )
   }
@@ -2980,11 +6052,17 @@ function Step7({
       title="Availability"
       desc="Tell us when you're available so we can match you with the right clients."
       onBack={onBack}
-      onNext={handleSaveAndContinue}
+      onNext={
+        handleSaveAndContinue
+      }
       nextLabel={
         saving
           ? 'Saving...'
           : 'Save & Continue'
+      }
+      nextDisabled={
+        !canSave ||
+        saving
       }
     >
 
@@ -3005,7 +6083,14 @@ function Step7({
             marginBottom:14
           }}
         >
-          Working Days <span style={{ color:C.error }}>*</span>
+          Working Days{' '}
+          <span
+            style={{
+              color:C.error
+            }}
+          >
+            *
+          </span>
         </p>
 
         <div
@@ -3015,35 +6100,53 @@ function Step7({
           }}
         >
           {days.map(day => (
+
             <button
+              type="button"
               key={day}
-              onClick={() => toggleDay(day)}
+              onClick={() =>
+                toggleDay(day)
+              }
               style={{
                 flex:1,
+
                 paddingTop:10,
                 paddingBottom:10,
+
                 borderRadius:12,
+
                 border:`2px solid ${
                   activeDays.has(day)
                     ? C.primary
                     : C.border
                 }`,
-                background:activeDays.has(day)
-                  ? `${C.primary}08`
-                  : 'transparent',
+
+                background:
+                  activeDays.has(day)
+                    ? `${C.primary}08`
+                    : 'transparent',
+
                 cursor:'pointer',
-                fontFamily:'Manrope,sans-serif',
+
+                fontFamily:
+                  'Manrope,sans-serif',
+
                 fontSize:12,
-                fontWeight:activeDays.has(day)
-                  ? 800
-                  : 500,
-                color:activeDays.has(day)
-                  ? C.primary
-                  : C.sub
+
+                fontWeight:
+                  activeDays.has(day)
+                    ? 800
+                    : 500,
+
+                color:
+                  activeDays.has(day)
+                    ? C.primary
+                    : C.sub
               }}
             >
               {day}
             </button>
+
           ))}
         </div>
       </Card>
@@ -3065,47 +6168,73 @@ function Step7({
             marginBottom:14
           }}
         >
-          Preferred Shift <span style={{ color:C.error }}>*</span>
+          Preferred Shift{' '}
+          <span
+            style={{
+              color:C.error
+            }}
+          >
+            *
+          </span>
         </p>
 
         <div
           style={{
             display:'grid',
-            gridTemplateColumns:'repeat(2,1fr)',
+            gridTemplateColumns:
+              'repeat(2,1fr)',
             gap:10
           }}
           className="cao-2col"
         >
           {shifts.map(item => (
+
             <button
+              type="button"
               key={item.k}
-              onClick={() => setShift(item.k)}
+
+              onClick={() =>
+                handleShiftChange(
+                  item.k
+                )
+              }
+
               style={{
                 padding:'14px 16px',
                 borderRadius:13,
+
                 border:`2px solid ${
                   shift === item.k
                     ? C.primary
                     : C.border
                 }`,
+
                 background:
                   shift === item.k
                     ? `${C.primary}06`
                     : 'transparent',
+
                 cursor:'pointer',
-                textAlign:'left' as const
+
+                textAlign:
+                  'left' as const
               }}
             >
+
               <p
                 style={{
                   fontSize:13,
                   fontWeight:800,
+
                   color:
                     shift === item.k
                       ? C.primary
                       : C.type,
+
                   marginBottom:2,
-                  fontFamily:'Manrope,sans-serif'
+
+                  fontFamily:
+                    'Manrope,sans-serif'
                 }}
               >
                 {item.l}
@@ -3125,10 +6254,15 @@ function Step7({
                   style={{
                     marginTop:8,
                     display:'inline-flex',
-                    background:`${C.primary}15`,
+
+                    background:
+                      `${C.primary}15`,
+
                     color:C.primary,
+
                     padding:'2px 8px',
                     borderRadius:99,
+
                     fontSize:10,
                     fontWeight:700
                   }}
@@ -3136,24 +6270,36 @@ function Step7({
                   Selected
                 </span>
               )}
+
             </button>
+
           ))}
         </div>
       </Card>
 
       {/* Availability Settings */}
-      <Card style={{ padding:22 }}>
+      <Card
+        style={{
+          padding:22
+        }}
+      >
 
+        {/* Emergency Availability */}
         <div
           style={{
             display:'flex',
-            justifyContent:'space-between',
+            justifyContent:
+              'space-between',
             alignItems:'center',
+
             padding:'12px 0',
-            borderBottom:`1px solid ${C.border}`
+
+            borderBottom:
+              `1px solid ${C.border}`
           }}
         >
           <div>
+
             <p
               style={{
                 fontSize:13,
@@ -3172,26 +6318,34 @@ function Step7({
             >
               Available for urgent same-day requests
             </p>
+
           </div>
 
           <Toggle
             on={emergency}
-            onToggle={() =>
-              setEmergency(value => !value)
+            onToggle={
+              toggleEmergency
             }
           />
+
         </div>
 
+        {/* Holiday Availability */}
         <div
           style={{
             display:'flex',
-            justifyContent:'space-between',
+            justifyContent:
+              'space-between',
             alignItems:'center',
+
             padding:'12px 0',
-            borderBottom:`1px solid ${C.border}`
+
+            borderBottom:
+              `1px solid ${C.border}`
           }}
         >
           <div>
+
             <p
               style={{
                 fontSize:13,
@@ -3210,14 +6364,16 @@ function Step7({
             >
               Available on Poya days and public holidays
             </p>
+
           </div>
 
           <Toggle
             on={holiday}
-            onToggle={() =>
-              setHoliday(value => !value)
+            onToggle={
+              toggleHoliday
             }
           />
+
         </div>
 
         {/* Maximum Weekly Hours */}
@@ -3229,10 +6385,12 @@ function Step7({
           <div
             style={{
               display:'flex',
-              justifyContent:'space-between',
+              justifyContent:
+                'space-between',
               marginBottom:8
             }}
           >
+
             <p
               style={{
                 fontSize:12,
@@ -3240,7 +6398,14 @@ function Step7({
                 color:C.muted
               }}
             >
-              Maximum Weekly Hours <span style={{ color:C.error }}>*</span>
+              Maximum Weekly Hours{' '}
+              <span
+                style={{
+                  color:C.error
+                }}
+              >
+                *
+              </span>
             </p>
 
             <span
@@ -3248,11 +6413,14 @@ function Step7({
                 fontSize:13,
                 fontWeight:800,
                 color:C.primary,
-                fontFamily:'Manrope,sans-serif'
+
+                fontFamily:
+                  'Manrope,sans-serif'
               }}
             >
               {maxHours} hrs
             </span>
+
           </div>
 
           <input
@@ -3260,10 +6428,17 @@ function Step7({
             min={10}
             max={80}
             step={5}
+
             value={maxHours}
-            onChange={event =>
-              setMaxHours(+event.target.value)
-            }
+
+            onChange={event => {
+              setMaxHours(
+                +event.target.value
+              )
+
+              setSaveError('')
+            }}
+
             style={{
               width:'100%',
               accentColor:C.primary,
@@ -3281,10 +6456,12 @@ function Step7({
           <div
             style={{
               display:'flex',
-              justifyContent:'space-between',
+              justifyContent:
+                'space-between',
               marginBottom:8
             }}
           >
+
             <p
               style={{
                 fontSize:12,
@@ -3292,7 +6469,14 @@ function Step7({
                 color:C.muted
               }}
             >
-              Maximum Travel Distance <span style={{ color:C.error }}>*</span>
+              Maximum Travel Distance{' '}
+              <span
+                style={{
+                  color:C.error
+                }}
+              >
+                *
+              </span>
             </p>
 
             <span
@@ -3300,11 +6484,14 @@ function Step7({
                 fontSize:13,
                 fontWeight:800,
                 color:C.primary,
-                fontFamily:'Manrope,sans-serif'
+
+                fontFamily:
+                  'Manrope,sans-serif'
               }}
             >
               {maxDist} km
             </span>
+
           </div>
 
           <input
@@ -3312,10 +6499,17 @@ function Step7({
             min={5}
             max={100}
             step={5}
+
             value={maxDist}
-            onChange={event =>
-              setMaxDist(+event.target.value)
-            }
+
+            onChange={event => {
+              setMaxDist(
+                +event.target.value
+              )
+
+              setSaveError('')
+            }}
+
             style={{
               width:'100%',
               accentColor:C.primary,
@@ -3326,14 +6520,20 @@ function Step7({
 
       </Card>
 
+      {/* Error */}
       {saveError && (
         <div
           style={{
             padding:'12px 14px',
             marginTop:16,
             borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
             color:C.error,
             fontSize:12,
             fontWeight:600
@@ -3348,6 +6548,7 @@ function Step7({
 }
 
 
+
 // ─── Step 8: Equipment & Transport ────────────────────────────────────────────
 function Step8({
   onBack,
@@ -3358,71 +6559,60 @@ function Step8({
 }) {
 
   const [toggles, setToggles] = useState({
-    car: false,
-    motorbike: false,
-    threeWheeler: false,
-    publicTransport: false,
-    wheelchair: false,
-    medEquipment: false,
-    smartphone: false,
-    internet: false
+    car:false,
+    motorbike:false,
+    threeWheeler:false,
+    publicTransport:false,
+    wheelchair:false,
+    medEquipment:false,
+    smartphone:false,
+    internet:false
   })
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
-  const tog = (key: keyof typeof toggles) => {
-    setToggles(prev => ({
-      ...prev,
-      [key]: !prev[key]
-    }))
-
-    setSaveError('')
-  }
+  // Dirty-state tracking
+  const [initialData, setInitialData] = useState('')
+  const [hasSavedData, setHasSavedData] = useState(false)
 
   const items = [
     {
       k:'car' as const,
       icon:'🚗',
       l:'Car',
-      d:'Own vehicle for transporting clients',
-      required:false
+      d:'Own vehicle for transporting clients'
     },
     {
       k:'motorbike' as const,
       icon:'🏍️',
       l:'Motorbike',
-      d:'For quick local trips',
-      required:false
+      d:'For quick local trips'
     },
     {
       k:'threeWheeler' as const,
       icon:'🛺',
       l:'Three-Wheeler',
-      d:'Tuk-tuk for short distances',
-      required:false
+      d:'Tuk-tuk for short distances'
     },
     {
       k:'publicTransport' as const,
       icon:'🚌',
       l:'Public Transport',
-      d:'Bus, train, or other public transport',
-      required:false
+      d:'Bus, train, or other public transport'
     },
     {
       k:'wheelchair' as const,
       icon:'♿',
       l:'Wheelchair Equipment',
-      d:'Manual or electric wheelchair',
-      required:false
+      d:'Manual or electric wheelchair equipment'
     },
     {
       k:'medEquipment' as const,
       icon:'🩺',
       l:'Medical Equipment',
-      d:'Blood pressure, glucose monitor, etc.',
-      required:false
+      d:'Blood pressure monitor, glucose monitor, etc.'
     },
     {
       k:'smartphone' as const,
@@ -3440,106 +6630,239 @@ function Step8({
     }
   ]
 
-  // Load previously saved data
-  useEffect(() => {
-    const loadEquipmentTransport = async () => {
-      try {
-        const data = await getMyEquipmentTransport()
+  // ─────────────────────────────────────────────
+  // Dirty-state comparison
+  // ─────────────────────────────────────────────
+  const currentData = JSON.stringify(toggles)
 
-        if (data) {
-          setToggles({
-            car: data.has_car ?? false,
-            motorbike: data.has_motorbike ?? false,
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  const canSave =
+    !loading &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
+  // Toggle item
+  // ─────────────────────────────────────────────
+  const tog = (
+    key:keyof typeof toggles
+  ) => {
+
+    setToggles(prev => ({
+      ...prev,
+      [key]:!prev[key]
+    }))
+
+    setSaveError('')
+  }
+
+  // ─────────────────────────────────────────────
+  // Load saved Step 8 data
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+
+    const loadEquipmentTransport =
+      async () => {
+
+        try {
+          setLoading(true)
+
+          const data =
+            await getMyEquipmentTransport()
+
+          if (!data) {
+
+            const emptyState = {
+              car:false,
+              motorbike:false,
+              threeWheeler:false,
+              publicTransport:false,
+              wheelchair:false,
+              medEquipment:false,
+              smartphone:false,
+              internet:false
+            }
+
+            setToggles(emptyState)
+            setHasSavedData(false)
+
+            setInitialData(
+              JSON.stringify(
+                emptyState
+              )
+            )
+
+            return
+          }
+
+          const loadedState = {
+            car:
+              data.has_car ?? false,
+
+            motorbike:
+              data.has_motorbike ?? false,
+
             threeWheeler:
               data.has_three_wheeler ?? false,
+
             publicTransport:
               data.uses_public_transport ?? false,
+
             wheelchair:
               data.has_wheelchair_equipment ?? false,
+
             medEquipment:
               data.has_medical_equipment ?? false,
+
             smartphone:
               data.has_smartphone ?? false,
+
             internet:
               data.has_internet_access ?? false
-          })
+          }
+
+          setToggles(
+            loadedState
+          )
+
+          setHasSavedData(true)
+
+          setInitialData(
+            JSON.stringify(
+              loadedState
+            )
+          )
+
+        } catch (error) {
+
+          console.error(
+            'Failed to load equipment and transport:',
+            error
+          )
+
+          setSaveError(
+            'Failed to load saved equipment and transport details'
+          )
+
+        } finally {
+          setLoading(false)
+        }
+      }
+
+    loadEquipmentTransport()
+
+  }, [])
+
+  // ─────────────────────────────────────────────
+  // Save Step 8
+  // ─────────────────────────────────────────────
+  const handleSaveAndContinue =
+    async () => {
+
+      try {
+
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
         }
 
+        setSaveError('')
+
+        // Required validation
+        if (!toggles.smartphone) {
+          throw new Error(
+            'Smartphone is required'
+          )
+        }
+
+        if (!toggles.internet) {
+          throw new Error(
+            'Internet Access is required'
+          )
+        }
+
+        setSaving(true)
+
+        await saveMyEquipmentTransport({
+          has_car:
+            toggles.car,
+
+          has_motorbike:
+            toggles.motorbike,
+
+          has_three_wheeler:
+            toggles.threeWheeler,
+
+          uses_public_transport:
+            toggles.publicTransport,
+
+          has_wheelchair_equipment:
+            toggles.wheelchair,
+
+          has_medical_equipment:
+            toggles.medEquipment,
+
+          has_smartphone:
+            toggles.smartphone,
+
+          has_internet_access:
+            toggles.internet
+        })
+
+        setHasSavedData(true)
+
+        // Reset dirty state
+        setInitialData(
+          JSON.stringify(
+            toggles
+          )
+        )
+
+        // Parent handles navigation:
+        //
+        // Normal onboarding:
+        // Step 8 → Step 9
+        //
+        // Review Edit:
+        // Step 8 → Step 11
+        onNext()
+
       } catch (error) {
+
         console.error(
-          'Failed to load equipment and transport:',
+          'Failed to save equipment and transport:',
           error
         )
 
-        setSaveError(
-          'Failed to load saved equipment and transport details'
-        )
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save equipment and transport'
+          )
+        }
 
       } finally {
-        setLoading(false)
+        setSaving(false)
       }
     }
 
-    loadEquipmentTransport()
-  }, [])
-
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
-
-      // Required validation
-      if (!toggles.smartphone) {
-        throw new Error(
-          'Smartphone is required to use ReadyPal'
-        )
-      }
-
-      if (!toggles.internet) {
-        throw new Error(
-          'Internet Access is required to use ReadyPal'
-        )
-      }
-
-      setSaving(true)
-
-      await saveMyEquipmentTransport({
-        has_car: toggles.car,
-        has_motorbike: toggles.motorbike,
-        has_three_wheeler: toggles.threeWheeler,
-        uses_public_transport: toggles.publicTransport,
-
-        has_wheelchair_equipment:
-          toggles.wheelchair,
-
-        has_medical_equipment:
-          toggles.medEquipment,
-
-        has_smartphone: toggles.smartphone,
-        has_internet_access: toggles.internet
-      })
-
-      onNext()
-
-    } catch (error) {
-      console.error(
-        'Failed to save equipment and transport:',
-        error
-      )
-
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError(
-          'Failed to save equipment and transport details'
-        )
-      }
-
-    } finally {
-      setSaving(false)
-    }
-  }
-
+  // ─────────────────────────────────────────────
+  // Loading
+  // ─────────────────────────────────────────────
   if (loading) {
+
     return (
       <StepWrap
         step={8}
@@ -3548,7 +6871,9 @@ function Step8({
         desc="Let clients know how you can travel and what equipment you have available."
         onBack={onBack}
         onNext={() => {}}
+        nextDisabled={true}
       >
+
         <Card
           style={{
             padding:30,
@@ -3561,9 +6886,10 @@ function Step8({
               color:C.muted
             }}
           >
-            Loading equipment and transport details...
+            Loading equipment and transport...
           </p>
         </Card>
+
       </StepWrap>
     )
   }
@@ -3581,8 +6907,45 @@ function Step8({
           ? 'Saving...'
           : 'Save & Continue'
       }
+      nextDisabled={
+        !canSave ||
+        saving
+      }
     >
 
+      {/* Required notice */}
+      <Card
+        style={{
+          padding:'14px 16px',
+          marginBottom:16,
+          background:`${C.info}05`,
+          border:`1px solid ${C.info}20`
+        }}
+      >
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:700,
+            color:C.info,
+            marginBottom:3
+          }}
+        >
+          Smartphone and Internet Access are required
+        </p>
+
+        <p
+          style={{
+            fontSize:11,
+            color:C.muted,
+            lineHeight:1.6
+          }}
+        >
+          Care Agents need a smartphone and internet connection
+          to use ReadyPal and receive service updates.
+        </p>
+      </Card>
+
+      {/* Equipment / Transport cards */}
       <div
         style={{
           display:'grid',
@@ -3591,39 +6954,48 @@ function Step8({
         }}
         className="cao-2col"
       >
+
         {items.map(item => (
+
           <Card
             key={item.k}
             style={{
               padding:18,
+
               border:`1.5px solid ${
                 toggles[item.k]
                   ? C.primary + '30'
                   : C.border
               }`,
+
               background:
                 toggles[item.k]
                   ? `${C.primary}04`
                   : C.surface
             }}
           >
+
             <div
               style={{
                 display:'flex',
                 gap:12,
-                alignItems:'center',
-                marginBottom:6
+                alignItems:'center'
               }}
             >
+
               <div
                 style={{
                   width:38,
                   height:38,
                   borderRadius:12,
-                  background:`${C.primary}08`,
+
+                  background:
+                    `${C.primary}08`,
+
                   display:'flex',
                   alignItems:'center',
                   justifyContent:'center',
+
                   fontSize:20,
                   flexShrink:0
                 }}
@@ -3631,7 +7003,12 @@ function Step8({
                 {item.icon}
               </div>
 
-              <div style={{ flex:1 }}>
+              <div
+                style={{
+                  flex:1
+                }}
+              >
+
                 <p
                   style={{
                     fontSize:13,
@@ -3641,11 +7018,12 @@ function Step8({
                 >
                   {item.l}
 
-                  {item.required && (
+                  {'required' in item &&
+                    item.required && (
                     <span
                       style={{
                         color:C.error,
-                        marginLeft:3
+                        marginLeft:4
                       }}
                     >
                       *
@@ -3662,25 +7040,66 @@ function Step8({
                 >
                   {item.d}
                 </p>
+
               </div>
 
               <Toggle
-                on={toggles[item.k]}
-                onToggle={() => tog(item.k)}
+                on={
+                  toggles[item.k]
+                }
+                onToggle={() =>
+                  tog(item.k)
+                }
               />
+
             </div>
+
           </Card>
+
         ))}
+
       </div>
 
+      {/* Validation status */}
+      {(
+        !toggles.smartphone ||
+        !toggles.internet
+      ) && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+            borderRadius:10,
+
+            background:
+              `${C.warning}08`,
+
+            border:
+              `1px solid ${C.warning}30`,
+
+            color:C.warning,
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          Please enable Smartphone and Internet Access before saving.
+        </div>
+      )}
+
+      {/* Save error */}
       {saveError && (
         <div
           style={{
             padding:'12px 14px',
             marginTop:16,
             borderRadius:10,
-            background:`${C.error}08`,
-            border:`1px solid ${C.error}30`,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
             color:C.error,
             fontSize:12,
             fontWeight:600
@@ -3713,7 +7132,7 @@ function Step9({
     email:string
   }
 
-  const emptyReference = (): Ref => ({
+  const emptyReference = ():Ref => ({
     name:'',
     org:'',
     type:'',
@@ -3726,99 +7145,362 @@ function Step9({
     emptyReference()
   ])
 
-  const [letterFile, setLetterFile] = useState<File | null>(null)
-  const [letterFileName, setLetterFileName] = useState('')
-  const [letterExisting, setLetterExisting] = useState(false)
-  const [letterRemoved, setLetterRemoved] = useState(false)
+  const [loading, setLoading] =
+    useState(true)
 
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
+  const [saving, setSaving] =
+    useState(false)
 
+  const [saveError, setSaveError] =
+    useState('')
+
+  // Dirty state
+  const [initialData, setInitialData] =
+    useState('')
+
+  const [hasSavedData, setHasSavedData] =
+    useState(false)
+
+  // ─────────────────────────────────────────────
+  // Recommendation Letter
+  // ─────────────────────────────────────────────
+
+  const [letterFile, setLetterFile] =
+    useState<File | null>(null)
+
+  const [letterFileName, setLetterFileName] =
+    useState('')
+
+  const [savedLetterFileName, setSavedLetterFileName] =
+    useState('')
+
+  const [letterExisting, setLetterExisting] =
+    useState(false)
+
+  const [letterRemoved, setLetterRemoved] =
+    useState(false)
+
+  const [letterUploading, setLetterUploading] =
+    useState(false)
+
+  const letterInputRef =
+    useRef<HTMLInputElement | null>(null)
+
+  // ─────────────────────────────────────────────
+  // Normalize
+  // ─────────────────────────────────────────────
+
+  const normalizeRefs = (
+    source:Ref[]
+  ) => {
+    return source.map(ref => ({
+      name:ref.name,
+      org:ref.org,
+      type:ref.type,
+      phone:ref.phone,
+      email:ref.email
+    }))
+  }
+
+  const createSnapshot = (
+    references:Ref[],
+    letter:{
+      existing:boolean
+      removed:boolean
+      fileName:string
+      file:File | null
+    }
+  ) => {
+    return JSON.stringify({
+      refs:normalizeRefs(
+        references
+      ),
+
+      letter:{
+        existing:
+          letter.existing,
+
+        removed:
+          letter.removed,
+
+        fileName:
+          letter.fileName,
+
+        file:
+          letter.file
+            ? {
+                name:letter.file.name,
+                size:letter.file.size,
+                type:letter.file.type,
+                lastModified:
+                  letter.file.lastModified
+              }
+            : null
+      }
+    })
+  }
+
+  const currentData =
+    createSnapshot(
+      refs,
+      {
+        existing:
+          letterExisting,
+
+        removed:
+          letterRemoved,
+
+        fileName:
+          letterFileName,
+
+        file:
+          letterFile
+      }
+    )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  const canSave =
+    !loading &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
   // Load saved references + recommendation letter
+  // ─────────────────────────────────────────────
+
   useEffect(() => {
+
+    let cancelled = false
+
     const loadStep9 = async () => {
+
       try {
-        const [savedRefs, savedLetter] = await Promise.all([
+
+        setLoading(true)
+        setSaveError('')
+
+        const [
+          savedRefs,
+          savedLetter
+        ] = await Promise.all([
           getMyReferences(),
           getMyRecommendationLetter()
         ])
 
-        if (savedRefs && savedRefs.length > 0) {
-          setRefs(
-            savedRefs.map(reference => ({
-              name: reference.full_name || '',
-              org: reference.organisation || '',
-              type: reference.relationship || '',
-              phone: reference.phone || '',
-              email: reference.email || ''
+        if (cancelled) return
+
+        let loadedRefs:Ref[] = []
+
+        if (
+          savedRefs &&
+          savedRefs.length > 0
+        ) {
+          loadedRefs =
+            savedRefs.map(ref => ({
+              name:
+                ref.full_name || '',
+
+              org:
+                ref.organisation || '',
+
+              type:
+                ref.relationship || '',
+
+              phone:
+                ref.phone || '',
+
+              email:
+                ref.email || ''
             }))
+        }
+
+        while (
+          loadedRefs.length < 2
+        ) {
+          loadedRefs.push(
+            emptyReference()
           )
         }
+
+        setRefs(
+          loadedRefs
+        )
+
+        let loadedLetterName = ''
 
         if (savedLetter) {
+
+          loadedLetterName =
+            savedLetter.file_url
+              ?.split('/')
+              .pop() ||
+            'Recommendation Letter'
+
           setLetterExisting(true)
           setLetterRemoved(false)
+          setLetterFile(null)
 
           setLetterFileName(
-            savedLetter.file_url
-              ? savedLetter.file_url.split('/').pop() || 'Recommendation Letter'
-              : 'Recommendation Letter'
+            loadedLetterName
           )
+
+          setSavedLetterFileName(
+            loadedLetterName
+          )
+
+        } else {
+
+          setLetterExisting(false)
+          setLetterRemoved(false)
+          setLetterFile(null)
+
+          setLetterFileName('')
+          setSavedLetterFileName('')
         }
 
+        const savedDataExists =
+          (
+            savedRefs &&
+            savedRefs.length > 0
+          ) ||
+          Boolean(savedLetter)
+
+        setHasSavedData(
+          savedDataExists
+        )
+
+        setInitialData(
+          createSnapshot(
+            loadedRefs,
+            {
+              existing:
+                Boolean(savedLetter),
+
+              removed:false,
+
+              fileName:
+                loadedLetterName,
+
+              file:null
+            }
+          )
+        )
+
       } catch (error) {
-        console.error('Failed to load references:', error)
-        setSaveError('Failed to load saved references')
+
+        console.error(
+          'Failed to load references:',
+          error
+        )
+
+        setSaveError(
+          'Failed to load saved references'
+        )
+
       } finally {
-        setLoading(false)
+
+        if (!cancelled) {
+          setLoading(false)
+        }
+
       }
     }
 
     loadStep9()
-  }, [])
 
-  const addRef = () => {
-    setRefs(prev => [
-      ...prev,
-      emptyReference()
-    ])
-  }
-
-  const removeRef = (index:number) => {
-    if (refs.length <= 2) {
-      setSaveError('At least two professional references are required')
-      return
+    return () => {
+      cancelled = true
     }
 
-    setRefs(prev =>
-      prev.filter((_, i) => i !== index)
-    )
-  }
+  }, [])
+
+  // ─────────────────────────────────────────────
+  // References
+  // ─────────────────────────────────────────────
 
   const updateRef = (
     index:number,
     key:keyof Ref,
     value:string
   ) => {
+
     setRefs(prev =>
-      prev.map((reference, i) =>
-        i === index
-          ? {
-              ...reference,
-              [key]:value
-            }
-          : reference
+      prev.map(
+        (ref, i) =>
+          i === index
+            ? {
+                ...ref,
+                [key]:value
+              }
+            : ref
       )
     )
 
     setSaveError('')
   }
 
-  const handleLetterSelect = (
-    event: React.ChangeEvent<HTMLInputElement>
+  const addRef = () => {
+
+    setRefs(prev => [
+      ...prev,
+      emptyReference()
+    ])
+
+    setSaveError('')
+  }
+
+  const removeRef = (
+    index:number
   ) => {
-    const file = event.target.files?.[0]
+
+    if (
+      refs.length <= 2
+    ) {
+      setSaveError(
+        'At least two professional references are required'
+      )
+
+      return
+    }
+
+    setRefs(prev =>
+      prev.filter(
+        (_, i) =>
+          i !== index
+      )
+    )
+
+    setSaveError('')
+  }
+
+  const isValidEmail = (
+    email:string
+  ) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+      email
+    )
+  }
+
+  // ─────────────────────────────────────────────
+  // Recommendation Letter file picker
+  // ─────────────────────────────────────────────
+
+  const handleLetterClick = () => {
+    letterInputRef.current?.click()
+  }
+
+  const handleLetterSelect = (
+    event:
+      React.ChangeEvent<HTMLInputElement>
+  ) => {
+
+    const file =
+      event.target.files?.[0]
 
     if (!file) return
 
@@ -3828,121 +7510,394 @@ function Step9({
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     ]
 
-    if (!allowedTypes.includes(file.type)) {
-      setSaveError('Recommendation letter must be PDF, DOC or DOCX')
+    if (
+      !allowedTypes.includes(
+        file.type
+      )
+    ) {
+      setSaveError(
+        'Recommendation Letter must be PDF, DOC or DOCX'
+      )
+
+      event.target.value = ''
       return
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      setSaveError('Recommendation letter must be smaller than 10MB')
+    if (
+      file.size >
+      10 * 1024 * 1024
+    ) {
+      setSaveError(
+        'Recommendation Letter must be smaller than 10MB'
+      )
+
+      event.target.value = ''
       return
     }
+
+    setLetterFile(
+      file
+    )
+
+    setLetterFileName(
+      file.name
+    )
+
+    setLetterRemoved(
+      false
+    )
 
     setSaveError('')
-    setLetterFile(file)
-    setLetterFileName(file.name)
-    setLetterRemoved(false)
+
+    // Let user select same file later
+    event.target.value = ''
   }
 
   const handleRemoveLetter = () => {
 
-    // New unsaved file
-    if (letterFile && !letterExisting) {
-      setLetterFile(null)
-      setLetterFileName('')
-      setLetterRemoved(false)
+    setSaveError('')
+
+    // Existing saved letter + new replacement selected:
+    // cancel replacement only.
+    if (
+      letterFile &&
+      letterExisting
+    ) {
+
+      setLetterFile(
+        null
+      )
+
+      setLetterFileName(
+        savedLetterFileName
+      )
+
+      setLetterRemoved(
+        false
+      )
+
       return
     }
 
-    // Already saved file
-    if (letterExisting) {
-      setLetterFile(null)
+    // New unsaved letter only
+    if (
+      letterFile &&
+      !letterExisting
+    ) {
+
+      setLetterFile(
+        null
+      )
+
       setLetterFileName('')
-      setLetterExisting(false)
-      setLetterRemoved(true)
+      setLetterRemoved(false)
+
+      return
+    }
+
+    // Existing Supabase letter
+    if (letterExisting) {
+
+      setLetterFile(
+        null
+      )
+
+      setLetterFileName('')
+
+      setLetterExisting(
+        false
+      )
+
+      setLetterRemoved(
+        true
+      )
     }
   }
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
+  const handleUndoLetterRemove = () => {
 
-      if (refs.length < 2) {
-        throw new Error(
-          'At least two professional references are required'
+    setLetterFile(
+      null
+    )
+
+    setLetterFileName(
+      savedLetterFileName
+    )
+
+    setLetterExisting(
+      true
+    )
+
+    setLetterRemoved(
+      false
+    )
+
+    setSaveError('')
+  }
+
+  // ─────────────────────────────────────────────
+  // Save Step 9
+  // ─────────────────────────────────────────────
+
+  const handleSaveAndContinue =
+    async () => {
+
+      try {
+
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
+        }
+
+        setSaveError('')
+
+        const referencesToSave =
+          refs.filter(ref =>
+            ref.name.trim() ||
+            ref.org.trim() ||
+            ref.type.trim() ||
+            ref.phone.trim() ||
+            ref.email.trim()
+          )
+
+        if (
+          referencesToSave.length < 2
+        ) {
+          throw new Error(
+            'Please provide at least two professional references'
+          )
+        }
+
+        for (
+          let i = 0;
+          i < referencesToSave.length;
+          i++
+        ) {
+
+          const ref =
+            referencesToSave[i]
+
+          if (
+            !ref.name.trim()
+          ) {
+            throw new Error(
+              `Reference ${i + 1}: Full Name is required`
+            )
+          }
+
+          if (
+            !ref.org.trim()
+          ) {
+            throw new Error(
+              `Reference ${i + 1}: Organisation / Hospital is required`
+            )
+          }
+
+          if (
+            !ref.type.trim()
+          ) {
+            throw new Error(
+              `Reference ${i + 1}: Relationship is required`
+            )
+          }
+
+          if (
+            !ref.phone.trim() &&
+            !ref.email.trim()
+          ) {
+            throw new Error(
+              `Reference ${i + 1}: Phone Number or Email Address is required`
+            )
+          }
+
+          if (
+            ref.email.trim() &&
+            !isValidEmail(
+              ref.email.trim()
+            )
+          ) {
+            throw new Error(
+              `Reference ${i + 1}: Please enter a valid email address`
+            )
+          }
+        }
+
+        setSaving(true)
+
+        const cleanedReferences =
+          referencesToSave.map(
+            ref => ({
+              full_name:
+                ref.name.trim(),
+
+              organisation:
+                ref.org.trim(),
+
+              relationship:
+                ref.type.trim(),
+
+              phone:
+                ref.phone.trim(),
+
+              email:
+                ref.email.trim()
+            })
+          )
+
+        await saveMyReferences(
+          cleanedReferences
         )
-      }
 
-      for (let i = 0; i < refs.length; i++) {
-        const reference = refs[i]
+        // Delete existing recommendation letter
+        if (
+          letterRemoved
+        ) {
+          await deleteMyRecommendationLetter()
+        }
 
-        if (!reference.name.trim()) {
-          throw new Error(
-            `Reference ${i + 1}: Full name is required`
+        // Upload new / replacement recommendation letter
+        if (
+          letterFile
+        ) {
+
+          setLetterUploading(
+            true
+          )
+
+          await saveMyRecommendationLetter(
+            letterFile
           )
         }
 
-        if (!reference.org.trim()) {
-          throw new Error(
-            `Reference ${i + 1}: Organisation is required`
+        const savedLocalRefs:Ref[] =
+          cleanedReferences.map(
+            ref => ({
+              name:
+                ref.full_name,
+
+              org:
+                ref.organisation,
+
+              type:
+                ref.relationship,
+
+              phone:
+                ref.phone,
+
+              email:
+                ref.email
+            })
+          )
+
+        setRefs(
+          savedLocalRefs
+        )
+
+        let finalLetterExisting =
+          letterExisting
+
+        let finalLetterName =
+          letterFileName
+
+        if (letterRemoved) {
+          finalLetterExisting =
+            false
+
+          finalLetterName =
+            ''
+        }
+
+        if (letterFile) {
+          finalLetterExisting =
+            true
+
+          finalLetterName =
+            letterFile.name
+        }
+
+        setLetterExisting(
+          finalLetterExisting
+        )
+
+        setLetterRemoved(
+          false
+        )
+
+        setLetterFile(
+          null
+        )
+
+        setLetterFileName(
+          finalLetterName
+        )
+
+        setSavedLetterFileName(
+          finalLetterName
+        )
+
+        setHasSavedData(
+          true
+        )
+
+        setInitialData(
+          createSnapshot(
+            savedLocalRefs,
+            {
+              existing:
+                finalLetterExisting,
+
+              removed:false,
+
+              fileName:
+                finalLetterName,
+
+              file:null
+            }
+          )
+        )
+
+        onNext()
+
+      } catch (error) {
+
+        console.error(
+          'Failed to save references:',
+          error
+        )
+
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save references'
           )
         }
 
-        if (!reference.type) {
-          throw new Error(
-            `Reference ${i + 1}: Relationship is required`
-          )
-        }
+      } finally {
 
-        if (!reference.phone.trim()) {
-          throw new Error(
-            `Reference ${i + 1}: Phone number is required`
-          )
-        }
+        setSaving(
+          false
+        )
+
+        setLetterUploading(
+          false
+        )
+
       }
-
-      setSaving(true)
-
-      await saveMyReferences(
-        refs.map(reference => ({
-          full_name: reference.name.trim(),
-          organisation: reference.org.trim(),
-          relationship: reference.type,
-          phone: reference.phone.trim(),
-          email: reference.email.trim()
-        }))
-      )
-
-      // Delete saved recommendation letter if removed
-      if (letterRemoved) {
-        await deleteMyRecommendationLetter()
-      }
-
-      // Upload new/replacement recommendation letter
-      if (letterFile) {
-        await saveMyRecommendationLetter(letterFile)
-      }
-
-      onNext()
-
-    } catch (error) {
-      console.error(
-        'Failed to save references:',
-        error
-      )
-
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError('Failed to save references')
-      }
-
-    } finally {
-      setSaving(false)
     }
-  }
+
+  // ─────────────────────────────────────────────
+  // Loading
+  // ─────────────────────────────────────────────
 
   if (loading) {
+
     return (
       <StepWrap
         step={9}
@@ -3951,13 +7906,17 @@ function Step9({
         desc="Provide at least two professional references who can verify your experience."
         onBack={onBack}
         onNext={() => {}}
+        nextDisabled={true}
       >
+
         <Card
           style={{
             padding:30,
-            textAlign:'center' as const
+            textAlign:
+              'center' as const
           }}
         >
+
           <p
             style={{
               fontSize:13,
@@ -3966,7 +7925,9 @@ function Step9({
           >
             Loading references...
           </p>
+
         </Card>
+
       </StepWrap>
     )
   }
@@ -3978,14 +7939,22 @@ function Step9({
       title="References"
       desc="Provide at least two professional references who can verify your experience."
       onBack={onBack}
-      onNext={handleSaveAndContinue}
+      onNext={
+        handleSaveAndContinue
+      }
       nextLabel={
         saving
           ? 'Saving...'
           : 'Save & Continue'
       }
+      nextDisabled={
+        !canSave ||
+        saving ||
+        letterUploading
+      }
     >
 
+      {/* References */}
       <div
         style={{
           display:'flex',
@@ -3994,118 +7963,178 @@ function Step9({
           marginBottom:20
         }}
       >
-        {refs.map((reference, index) => (
 
-          <Card
-            key={index}
-            style={{ padding:22 }}
-          >
-            <div
+        {refs.map(
+          (ref, index) => (
+
+            <Card
+              key={index}
               style={{
-                display:'flex',
-                justifyContent:'space-between',
-                alignItems:'center',
-                marginBottom:14
+                padding:22
               }}
             >
-              <p
+
+              <div
                 style={{
-                  fontSize:13,
-                  fontWeight:800,
-                  color:C.type,
-                  fontFamily:'Manrope,sans-serif'
+                  display:'flex',
+                  justifyContent:'space-between',
+                  alignItems:'center',
+                  marginBottom:14
                 }}
               >
-                Reference {index + 1}
-              </p>
 
-              {refs.length > 2 && (
-                <button
-                  type="button"
-                  onClick={() => removeRef(index)}
-                  style={{
-                    background:'none',
-                    border:'none',
-                    cursor:'pointer',
-                    color:C.muted,
-                    display:'flex'
-                  }}
-                >
-                  {I.trash}
-                </button>
-              )}
-            </div>
+                <div>
 
-            <div
-              style={{
-                display:'grid',
-                gridTemplateColumns:'1fr 1fr',
-                gap:12
-              }}
-              className="cao-2col"
-            >
+                  <p
+                    style={{
+                      fontSize:13,
+                      fontWeight:800,
+                      color:C.type,
+                      fontFamily:'Manrope,sans-serif'
+                    }}
+                  >
+                    Reference {index + 1}
+                  </p>
 
-              <Input
-                label="Full Name"
-                value={reference.name}
-                onChange={value =>
-                  updateRef(index, 'name', value)
-                }
-                required
-              />
+                  {index < 2 && (
+                    <p
+                      style={{
+                        fontSize:10,
+                        color:C.muted,
+                        marginTop:2
+                      }}
+                    >
+                      Required
+                    </p>
+                  )}
 
-              <Input
-                label="Organisation / Hospital"
-                value={reference.org}
-                onChange={value =>
-                  updateRef(index, 'org', value)
-                }
-                required
-              />
+                </div>
 
-              <Select
-                label="Relationship *"
-                options={[
-                  'Employer',
-                  'Hospital',
-                  'Doctor',
-                  'Previous Client',
-                  'Colleague',
-                  'Other'
-                ]}
-                value={reference.type}
-                onChange={value =>
-                  updateRef(index, 'type', value)
-                }
-              />
+                {refs.length > 2 && (
+                  <button
+                    type="button"
 
-              <Input
-                label="Phone Number"
-                type="tel"
-                value={reference.phone}
-                onChange={value =>
-                  updateRef(index, 'phone', value)
-                }
-                required
-              />
+                    onClick={() =>
+                      removeRef(
+                        index
+                      )
+                    }
 
-              <Input
-                label="Email Address"
-                type="email"
-                value={reference.email}
-                onChange={value =>
-                  updateRef(index, 'email', value)
-                }
-              />
+                    style={{
+                      width:30,
+                      height:30,
+                      borderRadius:8,
+                      background:`${C.error}05`,
+                      border:`1px solid ${C.error}15`,
+                      cursor:'pointer',
+                      color:C.error,
+                      display:'flex',
+                      alignItems:'center',
+                      justifyContent:'center'
+                    }}
+                  >
+                    {I.trash}
+                  </button>
+                )}
 
-            </div>
-          </Card>
-        ))}
+              </div>
+
+              <div
+                style={{
+                  display:'grid',
+                  gridTemplateColumns:'1fr 1fr',
+                  gap:12
+                }}
+                className="cao-2col"
+              >
+
+                <Input
+                  label="Full Name"
+                  value={ref.name}
+                  onChange={value =>
+                    updateRef(
+                      index,
+                      'name',
+                      value
+                    )
+                  }
+                  required
+                />
+
+                <Input
+                  label="Organisation / Hospital"
+                  value={ref.org}
+                  onChange={value =>
+                    updateRef(
+                      index,
+                      'org',
+                      value
+                    )
+                  }
+                  required
+                />
+
+                <Select
+                  label="Relationship"
+                  options={[
+                    'Employer',
+                    'Hospital',
+                    'Doctor',
+                    'Previous Client',
+                    'Colleague',
+                    'Other'
+                  ]}
+                  value={ref.type}
+                  onChange={value =>
+                    updateRef(
+                      index,
+                      'type',
+                      value
+                    )
+                  }
+                />
+
+                <Input
+                  label="Phone Number"
+                  value={ref.phone}
+                  onChange={value =>
+                    updateRef(
+                      index,
+                      'phone',
+                      value
+                    )
+                  }
+                  hint="Phone or email required"
+                />
+
+                <Input
+                  label="Email Address"
+                  type="email"
+                  value={ref.email}
+                  onChange={value =>
+                    updateRef(
+                      index,
+                      'email',
+                      value
+                    )
+                  }
+                  hint="Phone or email required"
+                />
+
+              </div>
+
+            </Card>
+
+          )
+        )}
+
       </div>
 
+      {/* Add another reference */}
       <button
         type="button"
         onClick={addRef}
+
         style={{
           width:'100%',
           padding:'14px',
@@ -4123,11 +8152,17 @@ function Step9({
           color:C.primary
         }}
       >
-        <span style={{ display:'flex' }}>
+
+        <span
+          style={{
+            display:'flex'
+          }}
+        >
           {I.plus}
         </span>
 
         Add Another Reference
+
       </button>
 
       {/* Recommendation Letter */}
@@ -4137,6 +8172,7 @@ function Step9({
           marginTop:16
         }}
       >
+
         <p
           style={{
             fontSize:12,
@@ -4150,94 +8186,259 @@ function Step9({
           Recommendation Letter (Optional)
         </p>
 
-        <label
+        {/* Hidden real file input */}
+        <input
+          ref={letterInputRef}
+          type="file"
+          accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          onChange={
+            handleLetterSelect
+          }
           style={{
-            display:'block',
-            padding:'20px',
-            borderRadius:14,
-            border:`2px dashed ${
-              letterFile || letterExisting
-                ? C.success
-                : C.border
-            }`,
-            background:
-              letterFile || letterExisting
-                ? `${C.success}06`
-                : C.bg,
-            cursor:'pointer',
-            textAlign:'center' as const
+            display:'none'
           }}
-        >
+        />
 
+        {/* Upload / selected state */}
+        {!letterRemoved && (
+          <div
+            onClick={
+              handleLetterClick
+            }
+            style={{
+              padding:'20px',
+              borderRadius:14,
+
+              border:
+                `2px dashed ${
+                  letterFile ||
+                  letterExisting
+                    ? C.success
+                    : C.border
+                }`,
+
+              background:
+                letterFile ||
+                letterExisting
+                  ? `${C.success}06`
+                  : C.bg,
+
+              cursor:'pointer',
+
+              textAlign:
+                'center' as const
+            }}
+          >
+
+            {letterUploading ? (
+
+              <p
+                style={{
+                  fontSize:13,
+                  fontWeight:700,
+                  color:C.info
+                }}
+              >
+                Uploading...
+              </p>
+
+            ) : letterFile ? (
+
+              <>
+                <p
+                  style={{
+                    fontSize:13,
+                    fontWeight:700,
+                    color:C.success
+                  }}
+                >
+                  ✓ {letterFile.name}
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.info,
+                    marginTop:4
+                  }}
+                >
+                  {letterExisting
+                    ? 'Replacement selected — save changes to upload'
+                    : 'Ready to upload — save changes to continue'}
+                </p>
+              </>
+
+            ) : letterExisting ? (
+
+              <>
+                <p
+                  style={{
+                    fontSize:13,
+                    fontWeight:700,
+                    color:C.success
+                  }}
+                >
+                  ✓ {letterFileName}
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.primary,
+                    marginTop:4
+                  }}
+                >
+                  Click to replace
+                </p>
+              </>
+
+            ) : (
+
+              <>
+                <div
+                  style={{
+                    width:40,
+                    height:40,
+                    borderRadius:13,
+                    background:`${C.primary}10`,
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    color:C.primary,
+                    margin:'0 auto 10px'
+                  }}
+                >
+                  {I.upload}
+                </div>
+
+                <p
+                  style={{
+                    fontSize:13,
+                    fontWeight:700,
+                    color:C.type
+                  }}
+                >
+                  Upload Recommendation Letter
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.muted,
+                    marginTop:4
+                  }}
+                >
+                  PDF, DOC or DOCX · Max 10MB
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.primary,
+                    fontWeight:700,
+                    marginTop:8
+                  }}
+                >
+                  Click to select file
+                </p>
+              </>
+
+            )}
+
+          </div>
+        )}
+
+        {/* Pending deletion */}
+        {letterRemoved && (
           <div
             style={{
-              width:40,
-              height:40,
-              borderRadius:13,
-              background:`${C.primary}10`,
-              display:'flex',
-              alignItems:'center',
-              justifyContent:'center',
-              color:C.primary,
-              margin:'0 auto 10px'
+              padding:16,
+              borderRadius:12,
+              background:`${C.error}05`,
+              border:`1px solid ${C.error}25`
             }}
           >
-            {I.upload}
+
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.error
+              }}
+            >
+              Recommendation Letter will be deleted when you save changes.
+            </p>
+
+            <button
+              type="button"
+              onClick={
+                handleUndoLetterRemove
+              }
+              style={{
+                marginTop:8,
+                padding:0,
+                border:'none',
+                background:'none',
+                color:C.primary,
+                fontSize:12,
+                fontWeight:700,
+                cursor:'pointer'
+              }}
+            >
+              Undo Remove
+            </button>
+
           </div>
+        )}
 
-          <p
-            style={{
-              fontSize:13,
-              fontWeight:700,
-              color:C.type
-            }}
-          >
-            {letterFile
-              ? letterFileName
-              : letterExisting
-                ? 'Change Recommendation Letter'
-                : 'Upload Recommendation Letter'}
-          </p>
+        {/* Remove / cancel */}
+        {!letterRemoved &&
+          (
+            letterFile ||
+            letterExisting
+          ) && (
 
-          <p
-            style={{
-              fontSize:11,
-              color:C.muted,
-              marginTop:4
-            }}
-          >
-            PDF, DOC or DOCX · Max 10MB
-          </p>
-
-          <input
-            type="file"
-            accept=".pdf,.doc,.docx"
-            onChange={handleLetterSelect}
-            style={{ display:'none' }}
-          />
-
-        </label>
-
-        {(letterFile || letterExisting) && (
           <button
             type="button"
-            onClick={handleRemoveLetter}
+
+            onClick={
+              handleRemoveLetter
+            }
+
             style={{
               marginTop:10,
-              background:'none',
+              padding:0,
               border:'none',
+              background:'none',
               color:C.error,
               fontSize:12,
               fontWeight:700,
               cursor:'pointer'
             }}
           >
-            Remove file
+            {letterFile &&
+            letterExisting
+              ? 'Cancel New File'
+              : 'Remove Recommendation Letter'}
           </button>
+
         )}
+
+        <p
+          style={{
+            marginTop:8,
+            fontSize:10,
+            color:C.muted,
+            lineHeight:1.5
+          }}
+        >
+          Recommendation Letter is optional and is not included
+          in the required reference validation.
+        </p>
 
       </Card>
 
+      {/* Error */}
       {saveError && (
         <div
           style={{
@@ -4261,7 +8462,7 @@ function Step9({
 
 
 
-// ─── Step 10: Agreements ──────────────────────────────────────────────────────
+// ─── Step 10: Agreements & Consent ────────────────────────────────────────────
 function Step10({
   onBack,
   onNext
@@ -4277,242 +8478,630 @@ function Step10({
     | 'care'
     | 'background'
 
-  const [agreed, setAgreed] = useState<Record<AgreementKey, boolean>>({
+  type AgreementState =
+    Record<AgreementKey, boolean>
+
+  const emptyAgreements:AgreementState = {
     terms:false,
     privacy:false,
     conduct:false,
     care:false,
     background:false
-  })
+  }
 
-  const [readDocs, setReadDocs] = useState<Record<AgreementKey, boolean>>({
+  const emptyReadState:AgreementState = {
     terms:false,
     privacy:false,
     conduct:false,
     care:false,
     background:false
-  })
+  }
 
-  const [openDocument, setOpenDocument] =
-    useState<AgreementKey | null>(null)
+  // Accepted / ticked state
+  const [agreed, setAgreed] =
+    useState<AgreementState>(
+      emptyAgreements
+    )
 
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
+  // Has the user actually read/opened the document?
+  const [readDocuments, setReadDocuments] =
+    useState<AgreementState>(
+      emptyReadState
+    )
 
-  const allAgreed = Object.values(agreed).every(Boolean)
-  const allRead = Object.values(readDocs).every(Boolean)
+  const [
+    selectedDocument,
+    setSelectedDocument
+  ] = useState<AgreementKey | null>(
+    null
+  )
 
-  const documents = [
+  const [loading, setLoading] =
+    useState(true)
+
+  const [saving, setSaving] =
+    useState(false)
+
+  const [saveError, setSaveError] =
+    useState('')
+
+  // Dirty-state tracking
+  const [initialData, setInitialData] =
+    useState('')
+
+  const [
+    hasSavedData,
+    setHasSavedData
+  ] = useState(false)
+
+  // ─────────────────────────────────────────────
+  // Agreement list
+  // ─────────────────────────────────────────────
+  const docs = [
     {
-      k:'terms' as AgreementKey,
-      title:'Terms & Conditions',
-      desc:'Governs your use of the ReadyPal platform, payment terms, and agent obligations.',
-      sections:[
-        {
-          heading:'1. Introduction',
-          text:'These Terms & Conditions govern your use of the ReadyPal platform as a Care Agent. By using ReadyPal, you agree to follow the platform rules and provide accurate information.'
-        },
-        {
-          heading:'2. Care Agent Responsibilities',
-          text:'Care Agents must provide services professionally, safely, respectfully, and according to the details agreed with the client.'
-        },
-        {
-          heading:'3. Account Information',
-          text:'You must provide accurate personal, professional, banking, identity, and qualification information during registration.'
-        },
-        {
-          heading:'4. Payments',
-          text:'Payments and payouts will be processed according to ReadyPal platform rules and the payout method connected to your account.'
-        },
-        {
-          heading:'5. Platform Conduct',
-          text:'Fraud, harassment, misuse of client information, unsafe care, or other serious violations may result in suspension or removal from the platform.'
-        }
-      ]
+      k:'terms' as const,
+
+      title:
+        'Terms & Conditions',
+
+      desc:
+        'Governs your use of the ReadyPal platform, payment terms, and agent obligations.'
     },
 
     {
-      k:'privacy' as AgreementKey,
-      title:'Privacy Policy',
-      desc:'How we collect, use, and protect your personal and professional data.',
-      sections:[
-        {
-          heading:'1. Information We Collect',
-          text:'ReadyPal may collect personal details, contact information, professional qualifications, identity documents, bank information, availability, references, and platform activity.'
-        },
-        {
-          heading:'2. How Information Is Used',
-          text:'Your information may be used for account management, identity verification, matching with clients, safety, payments, support, and platform administration.'
-        },
-        {
-          heading:'3. Sensitive Documents',
-          text:'Identity, certification, banking, and verification documents are used only for relevant verification and operational purposes.'
-        },
-        {
-          heading:'4. Access to Information',
-          text:'Access to sensitive information is restricted to authorized users and ReadyPal staff according to their responsibilities.'
-        }
-      ]
+      k:'privacy' as const,
+
+      title:
+        'Privacy Policy',
+
+      desc:
+        'How we collect, use, and protect your personal and professional data.'
     },
 
     {
-      k:'conduct' as AgreementKey,
-      title:'Code of Conduct',
-      desc:'Professional behaviour standards expected of all ReadyPal Care Agents.',
-      sections:[
-        {
-          heading:'1. Respect',
-          text:'Care Agents must treat clients, beneficiaries, families, staff, and other users with dignity and respect.'
-        },
-        {
-          heading:'2. Professional Behaviour',
-          text:'Agents must be punctual, responsible, honest, and professional while performing care services.'
-        },
-        {
-          heading:'3. Confidentiality',
-          text:'Personal, medical, financial, and household information learned while providing care must be kept confidential.'
-        },
-        {
-          heading:'4. Safety',
-          text:'Care Agents must follow reasonable safety requirements and immediately report serious incidents or emergencies.'
-        }
-      ]
+      k:'conduct' as const,
+
+      title:
+        'Code of Conduct',
+
+      desc:
+        'Professional behaviour standards expected of all ReadyPal Care Agents.'
     },
 
     {
-      k:'care' as AgreementKey,
-      title:'Care Standards',
-      desc:'Minimum quality standards for all care services delivered through ReadyPal.',
-      sections:[
-        {
-          heading:'1. Quality of Care',
-          text:'Care Agents must provide services with appropriate care, attention, patience, and professionalism.'
-        },
-        {
-          heading:'2. Client Instructions',
-          text:'Agents should follow agreed service instructions unless an instruction is unsafe, illegal, or outside the agreed scope.'
-        },
-        {
-          heading:'3. Medication and Health Tasks',
-          text:'Agents should perform only tasks that they are qualified and authorized to perform.'
-        },
-        {
-          heading:'4. Emergency Situations',
-          text:'In an emergency, the Care Agent should prioritize immediate safety and follow the appropriate emergency and reporting process.'
-        }
-      ]
+      k:'care' as const,
+
+      title:
+        'Care Standards',
+
+      desc:
+        'Minimum quality standards for all care services delivered through ReadyPal.'
     },
 
     {
-      k:'background' as AgreementKey,
-      title:'Background Check Consent',
-      desc:'You consent to identity verification and police record checks.',
-      sections:[
-        {
-          heading:'1. Consent',
-          text:'You authorize ReadyPal to review the information and documents submitted as part of your Care Agent application.'
-        },
-        {
-          heading:'2. Identity Verification',
-          text:'Your identity information and submitted identification documents may be checked for authenticity and consistency.'
-        },
-        {
-          heading:'3. Police Clearance',
-          text:'Your submitted police clearance information may be reviewed as part of the Care Agent approval process.'
-        },
-        {
-          heading:'4. Professional Verification',
-          text:'ReadyPal may review submitted qualifications, certificates, employment details, and professional references.'
-        }
-      ]
+      k:'background' as const,
+
+      title:
+        'Background Check Consent',
+
+      desc:
+        'You consent to identity verification and police record checks.'
     }
   ]
 
-  useEffect(() => {
-    const loadAgreements = async () => {
-      try {
-        const data = await getMyAgreements()
+  // ─────────────────────────────────────────────
+  // Full readable documents
+  // ─────────────────────────────────────────────
+  const documentContent:Record<
+    AgreementKey,
+    {
+      title:string
+      intro:string
+      sections:{
+        heading:string
+        text:string
+      }[]
+    }
+  > = {
 
-        if (data) {
-          const saved = {
-            terms: data.terms_accepted ?? false,
-            privacy: data.privacy_accepted ?? false,
-            conduct: data.conduct_accepted ?? false,
-            care: data.care_standards_accepted ?? false,
-            background:
-              data.background_check_accepted ?? false
+    // ═══════════════════════════════════════
+    // TERMS
+    // ═══════════════════════════════════════
+    terms:{
+      title:
+        'Terms & Conditions',
+
+      intro:
+        'These Terms & Conditions explain the responsibilities of Care Agents who use the ReadyPal platform.',
+
+      sections:[
+        {
+          heading:
+            '1. Care Agent Responsibilities',
+
+          text:
+            'You must provide accurate personal, professional, availability and verification information. You must perform accepted care services responsibly, professionally and respectfully.'
+        },
+
+        {
+          heading:
+            '2. Platform Use',
+
+          text:
+            'ReadyPal may be used only for legitimate care-related activities. You must not misuse client information, platform features or communication channels.'
+        },
+
+        {
+          heading:
+            '3. Service Commitments',
+
+          text:
+            'Once you accept a confirmed care request, you are expected to arrive on time, follow the agreed service requirements and communicate promptly if an unexpected issue occurs.'
+        },
+
+        {
+          heading:
+            '4. Payments & Payouts',
+
+          text:
+            'Payments for completed services will be handled according to ReadyPal payout rules. Your payout information must be accurate and may require verification before funds are transferred.'
+        },
+
+        {
+          heading:
+            '5. Account Suspension',
+
+          text:
+            'ReadyPal may restrict or suspend an account if there is suspected fraud, unsafe behaviour, serious policy violations or repeated service complaints.'
+        }
+      ]
+    },
+
+    // ═══════════════════════════════════════
+    // PRIVACY
+    // ═══════════════════════════════════════
+    privacy:{
+      title:
+        'Privacy Policy',
+
+      intro:
+        'This Privacy Policy explains how ReadyPal handles personal and professional information provided by Care Agents.',
+
+      sections:[
+        {
+          heading:
+            '1. Information We Collect',
+
+          text:
+            'ReadyPal may collect your name, contact details, address, identification documents, professional qualifications, references, bank information and service availability.'
+        },
+
+        {
+          heading:
+            '2. Why We Collect Information',
+
+          text:
+            'Information is used for account creation, identity verification, background checks, client matching, payouts, platform safety and customer support.'
+        },
+
+        {
+          heading:
+            '3. Information Sharing',
+
+          text:
+            'Only appropriate profile information is shown to clients. Sensitive documents, identification numbers and banking details are not displayed publicly.'
+        },
+
+        {
+          heading:
+            '4. Data Protection',
+
+          text:
+            'ReadyPal takes reasonable technical and organisational measures to protect stored information against unauthorised access, misuse or loss.'
+        },
+
+        {
+          heading:
+            '5. Data Updates',
+
+          text:
+            'You are responsible for keeping your personal and professional information accurate and up to date.'
+        }
+      ]
+    },
+
+    // ═══════════════════════════════════════
+    // CONDUCT
+    // ═══════════════════════════════════════
+    conduct:{
+      title:
+        'Code of Conduct',
+
+      intro:
+        'All ReadyPal Care Agents are expected to maintain professional behaviour when interacting with clients, beneficiaries and families.',
+
+      sections:[
+        {
+          heading:
+            '1. Respect & Dignity',
+
+          text:
+            'Treat every beneficiary with dignity, patience, respect and compassion regardless of age, gender, background or personal circumstances.'
+        },
+
+        {
+          heading:
+            '2. Professional Behaviour',
+
+          text:
+            'Use respectful language, maintain appropriate boundaries and behave professionally during all ReadyPal services.'
+        },
+
+        {
+          heading:
+            '3. Confidentiality',
+
+          text:
+            'Do not disclose private client, beneficiary or family information unless required for service delivery, safety or legal reasons.'
+        },
+
+        {
+          heading:
+            '4. Safety',
+
+          text:
+            'Do not perform procedures or tasks outside your qualifications. Report emergencies, unsafe conditions or serious concerns immediately.'
+        },
+
+        {
+          heading:
+            '5. Prohibited Conduct',
+
+          text:
+            'Harassment, discrimination, theft, fraud, abuse, intoxication during service and misuse of client property are prohibited.'
+        }
+      ]
+    },
+
+    // ═══════════════════════════════════════
+    // CARE
+    // ═══════════════════════════════════════
+    care:{
+      title:
+        'Care Standards',
+
+      intro:
+        'These standards describe the minimum quality expected from services delivered through ReadyPal.',
+
+      sections:[
+        {
+          heading:
+            '1. Reliability',
+
+          text:
+            'Arrive at the agreed location and time and notify the client as early as possible if you are delayed.'
+        },
+
+        {
+          heading:
+            '2. Service Quality',
+
+          text:
+            'Follow the care request instructions carefully and provide only services that you are qualified and authorised to perform.'
+        },
+
+        {
+          heading:
+            '3. Medication Support',
+
+          text:
+            'Medication-related assistance must remain within the approved task and your level of competence. Never change medication instructions independently.'
+        },
+
+        {
+          heading:
+            '4. Hygiene & Infection Prevention',
+
+          text:
+            'Maintain appropriate personal hygiene and follow reasonable infection-control practices when assisting beneficiaries.'
+        },
+
+        {
+          heading:
+            '5. Emergency Response',
+
+          text:
+            'In an emergency, prioritise the beneficiary’s immediate safety and contact the appropriate emergency service, family member or ReadyPal support when necessary.'
+        }
+      ]
+    },
+
+    // ═══════════════════════════════════════
+    // BACKGROUND CHECK
+    // ═══════════════════════════════════════
+    background:{
+      title:
+        'Background Check Consent',
+
+      intro:
+        'By accepting this consent, you authorise ReadyPal to review information required to assess your suitability as a Care Agent.',
+
+      sections:[
+        {
+          heading:
+            '1. Identity Verification',
+
+          text:
+            'ReadyPal may verify the identity information and documents you provide, including your NIC or other approved identification.'
+        },
+
+        {
+          heading:
+            '2. Police Clearance',
+
+          text:
+            'ReadyPal may review submitted police clearance information and may request updated documentation when necessary.'
+        },
+
+        {
+          heading:
+            '3. Professional Verification',
+
+          text:
+            'Your qualifications, certificates, employment history and references may be reviewed or confirmed.'
+        },
+
+        {
+          heading:
+            '4. Reference Checks',
+
+          text:
+            'ReadyPal may contact the professional references you provide in order to verify your experience, conduct or work history.'
+        },
+
+        {
+          heading:
+            '5. Consent',
+
+          text:
+            'You confirm that the information provided is accurate and that ReadyPal may use it for legitimate verification and platform safety purposes.'
+        }
+      ]
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Status calculations
+  // ─────────────────────────────────────────────
+
+  const acceptedCount =
+    Object.values(
+      agreed
+    ).filter(Boolean).length
+
+  const readCount =
+    Object.values(
+      readDocuments
+    ).filter(Boolean).length
+
+  const allRead =
+    readCount === 5
+
+  const allAgreed =
+    acceptedCount === 5
+
+  // ─────────────────────────────────────────────
+  // Dirty state
+  // ─────────────────────────────────────────────
+
+  const currentData =
+    JSON.stringify(
+      agreed
+    )
+
+  const hasChanges =
+    initialData !== '' &&
+    currentData !== initialData
+
+  const canSave =
+    !loading &&
+    allAgreed &&
+    (
+      !hasSavedData ||
+      hasChanges
+    )
+
+  // ─────────────────────────────────────────────
+  // Load saved agreements
+  // ─────────────────────────────────────────────
+
+  useEffect(() => {
+
+    const loadAgreements =
+      async () => {
+
+        try {
+
+          setLoading(true)
+          setSaveError('')
+
+          const data =
+            await getMyAgreements()
+
+          if (!data) {
+
+            setAgreed(
+              emptyAgreements
+            )
+
+            setReadDocuments(
+              emptyReadState
+            )
+
+            setHasSavedData(
+              false
+            )
+
+            setInitialData(
+              JSON.stringify(
+                emptyAgreements
+              )
+            )
+
+            return
           }
 
-          setAgreed(saved)
+          const loadedAgreements:AgreementState = {
 
-          setReadDocs({
-            terms: saved.terms,
-            privacy: saved.privacy,
-            conduct: saved.conduct,
-            care: saved.care,
-            background: saved.background
+            terms:
+              data.terms_accepted ??
+              false,
+
+            privacy:
+              data.privacy_accepted ??
+              false,
+
+            conduct:
+              data.conduct_accepted ??
+              false,
+
+            care:
+              data.care_standards_accepted ??
+              false,
+
+            background:
+              data.background_check_accepted ??
+              false
+          }
+
+          setAgreed(
+            loadedAgreements
+          )
+
+          /*
+           * If an agreement was already saved as accepted,
+           * treat it as previously read.
+           *
+           * Otherwise an existing user would have to read
+           * everything again just to edit Step 10.
+           */
+          setReadDocuments({
+            terms:
+              loadedAgreements.terms,
+
+            privacy:
+              loadedAgreements.privacy,
+
+            conduct:
+              loadedAgreements.conduct,
+
+            care:
+              loadedAgreements.care,
+
+            background:
+              loadedAgreements.background
           })
+
+          setHasSavedData(
+            Object.values(
+              loadedAgreements
+            ).some(Boolean)
+          )
+
+          setInitialData(
+            JSON.stringify(
+              loadedAgreements
+            )
+          )
+
+        } catch (error) {
+
+          console.error(
+            'Failed to load agreements:',
+            error
+          )
+
+          setSaveError(
+            'Failed to load saved agreements'
+          )
+
+        } finally {
+
+          setLoading(false)
+
         }
-
-      } catch (error) {
-        console.error(
-          'Failed to load agreements:',
-          error
-        )
-
-        setSaveError(
-          'Failed to load saved agreements'
-        )
-
-      } finally {
-        setLoading(false)
       }
-    }
 
     loadAgreements()
+
   }, [])
 
-  const openAgreement = (key: AgreementKey) => {
-    setOpenDocument(key)
-    setSaveError('')
-  }
+  // ─────────────────────────────────────────────
+  // Tick / untick
+  // ─────────────────────────────────────────────
 
-  const markAsReadAndClose = () => {
-    if (!openDocument) return
+  const toggleAgreement = (
+    key:AgreementKey
+  ) => {
 
-    setReadDocs(prev => ({
-      ...prev,
-      [openDocument]: true
-    }))
-
-    setOpenDocument(null)
-  }
-
-  const toggleAgreement = (key: AgreementKey) => {
-
-    if (!readDocs[key]) {
+    /*
+     * CRITICAL CONDITION:
+     * User cannot tick agreement until
+     * the corresponding document is read.
+     */
+    if (
+      !readDocuments[key]
+    ) {
       setSaveError(
-        'Please read this agreement before accepting it'
+        'Please read this document before agreeing to it.'
       )
 
-      setOpenDocument(key)
       return
     }
 
     setAgreed(prev => ({
       ...prev,
-      [key]: !prev[key]
+      [key]:
+        !prev[key]
     }))
 
     setSaveError('')
   }
 
-  const handleAcceptAll = () => {
+  // ─────────────────────────────────────────────
+  // Mark selected document as read
+  // ─────────────────────────────────────────────
+
+  const markDocumentAsRead = (
+    key:AgreementKey
+  ) => {
+
+    setReadDocuments(
+      prev => ({
+        ...prev,
+        [key]:true
+      })
+    )
+
+    setSelectedDocument(
+      null
+    )
+
+    setSaveError('')
+  }
+
+  // ─────────────────────────────────────────────
+  // Accept all
+  // ─────────────────────────────────────────────
+
+  const acceptAll = () => {
+
     if (!allRead) {
+
       setSaveError(
-        'Please read all agreements before accepting all'
+        'Please read all five documents before accepting all agreements.'
       )
+
       return
     }
 
@@ -4527,58 +9116,102 @@ function Step10({
     setSaveError('')
   }
 
-  const handleSaveAndContinue = async () => {
-    try {
-      setSaveError('')
+  // ─────────────────────────────────────────────
+  // Save
+  // ─────────────────────────────────────────────
 
-      if (!allRead) {
-        throw new Error(
-          'Please read all agreements before continuing'
+  const handleSaveAndContinue =
+    async () => {
+
+      try {
+
+        if (
+          !canSave ||
+          saving
+        ) {
+          return
+        }
+
+        setSaveError('')
+
+        if (!allRead) {
+          throw new Error(
+            'Please read all agreements before continuing'
+          )
+        }
+
+        if (!allAgreed) {
+          throw new Error(
+            'Please agree to all documents before continuing'
+          )
+        }
+
+        setSaving(true)
+
+        await saveMyAgreements({
+
+          terms_accepted:
+            agreed.terms,
+
+          privacy_accepted:
+            agreed.privacy,
+
+          conduct_accepted:
+            agreed.conduct,
+
+          care_standards_accepted:
+            agreed.care,
+
+          background_check_accepted:
+            agreed.background
+        })
+
+        setHasSavedData(
+          true
         )
-      }
 
-      if (!allAgreed) {
-        throw new Error(
-          'You must agree to all documents before continuing'
+        setInitialData(
+          JSON.stringify(
+            agreed
+          )
         )
-      }
 
-      setSaving(true)
+        // Normal flow → Step 11
+        // Review edit → Step 11
+        onNext()
 
-      await saveMyAgreements({
-        terms_accepted: agreed.terms,
-        privacy_accepted: agreed.privacy,
-        conduct_accepted: agreed.conduct,
-        care_standards_accepted: agreed.care,
-        background_check_accepted: agreed.background
-      })
+      } catch (error) {
 
-      onNext()
-
-    } catch (error) {
-      console.error(
-        'Failed to save agreements:',
-        error
-      )
-
-      if (error instanceof Error) {
-        setSaveError(error.message)
-      } else {
-        setSaveError(
-          'Failed to save agreements'
+        console.error(
+          'Failed to save agreements:',
+          error
         )
-      }
 
-    } finally {
-      setSaving(false)
+        if (
+          error instanceof Error
+        ) {
+          setSaveError(
+            error.message
+          )
+        } else {
+          setSaveError(
+            'Failed to save agreements'
+          )
+        }
+
+      } finally {
+
+        setSaving(false)
+
+      }
     }
-  }
 
-  const currentDocument = documents.find(
-    document => document.k === openDocument
-  )
+  // ─────────────────────────────────────────────
+  // Loading
+  // ─────────────────────────────────────────────
 
   if (loading) {
+
     return (
       <StepWrap
         step={10}
@@ -4587,13 +9220,17 @@ function Step10({
         desc="Please read and agree to all documents before submitting your application."
         onBack={onBack}
         onNext={() => {}}
+        nextDisabled={true}
       >
+
         <Card
           style={{
             padding:30,
-            textAlign:'center' as const
+            textAlign:
+              'center' as const
           }}
         >
+
           <p
             style={{
               fontSize:13,
@@ -4602,29 +9239,85 @@ function Step10({
           >
             Loading agreements...
           </p>
+
         </Card>
+
       </StepWrap>
     )
   }
 
   return (
     <>
+
       <StepWrap
         step={10}
         total={11}
         title="Agreements & Consent"
         desc="Please read and agree to all documents before submitting your application."
         onBack={onBack}
-        onNext={handleSaveAndContinue}
+        onNext={
+          handleSaveAndContinue
+        }
         nextLabel={
           saving
             ? 'Saving...'
-            : allAgreed
-              ? 'Save & Continue'
-              : 'Agree to All First'
+
+            : !allRead
+              ? 'Read All Documents First'
+
+              : !allAgreed
+                ? 'Agree to All First'
+
+                : 'Save & Continue'
+        }
+        nextDisabled={
+          !canSave ||
+          saving
         }
       >
 
+        {/* ─────────────────────────────
+            INFO
+        ───────────────────────────── */}
+        <Card
+          style={{
+            padding:'14px 16px',
+            marginBottom:16,
+
+            background:
+              `${C.info}05`,
+
+            border:
+              `1px solid ${C.info}20`
+          }}
+        >
+
+          <p
+            style={{
+              fontSize:12,
+              fontWeight:700,
+              color:C.info,
+              marginBottom:3
+            }}
+          >
+            Please review all documents carefully
+          </p>
+
+          <p
+            style={{
+              fontSize:11,
+              color:C.muted,
+              lineHeight:1.6
+            }}
+          >
+            You must read each document before its agreement checkbox becomes available.
+          </p>
+
+        </Card>
+
+        {/* ─────────────────────────────
+            AGREEMENT CARDS
+        ───────────────────────────── */}
         <div
           style={{
             display:'flex',
@@ -4633,476 +9326,2652 @@ function Step10({
             marginBottom:20
           }}
         >
-          {documents.map(document => (
-            <Card
-              key={document.k}
-              style={{
-                padding:20,
-                border:`1.5px solid ${
-                  agreed[document.k]
-                    ? C.success + '40'
-                    : C.border
-                }`,
-                background:
-                  agreed[document.k]
-                    ? `${C.success}04`
-                    : C.surface
-              }}
-            >
-              <div
+
+          {docs.map(doc => {
+
+            const hasRead =
+              readDocuments[
+                doc.k
+              ]
+
+            const hasAgreed =
+              agreed[
+                doc.k
+              ]
+
+            return (
+
+              <Card
+                key={
+                  doc.k
+                }
+
                 style={{
-                  display:'flex',
-                  gap:14,
-                  alignItems:'flex-start'
+                  padding:20,
+
+                  border:
+                    `1.5px solid ${
+                      hasAgreed
+                        ? C.success + '40'
+                        : hasRead
+                          ? C.primary + '25'
+                          : C.border
+                    }`,
+
+                  background:
+                    hasAgreed
+                      ? `${C.success}04`
+                      : C.surface
                 }}
               >
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    toggleAgreement(document.k)
-                  }
+                <div
                   style={{
-                    width:22,
-                    height:22,
-                    borderRadius:6,
-                    background:
-                      agreed[document.k]
-                        ? C.primary
-                        : 'transparent',
-                    border:`2px solid ${
-                      agreed[document.k]
-                        ? C.primary
-                        : C.border
-                    }`,
-                    cursor:'pointer',
                     display:'flex',
-                    alignItems:'center',
-                    justifyContent:'center',
-                    flexShrink:0,
-                    marginTop:1
+                    gap:14,
+                    alignItems:
+                      'flex-start'
                   }}
                 >
-                  {agreed[document.k] && (
-                    <span
-                      style={{
-                        color:'#fff',
-                        display:'flex',
-                        transform:'scale(0.75)'
-                      }}
-                    >
-                      {I.check}
-                    </span>
-                  )}
-                </button>
 
-                <div style={{ flex:1 }}>
+                  {/* CHECKBOX */}
+                  <button
+                    type="button"
 
-                  <div
+                    onClick={() =>
+                      toggleAgreement(
+                        doc.k
+                      )
+                    }
+
+                    disabled={
+                      !hasRead
+                    }
+
+                    title={
+                      !hasRead
+                        ? 'Read this document first'
+                        : hasAgreed
+                          ? 'Remove agreement'
+                          : 'Agree to this document'
+                    }
+
                     style={{
+                      width:22,
+                      height:22,
+
+                      borderRadius:6,
+
+                      background:
+                        hasAgreed
+                          ? C.primary
+                          : 'transparent',
+
+                      border:
+                        `2px solid ${
+                          hasAgreed
+                            ? C.primary
+                            : hasRead
+                              ? C.primary
+                              : C.border
+                        }`,
+
+                      cursor:
+                        hasRead
+                          ? 'pointer'
+                          : 'not-allowed',
+
+                      opacity:
+                        hasRead
+                          ? 1
+                          : 0.45,
+
                       display:'flex',
-                      gap:8,
                       alignItems:'center',
-                      marginBottom:4,
-                      flexWrap:'wrap'
+                      justifyContent:
+                        'center',
+
+                      flexShrink:0,
+                      marginTop:1,
+
+                      transition:
+                        'all 0.15s'
                     }}
                   >
-                    <p
-                      style={{
-                        fontSize:13,
-                        fontWeight:700,
-                        color:C.type
-                      }}
-                    >
-                      {document.title}
-                    </p>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openAgreement(document.k)
-                      }
-                      style={{
-                        fontSize:11,
-                        fontWeight:700,
-                        color:C.primary,
-                        background:'none',
-                        border:'none',
-                        cursor:'pointer',
-                        fontFamily:'Manrope,sans-serif'
-                      }}
-                    >
-                      {readDocs[document.k]
-                        ? 'Read Again →'
-                        : 'Read →'}
-                    </button>
+                    {hasAgreed && (
 
-                    {readDocs[document.k] && (
                       <span
                         style={{
-                          fontSize:10,
-                          fontWeight:700,
-                          color:C.success
+                          color:'#fff',
+                          display:'flex',
+
+                          transform:
+                            'scale(0.75)'
                         }}
                       >
-                        ✓ Read
+                        {I.check}
                       </span>
-                    )}
-                  </div>
 
-                  <p
+                    )}
+
+                  </button>
+
+                  {/* CONTENT */}
+                  <div
                     style={{
-                      fontSize:12,
-                      color:C.muted,
-                      lineHeight:1.6
+                      flex:1
                     }}
                   >
-                    {document.desc}
-                  </p>
+
+                    <div
+                      style={{
+                        display:'flex',
+                        gap:8,
+                        alignItems:'center',
+                        marginBottom:4,
+
+                        flexWrap:'wrap'
+                      }}
+                    >
+
+                      <p
+                        style={{
+                          fontSize:13,
+                          fontWeight:700,
+                          color:C.type
+                        }}
+                      >
+                        {doc.title}
+                      </p>
+
+                      <span
+                        style={{
+                          color:C.error,
+                          fontWeight:800
+                        }}
+                      >
+                        *
+                      </span>
+
+                      {/* READ BUTTON */}
+                      <button
+                        type="button"
+
+                        onClick={() =>
+                          setSelectedDocument(
+                            doc.k
+                          )
+                        }
+
+                        style={{
+                          fontSize:11,
+                          fontWeight:700,
+
+                          color:C.primary,
+
+                          background:'none',
+                          border:'none',
+                          padding:0,
+
+                          cursor:'pointer',
+
+                          fontFamily:
+                            'Manrope,sans-serif'
+                        }}
+                      >
+                        {hasRead
+                          ? 'Read Again →'
+                          : 'Read →'}
+                      </button>
+
+                      {/* READ STATUS */}
+                      {hasRead && (
+
+                        <Bdg
+                          label="Read"
+                          color={C.info}
+                        />
+
+                      )}
+
+                    </div>
+
+                    <p
+                      style={{
+                        fontSize:12,
+                        color:C.muted,
+                        lineHeight:1.6
+                      }}
+                    >
+                      {doc.desc}
+                    </p>
+
+                    {!hasRead && (
+
+                      <p
+                        style={{
+                          fontSize:10,
+                          color:C.warning,
+                          fontWeight:700,
+                          marginTop:6
+                        }}
+                      >
+                        Read this document to unlock the checkbox
+                      </p>
+
+                    )}
+
+                    {hasRead &&
+                    !hasAgreed && (
+
+                      <p
+                        style={{
+                          fontSize:10,
+                          color:C.info,
+                          fontWeight:700,
+                          marginTop:6
+                        }}
+                      >
+                        ✓ Read — you can now agree
+                      </p>
+
+                    )}
+
+                    {hasAgreed && (
+
+                      <p
+                        style={{
+                          fontSize:10,
+                          color:C.success,
+                          fontWeight:700,
+                          marginTop:6
+                        }}
+                      >
+                        ✓ Read & Accepted
+                      </p>
+
+                    )}
+
+                  </div>
 
                 </div>
-              </div>
-            </Card>
-          ))}
+
+              </Card>
+
+            )
+          })}
+
         </div>
 
+        {/* ─────────────────────────────
+            ACCEPT ALL
+        ───────────────────────────── */}
         <button
           type="button"
-          onClick={handleAcceptAll}
+
+          onClick={
+            acceptAll
+          }
+
+          disabled={
+            !allRead ||
+            allAgreed
+          }
+
+          title={
+            !allRead
+              ? 'Read all documents first'
+              : ''
+          }
+
           style={{
             width:'100%',
             padding:'12px',
+
             borderRadius:12,
-            border:`1.5px solid ${
-              allAgreed
-                ? C.success
-                : C.border
-            }`,
+
+            border:
+              `1.5px solid ${
+                allAgreed
+                  ? C.success
+                  : C.border
+              }`,
+
             background:
               allAgreed
                 ? `${C.success}04`
                 : 'transparent',
-            cursor:allRead
-              ? 'pointer'
-              : 'not-allowed',
-            fontFamily:'Manrope,sans-serif',
+
+            cursor:
+              !allRead ||
+              allAgreed
+                ? 'not-allowed'
+                : 'pointer',
+
+            opacity:
+              !allRead
+                ? 0.5
+                : 1,
+
+            fontFamily:
+              'Manrope,sans-serif',
+
             fontSize:13,
             fontWeight:700,
+
             color:
               allAgreed
                 ? C.success
-                : allRead
-                  ? C.primary
-                  : C.muted,
+                : C.sub,
+
             marginBottom:16
           }}
         >
-          {allAgreed
-            ? '✓ All Agreements Accepted'
-            : allRead
-              ? 'Accept All Agreements'
-              : 'Read All Agreements First'}
+
+          {!allRead
+            ? `Read All Documents (${readCount}/5)`
+
+            : allAgreed
+              ? '✓ All Agreements Accepted'
+
+              : 'Accept All Agreements'}
+
         </button>
 
+        {/* ─────────────────────────────
+            PROGRESS
+        ───────────────────────────── */}
+        <Card
+          style={{
+            padding:'16px',
+            marginBottom:16
+          }}
+        >
+
+          <div
+            style={{
+              display:'grid',
+              gridTemplateColumns:
+                '1fr 1fr',
+              gap:16
+            }}
+            className="cao-2col"
+          >
+
+            {/* READ PROGRESS */}
+            <div>
+
+              <p
+                style={{
+                  fontSize:11,
+                  color:C.muted,
+                  marginBottom:4
+                }}
+              >
+                Documents Read
+              </p>
+
+              <p
+                style={{
+                  fontSize:18,
+                  fontWeight:900,
+                  color:
+                    allRead
+                      ? C.success
+                      : C.primary
+                }}
+              >
+                {readCount}/5
+              </p>
+
+            </div>
+
+            {/* ACCEPTED PROGRESS */}
+            <div>
+
+              <p
+                style={{
+                  fontSize:11,
+                  color:C.muted,
+                  marginBottom:4
+                }}
+              >
+                Agreements Accepted
+              </p>
+
+              <p
+                style={{
+                  fontSize:18,
+                  fontWeight:900,
+
+                  color:
+                    allAgreed
+                      ? C.success
+                      : C.primary
+                }}
+              >
+                {acceptedCount}/5
+              </p>
+
+            </div>
+
+          </div>
+
+        </Card>
+
+        {/* ERROR */}
         {saveError && (
+
           <div
             style={{
               padding:'12px 14px',
-              marginBottom:16,
+              marginTop:16,
+
               borderRadius:10,
-              background:`${C.error}08`,
-              border:`1px solid ${C.error}30`,
+
+              background:
+                `${C.error}08`,
+
+              border:
+                `1px solid ${C.error}30`,
+
               color:C.error,
+
               fontSize:12,
               fontWeight:600
             }}
           >
             {saveError}
           </div>
+
         )}
-
-        <Card
-          style={{
-            padding:22,
-            opacity:0.7
-          }}
-        >
-          <div
-            style={{
-              display:'flex',
-              justifyContent:'space-between',
-              alignItems:'center',
-              marginBottom:10
-            }}
-          >
-            <p
-              style={{
-                fontSize:13,
-                fontWeight:800,
-                color:C.type,
-                fontFamily:'Manrope,sans-serif'
-              }}
-            >
-              Digital Signature
-            </p>
-
-            <Bdg
-              label="Coming Soon"
-              color={C.info}
-            />
-          </div>
-
-          <div
-            style={{
-              height:80,
-              borderRadius:12,
-              border:`2px dashed ${C.border}`,
-              background:C.bg,
-              display:'flex',
-              alignItems:'center',
-              justifyContent:'center'
-            }}
-          >
-            <p
-              style={{
-                fontSize:12,
-                color:C.muted
-              }}
-            >
-              Draw or type your signature
-              (available in next release)
-            </p>
-          </div>
-        </Card>
 
       </StepWrap>
 
-      {currentDocument && (
+      {/* ═══════════════════════════════════════════
+          DOCUMENT MODAL
+      ═══════════════════════════════════════════ */}
+      {selectedDocument && (
+
         <div
-          onClick={() => setOpenDocument(null)}
+          onClick={() =>
+            setSelectedDocument(
+              null
+            )
+          }
+
           style={{
             position:'fixed',
             inset:0,
+
             zIndex:9999,
-            background:'rgba(15,23,42,0.55)',
+
+            background:
+              'rgba(15, 23, 42, 0.55)',
+
             display:'flex',
             alignItems:'center',
             justifyContent:'center',
+
             padding:20
           }}
         >
+
           <div
             onClick={event =>
               event.stopPropagation()
             }
+
             style={{
               width:'100%',
-              maxWidth:680,
+              maxWidth:720,
+
               maxHeight:'85vh',
+
               background:C.surface,
+
               borderRadius:18,
-              boxShadow:'0 24px 70px rgba(0,0,0,0.22)',
-              display:'flex',
-              flexDirection:'column',
+
+              boxShadow:
+                '0 24px 80px rgba(0,0,0,0.25)',
+
               overflow:'hidden'
             }}
           >
 
+            {/* MODAL HEADER */}
             <div
               style={{
-                padding:'20px 24px',
-                borderBottom:`1px solid ${C.border}`
+                padding:'20px 22px',
+
+                borderBottom:
+                  `1px solid ${C.border}`,
+
+                display:'flex',
+                justifyContent:
+                  'space-between',
+
+                alignItems:'center',
+                gap:16
               }}
             >
-              <p
-                style={{
-                  fontSize:17,
-                  fontWeight:900,
-                  color:C.type
-                }}
-              >
-                {currentDocument.title}
-              </p>
 
-              <p
+              <div>
+
+                <p
+                  style={{
+                    fontSize:18,
+                    fontWeight:900,
+                    color:C.type,
+
+                    fontFamily:
+                      'Manrope,sans-serif'
+                  }}
+                >
+                  {
+                    documentContent[
+                      selectedDocument
+                    ].title
+                  }
+                </p>
+
+                <p
+                  style={{
+                    fontSize:11,
+                    color:C.muted,
+                    marginTop:3
+                  }}
+                >
+                  ReadyPal Care Agent Agreement
+                </p>
+
+              </div>
+
+              <button
+                type="button"
+
+                onClick={() =>
+                  setSelectedDocument(
+                    null
+                  )
+                }
+
                 style={{
-                  fontSize:11,
+                  width:34,
+                  height:34,
+
+                  borderRadius:10,
+
+                  border:
+                    `1px solid ${C.border}`,
+
+                  background:C.bg,
+
+                  cursor:'pointer',
+
                   color:C.muted,
-                  marginTop:3
+                  fontSize:20
                 }}
               >
-                Please review this document before accepting.
-              </p>
+                ×
+              </button>
+
             </div>
 
+            {/* MODAL CONTENT */}
             <div
               style={{
-                padding:'22px 24px',
+                padding:22,
+
+                maxHeight:
+                  'calc(85vh - 160px)',
+
                 overflowY:'auto'
               }}
             >
-              {currentDocument.sections.map(
-                (section, index) => (
-                  <div
-                    key={index}
-                    style={{
-                      marginBottom:18
-                    }}
-                  >
-                    <p
-                      style={{
-                        fontSize:14,
-                        fontWeight:800,
-                        color:C.type,
-                        marginBottom:6
-                      }}
-                    >
-                      {section.heading}
-                    </p>
 
-                    <p
+              <p
+                style={{
+                  fontSize:13,
+                  color:C.sub,
+                  lineHeight:1.75,
+                  marginBottom:20
+                }}
+              >
+                {
+                  documentContent[
+                    selectedDocument
+                  ].intro
+                }
+              </p>
+
+              {
+                documentContent[
+                  selectedDocument
+                ].sections.map(
+                  (
+                    section,
+                    index
+                  ) => (
+
+                    <div
+                      key={
+                        index
+                      }
+
                       style={{
-                        fontSize:13,
-                        color:C.sub,
-                        lineHeight:1.7
+                        marginBottom:20
                       }}
                     >
-                      {section.text}
-                    </p>
-                  </div>
+
+                      <p
+                        style={{
+                          fontSize:13,
+                          fontWeight:800,
+                          color:C.type,
+                          marginBottom:6
+                        }}
+                      >
+                        {section.heading}
+                      </p>
+
+                      <p
+                        style={{
+                          fontSize:12,
+                          color:C.muted,
+                          lineHeight:1.75
+                        }}
+                      >
+                        {section.text}
+                      </p>
+
+                    </div>
+
+                  )
                 )
-              )}
+              }
+
             </div>
 
+            {/* MODAL FOOTER */}
             <div
               style={{
-                padding:'16px 24px',
-                borderTop:`1px solid ${C.border}`,
+                padding:'14px 22px',
+
+                borderTop:
+                  `1px solid ${C.border}`,
+
                 display:'flex',
-                justifyContent:'flex-end',
+
+                justifyContent:
+                  'flex-end',
+
                 gap:10
               }}
             >
+
               <button
                 type="button"
+
                 onClick={() =>
-                  setOpenDocument(null)
+                  setSelectedDocument(
+                    null
+                  )
                 }
+
                 style={{
-                  padding:'10px 16px',
+                  padding:'9px 16px',
+
                   borderRadius:10,
-                  border:`1px solid ${C.border}`,
+
+                  border:
+                    `1px solid ${C.border}`,
+
                   background:C.surface,
+
                   color:C.sub,
+
                   cursor:'pointer',
+
+                  fontSize:12,
                   fontWeight:700
                 }}
               >
                 Close
               </button>
 
+              {/* IMPORTANT:
+                  This marks READ only.
+                  It does NOT agree/tick automatically.
+              */}
               <button
                 type="button"
-                onClick={markAsReadAndClose}
+
+                onClick={() =>
+                  markDocumentAsRead(
+                    selectedDocument
+                  )
+                }
+
                 style={{
-                  padding:'10px 18px',
+                  padding:'9px 16px',
+
                   borderRadius:10,
+
                   border:'none',
+
                   background:C.primary,
+
                   color:'#fff',
+
                   cursor:'pointer',
-                  fontWeight:800
+
+                  fontSize:12,
+                  fontWeight:700
                 }}
               >
-                I Have Read This Document
+                I Have Read
               </button>
+
             </div>
 
           </div>
+
         </div>
+
       )}
+
     </>
   )
 }
 
 
+
 // ─── Step 11: Review & Submit ─────────────────────────────────────────────────
-function Step11({ onBack, onSubmit }:{ onBack:()=>void; onSubmit:()=>void }) {
-  const sections = [
-    { title:'Personal Information', complete:true,  items:['Kasun Perera','kasun.p@email.lk','+94 77 234 5678','45 Galle Road, Colombo 03'] },
-    { title:'Professional Profile', complete:true,  items:['Hospital Companion Specialist','8 years experience','English, Sinhala, Tamil','Western Province, Colombo District'] },
-    { title:'Skills & Services',    complete:true,  items:['Hospital Companion (Expert)','First Aid (Expert)','CPR (Expert)','Home Care (Advanced)'] },
-    { title:'Certifications',       complete:true,  items:['Caregiving Certificate ✓','First Aid Certificate ✓','CPR Certificate ✓'] },
-    { title:'Identity Verification',complete:false, items:['NIC Front ✓','NIC Back ✓','Police Clearance ✓','Medical Certificate – Missing'] },
-    { title:'Banking & Payouts',    complete:true,  items:['Commercial Bank of Ceylon','Account verified'] },
-    { title:'Availability',         complete:true,  items:['Mon–Fri, Morning shift','Emergency availability: On','40 hrs/week max'] },
-    { title:'Equipment & Transport',complete:true,  items:['Public Transport','Smartphone ✓','Internet Access ✓'] },
-    { title:'References',           complete:true,  items:['Dr. Priya Fernando – Nawaloka Hospital','Nimal Jayasinghe – Red Cross'] },
-    { title:'Agreements',           complete:false, items:['Terms & Conditions – Pending','Code of Conduct – Pending'] },
-  ]
-  const completedCount = sections.filter(s=>s.complete).length
-  const score = Math.round((completedCount/sections.length)*100)
+function Step11({
+  onBack,
+  onSubmit,
+  onGoto
+}:{
+  onBack:()=>void
+  onSubmit:()=>void
+  onGoto:(step:number)=>void
+}) {
+
+  type ReviewSection = {
+    step:number
+    title:string
+    complete:boolean
+    items:string[]
+    missing:string[]
+  }
+
+  const [sections, setSections] =
+    useState<ReviewSection[]>([])
+
+  const [loading, setLoading] =
+    useState(true)
+
+  const [submitting, setSubmitting] =
+    useState(false)
+
+  const [errorMessage, setErrorMessage] =
+    useState('')
+
+  // ─────────────────────────────────────────────
+  // Small display helpers
+  // ─────────────────────────────────────────────
+  const formatLabel = (
+    value:string
+  ) => {
+    return value
+      .replace(/-/g, ' ')
+      .replace(/\b\w/g, char =>
+        char.toUpperCase()
+      )
+  }
+
+  const formatDocumentType = (
+    value:string
+  ) => {
+
+    const labels:Record<string,string> = {
+      'caregiving-certificate':
+        'Caregiving Certificate',
+
+      'first-aid-certificate':
+        'First Aid Certificate',
+
+      'cpr-certificate':
+        'CPR Certificate',
+
+      'nursing-qualification':
+        'Nursing Qualification',
+
+      'medical-training-certificate':
+        'Medical Training Certificate',
+
+      'other-certification':
+        'Other Certification'
+    }
+
+    return (
+      labels[value] ||
+      formatLabel(value)
+    )
+  }
+
+  // ─────────────────────────────────────────────
+  // Load full application review
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+
+    let cancelled = false
+
+    const loadReview = async () => {
+
+      try {
+
+        setLoading(true)
+        setErrorMessage('')
+
+        const [
+          profile,
+          agentDetails,
+          skills,
+          certifications,
+          identityDocs,
+          bankAccount,
+          availability,
+          equipment,
+          references,
+          agreements
+        ] = await Promise.all([
+
+          getMyProfile(),
+
+          getMyAgentDetails(),
+
+          getMyAgentSkills(),
+
+          getMyCertifications(),
+
+          getMyIdentityDocuments(),
+
+          getMyBankAccount(),
+
+          getMyAvailability(),
+
+          getMyEquipmentTransport(),
+
+          getMyReferences(),
+
+          getMyAgreements()
+
+        ])
+
+        if (cancelled) return
+
+        // ════════════════════════════════════════
+        // STEP 1 — PERSONAL INFORMATION
+        // ════════════════════════════════════════
+
+        const personalMissing:string[] = []
+
+        if (
+          !profile?.full_name?.trim()
+        ) {
+          personalMissing.push(
+            'Full Name'
+          )
+        }
+
+        if (
+          !profile?.nic?.trim()
+        ) {
+          personalMissing.push(
+            'NIC'
+          )
+        }
+
+        if (
+          !profile?.date_of_birth
+        ) {
+          personalMissing.push(
+            'Date of Birth'
+          )
+        }
+
+        if (
+          !profile?.email?.trim()
+        ) {
+          personalMissing.push(
+            'Email'
+          )
+        }
+
+        if (
+          !profile?.phone?.trim()
+        ) {
+          personalMissing.push(
+            'Phone'
+          )
+        }
+
+        if (
+          !profile?.address?.trim()
+        ) {
+          personalMissing.push(
+            'Address'
+          )
+        }
+
+        if (
+          !profile?.city?.trim()
+        ) {
+          personalMissing.push(
+            'City'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 2 — PROFESSIONAL PROFILE
+        // ════════════════════════════════════════
+
+        const professionalMissing:string[] = []
+
+        if (
+          !agentDetails
+            ?.professional_headline
+            ?.trim()
+        ) {
+          professionalMissing.push(
+            'Professional Headline'
+          )
+        }
+
+        if (
+          !agentDetails
+            ?.bio
+            ?.trim()
+        ) {
+          professionalMissing.push(
+            'Biography'
+          )
+        }
+
+        if (
+          agentDetails
+            ?.experience_years == null
+        ) {
+          professionalMissing.push(
+            'Experience'
+          )
+        }
+
+        if (
+          !Array.isArray(
+            agentDetails?.languages
+          ) ||
+          agentDetails.languages.length === 0
+        ) {
+          professionalMissing.push(
+            'Languages'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 3 — SKILLS & SERVICES
+        // ════════════════════════════════════════
+
+        const skillsMissing:string[] = []
+
+        if (
+          !skills ||
+          skills.length === 0
+        ) {
+          skillsMissing.push(
+            'At least one skill / service'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 4 — CERTIFICATIONS
+        // ════════════════════════════════════════
+
+        const certificationMissing:string[] = []
+
+        if (
+          !certifications ||
+          certifications.length === 0
+        ) {
+          certificationMissing.push(
+            'At least one certification'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 5 — IDENTITY VERIFICATION
+        // ════════════════════════════════════════
+
+        const requiredIdentityTypes = [
+          'nic-front',
+          'nic-back',
+          'police-clearance-certificate',
+          'medical-fitness-certificate'
+        ]
+
+        const identityTypes =
+          identityDocs?.map(
+            (
+              doc:{
+                doc_type:string
+              }
+            ) =>
+              doc.doc_type
+          ) || []
+
+        const identityMissing =
+          requiredIdentityTypes
+            .filter(
+              type =>
+                !identityTypes.includes(
+                  type
+                )
+            )
+            .map(type => {
+
+              switch (type) {
+
+                case 'nic-front':
+                  return 'NIC Front'
+
+                case 'nic-back':
+                  return 'NIC Back'
+
+                case 'police-clearance-certificate':
+                  return 'Police Clearance Certificate'
+
+                case 'medical-fitness-certificate':
+                  return 'Medical Fitness Certificate'
+
+                default:
+                  return type
+              }
+            })
+
+        // ════════════════════════════════════════
+        // STEP 6 — BANKING
+        // ════════════════════════════════════════
+
+        const bankingMissing:string[] = []
+
+        if (
+          !bankAccount
+            ?.bank_name
+            ?.trim()
+        ) {
+          bankingMissing.push(
+            'Bank Name'
+          )
+        }
+
+        if (
+          !bankAccount
+            ?.branch
+            ?.trim()
+        ) {
+          bankingMissing.push(
+            'Branch'
+          )
+        }
+
+        if (
+          !bankAccount
+            ?.account_name
+            ?.trim()
+        ) {
+          bankingMissing.push(
+            'Account Holder Name'
+          )
+        }
+
+        if (
+          !bankAccount
+            ?.account_number
+            ?.trim()
+        ) {
+          bankingMissing.push(
+            'Account Number'
+          )
+        }
+
+        // IMPORTANT:
+        // verification_status does NOT affect
+        // Step 6 completion.
+        //
+        // Bank verification happens later
+        // during admin review.
+
+        // ════════════════════════════════════════
+        // STEP 7 — AVAILABILITY
+        // ════════════════════════════════════════
+
+        const availabilityMissing:string[] = []
+
+        if (
+          !Array.isArray(
+            availability?.working_days
+          ) ||
+          availability.working_days.length === 0
+        ) {
+          availabilityMissing.push(
+            'Working Days'
+          )
+        }
+
+        if (
+          !availability
+            ?.preferred_shift
+        ) {
+          availabilityMissing.push(
+            'Preferred Shift'
+          )
+        }
+
+        if (
+          availability
+            ?.max_weekly_hours == null ||
+          availability.max_weekly_hours < 10
+        ) {
+          availabilityMissing.push(
+            'Maximum Weekly Hours'
+          )
+        }
+
+        if (
+          availability
+            ?.max_travel_distance_km == null ||
+          availability.max_travel_distance_km < 5
+        ) {
+          availabilityMissing.push(
+            'Maximum Travel Distance'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 8 — EQUIPMENT & TRANSPORT
+        // ════════════════════════════════════════
+
+        const equipmentMissing:string[] = []
+
+        if (
+          !equipment
+            ?.has_smartphone
+        ) {
+          equipmentMissing.push(
+            'Smartphone'
+          )
+        }
+
+        if (
+          !equipment
+            ?.has_internet_access
+        ) {
+          equipmentMissing.push(
+            'Internet Access'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 9 — REFERENCES
+        // ════════════════════════════════════════
+
+        const referencesMissing:string[] = []
+
+        if (
+          !references ||
+          references.length < 2
+        ) {
+          referencesMissing.push(
+            'At least two professional references'
+          )
+        }
+
+        // Validate saved reference content too
+        if (
+          references &&
+          references.length >= 2
+        ) {
+
+          references.forEach(
+            (
+              reference:{
+                full_name?:string
+                organisation?:string
+                relationship?:string
+                phone?:string
+                email?:string
+              },
+              index:number
+            ) => {
+
+              if (
+                !reference
+                  .full_name
+                  ?.trim()
+              ) {
+                referencesMissing.push(
+                  `Reference ${index + 1} Full Name`
+                )
+              }
+
+              if (
+                !reference
+                  .organisation
+                  ?.trim()
+              ) {
+                referencesMissing.push(
+                  `Reference ${index + 1} Organisation`
+                )
+              }
+
+              if (
+                !reference
+                  .relationship
+                  ?.trim()
+              ) {
+                referencesMissing.push(
+                  `Reference ${index + 1} Relationship`
+                )
+              }
+
+              if (
+                !reference
+                  .phone
+                  ?.trim() &&
+                !reference
+                  .email
+                  ?.trim()
+              ) {
+                referencesMissing.push(
+                  `Reference ${index + 1} Contact`
+                )
+              }
+
+            }
+          )
+        }
+
+        // ════════════════════════════════════════
+        // STEP 10 — AGREEMENTS
+        // ════════════════════════════════════════
+
+        const agreementsMissing:string[] = []
+
+        if (
+          !agreements
+            ?.terms_accepted
+        ) {
+          agreementsMissing.push(
+            'Terms & Conditions'
+          )
+        }
+
+        if (
+          !agreements
+            ?.privacy_accepted
+        ) {
+          agreementsMissing.push(
+            'Privacy Policy'
+          )
+        }
+
+        if (
+          !agreements
+            ?.conduct_accepted
+        ) {
+          agreementsMissing.push(
+            'Code of Conduct'
+          )
+        }
+
+        if (
+          !agreements
+            ?.care_standards_accepted
+        ) {
+          agreementsMissing.push(
+            'Care Standards'
+          )
+        }
+
+        if (
+          !agreements
+            ?.background_check_accepted
+        ) {
+          agreementsMissing.push(
+            'Background Check Consent'
+          )
+        }
+
+        // ════════════════════════════════════════
+        // BUILD REVIEW SECTIONS
+        // ════════════════════════════════════════
+
+        const reviewSections:ReviewSection[] = [
+
+          // ─────────────────────
+          // STEP 1
+          // ─────────────────────
+          {
+            step:1,
+
+            title:
+              'Personal Information',
+
+            complete:
+              personalMissing.length === 0,
+
+            missing:
+              personalMissing,
+
+            items:[
+              profile?.full_name
+                || 'Name not provided',
+
+              profile?.email
+                || 'Email not provided',
+
+              profile?.phone
+                || 'Phone not provided',
+
+              profile?.nic
+                ? `NIC: ${profile.nic}`
+                : '',
+
+              [
+                profile?.address,
+                profile?.city,
+                profile?.district
+              ]
+                .filter(Boolean)
+                .join(', ')
+            ].filter(Boolean)
+          },
+
+          // ─────────────────────
+          // STEP 2
+          // ─────────────────────
+          {
+            step:2,
+
+            title:
+              'Professional Profile',
+
+            complete:
+              professionalMissing.length === 0,
+
+            missing:
+              professionalMissing,
+
+            items:[
+              agentDetails
+                ?.professional_headline
+                || 'Headline not provided',
+
+              agentDetails
+                ?.experience_years != null
+                ? `${agentDetails.experience_years} years experience`
+                : 'Experience not provided',
+
+              Array.isArray(
+                agentDetails?.languages
+              )
+                ? agentDetails.languages.join(', ')
+                : ''
+            ].filter(Boolean)
+          },
+
+          // ─────────────────────
+          // STEP 3
+          // ─────────────────────
+          {
+            step:3,
+
+            title:
+              'Skills & Services',
+
+            complete:
+              skillsMissing.length === 0,
+
+            missing:
+              skillsMissing,
+
+            items:
+              skills?.map(
+                (
+                  skill:{
+                    service_name?:string
+                    skill_level?:string
+                    experience_years?:string
+                    certified?:boolean
+                  }
+                ) => {
+
+                  const service =
+                    skill.service_name ||
+                    'Service'
+
+                  const level =
+                    skill.skill_level
+                      ? ` · ${skill.skill_level}`
+                      : ''
+
+                  const certified =
+                    skill.certified
+                      ? ' · Certified'
+                      : ''
+
+                  return (
+                    `${service}${level}${certified}`
+                  )
+                }
+              ) || []
+          },
+
+          // ─────────────────────
+          // STEP 4
+          // ─────────────────────
+          {
+            step:4,
+
+            title:
+              'Certifications',
+
+            complete:
+              certificationMissing.length === 0,
+
+            missing:
+              certificationMissing,
+
+            items:
+              certifications?.map(
+                (
+                  cert:{
+                    doc_type:string
+                    issue_date?:string
+                    expiry_date?:string
+                  }
+                ) => {
+
+                  const name =
+                    formatDocumentType(
+                      cert.doc_type
+                    )
+
+                  return `${name} ✓`
+                }
+              ) || []
+          },
+
+          // ─────────────────────
+          // STEP 5
+          // ─────────────────────
+          {
+            step:5,
+
+            title:
+              'Identity Verification',
+
+            complete:
+              identityMissing.length === 0,
+
+            missing:
+              identityMissing,
+
+            items:
+              requiredIdentityTypes.map(
+                type => {
+
+                  const exists =
+                    identityTypes.includes(
+                      type
+                    )
+
+                  const label =
+                    type === 'nic-front'
+                      ? 'NIC Front'
+
+                      : type === 'nic-back'
+                        ? 'NIC Back'
+
+                        : type ===
+                          'police-clearance-certificate'
+                          ? 'Police Clearance'
+
+                          : 'Medical Certificate'
+
+                  return (
+                    `${label} ${
+                      exists
+                        ? '✓'
+                        : '– Missing'
+                    }`
+                  )
+                }
+              )
+          },
+
+          // ─────────────────────
+          // STEP 6
+          // ─────────────────────
+          {
+            step:6,
+
+            title:
+              'Banking & Payouts',
+
+            complete:
+              bankingMissing.length === 0,
+
+            missing:
+              bankingMissing,
+
+            items:[
+              bankAccount?.bank_name
+                || 'Bank not provided',
+
+              bankAccount?.branch
+                ? `Branch: ${bankAccount.branch}`
+                : '',
+
+              bankAccount?.account_name
+                || '',
+
+              bankAccount?.account_number
+                ? `Account: ••••${String(
+                    bankAccount.account_number
+                  ).slice(-4)}`
+                : '',
+
+              bankAccount
+                ?.payout_preference
+                || '',
+
+              bankAccount
+                ?.verification_status
+                ? `Verification: ${
+                    formatLabel(
+                      bankAccount
+                        .verification_status
+                    )
+                  }`
+                : ''
+            ].filter(Boolean)
+          },
+
+          // ─────────────────────
+          // STEP 7
+          // ─────────────────────
+          {
+            step:7,
+
+            title:
+              'Availability',
+
+            complete:
+              availabilityMissing.length === 0,
+
+            missing:
+              availabilityMissing,
+
+            items:[
+              Array.isArray(
+                availability?.working_days
+              )
+                ? availability
+                    .working_days
+                    .join(', ')
+                : '',
+
+              availability
+                ?.preferred_shift
+                ? `${
+                    formatLabel(
+                      availability
+                        .preferred_shift
+                    )
+                  } Shift`
+                : '',
+
+              availability
+                ?.max_weekly_hours
+                ? `${availability.max_weekly_hours} hrs/week max`
+                : '',
+
+              availability
+                ?.max_travel_distance_km
+                ? `${availability.max_travel_distance_km} km travel distance`
+                : '',
+
+              availability
+                ?.emergency_available
+                ? 'Emergency Available'
+                : '',
+
+              availability
+                ?.holiday_available
+                ? 'Holiday Available'
+                : ''
+            ].filter(Boolean)
+          },
+
+          // ─────────────────────
+          // STEP 8
+          // ─────────────────────
+          {
+            step:8,
+
+            title:
+              'Equipment & Transport',
+
+            complete:
+              equipmentMissing.length === 0,
+
+            missing:
+              equipmentMissing,
+
+            items:[
+              equipment?.has_car
+                ? 'Car'
+                : '',
+
+              equipment?.has_motorbike
+                ? 'Motorbike'
+                : '',
+
+              equipment?.has_three_wheeler
+                ? 'Three-Wheeler'
+                : '',
+
+              equipment?.uses_public_transport
+                ? 'Public Transport'
+                : '',
+
+              equipment
+                ?.has_wheelchair_equipment
+                ? 'Wheelchair Equipment'
+                : '',
+
+              equipment
+                ?.has_medical_equipment
+                ? 'Medical Equipment'
+                : '',
+
+              equipment
+                ?.has_smartphone
+                ? 'Smartphone ✓'
+                : 'Smartphone – Missing',
+
+              equipment
+                ?.has_internet_access
+                ? 'Internet Access ✓'
+                : 'Internet Access – Missing'
+            ].filter(Boolean)
+          },
+
+          // ─────────────────────
+          // STEP 9
+          // ─────────────────────
+          {
+            step:9,
+
+            title:
+              'References',
+
+            complete:
+              referencesMissing.length === 0,
+
+            missing:
+              referencesMissing,
+
+            items:
+              references?.map(
+                (
+                  reference:{
+                    full_name?:string
+                    organisation?:string
+                  }
+                ) => {
+
+                  const name =
+                    reference.full_name ||
+                    'Unnamed Reference'
+
+                  const org =
+                    reference.organisation
+                      ? ` – ${reference.organisation}`
+                      : ''
+
+                  return (
+                    `${name}${org}`
+                  )
+                }
+              ) || []
+          },
+
+          // ─────────────────────
+          // STEP 10
+          // ─────────────────────
+          {
+            step:10,
+
+            title:
+              'Agreements',
+
+            complete:
+              agreementsMissing.length === 0,
+
+            missing:
+              agreementsMissing,
+
+            items:[
+              `Terms & Conditions ${
+                agreements?.terms_accepted
+                  ? '✓'
+                  : '– Pending'
+              }`,
+
+              `Privacy Policy ${
+                agreements?.privacy_accepted
+                  ? '✓'
+                  : '– Pending'
+              }`,
+
+              `Code of Conduct ${
+                agreements?.conduct_accepted
+                  ? '✓'
+                  : '– Pending'
+              }`,
+
+              `Care Standards ${
+                agreements
+                  ?.care_standards_accepted
+                  ? '✓'
+                  : '– Pending'
+              }`,
+
+              `Background Check Consent ${
+                agreements
+                  ?.background_check_accepted
+                  ? '✓'
+                  : '– Pending'
+              }`
+            ]
+          }
+
+        ]
+
+        setSections(
+          reviewSections
+        )
+
+      } catch (error) {
+
+        console.error(
+          'Failed to load application review:',
+          error
+        )
+
+        if (!cancelled) {
+          setErrorMessage(
+            'Failed to load your application review'
+          )
+        }
+
+      } finally {
+
+        if (!cancelled) {
+          setLoading(false)
+        }
+
+      }
+    }
+
+    loadReview()
+
+    return () => {
+      cancelled = true
+    }
+
+  }, [])
+
+  // ─────────────────────────────────────────────
+  // Completion score
+  // ─────────────────────────────────────────────
+
+  const completedCount =
+    sections.filter(
+      section =>
+        section.complete
+    ).length
+
+  const score =
+    sections.length > 0
+      ? Math.round(
+          (
+            completedCount /
+            sections.length
+          ) * 100
+        )
+      : 0
+
+  const allComplete =
+    sections.length === 10 &&
+    sections.every(
+      section =>
+        section.complete
+    )
+
+  const incompleteSections =
+    sections.filter(
+      section =>
+        !section.complete
+    )
+
+  // ─────────────────────────────────────────────
+  // Final submit
+  // ─────────────────────────────────────────────
+  const handleSubmit =
+    async () => {
+
+      try {
+
+        if (
+          submitting
+        ) {
+          return
+        }
+
+        setErrorMessage('')
+
+        if (
+          !allComplete
+        ) {
+          throw new Error(
+            'Please complete all required sections before submitting your application'
+          )
+        }
+
+        setSubmitting(
+          true
+        )
+
+        await submitMyCareAgentApplication()
+
+        onSubmit()
+
+      } catch (error) {
+
+        console.error(
+          'Failed to submit application:',
+          error
+        )
+
+        if (
+          error instanceof Error
+        ) {
+          setErrorMessage(
+            error.message
+          )
+        } else {
+          setErrorMessage(
+            'Failed to submit application'
+          )
+        }
+
+      } finally {
+
+        setSubmitting(
+          false
+        )
+
+      }
+    }
+
+  // ─────────────────────────────────────────────
+  // Loading
+  // ─────────────────────────────────────────────
+  if (loading) {
+
+    return (
+      <StepWrap
+        step={11}
+        total={11}
+        title="Review & Submit"
+        desc="Review your application before submitting. You can edit any section."
+        onBack={onBack}
+        onNext={() => {}}
+        nextDisabled={true}
+      >
+
+        <Card
+          style={{
+            padding:30,
+            textAlign:
+              'center' as const
+          }}
+        >
+
+          <p
+            style={{
+              fontSize:13,
+              color:C.muted
+            }}
+          >
+            Loading your application...
+          </p>
+
+        </Card>
+
+      </StepWrap>
+    )
+  }
 
   return (
-    <StepWrap step={11} total={11} title="Review & Submit" desc="Review your application before submitting. You can edit any section." onBack={onBack} onNext={onSubmit} nextLabel="Submit Application →">
-      {/* Score */}
-      <Card style={{ padding:24, marginBottom:20, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1px solid ${C.primary}20` }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+    <StepWrap
+      step={11}
+      total={11}
+      title="Review & Submit"
+      desc="Review your application before submitting. You can edit any section."
+      onBack={onBack}
+      onNext={handleSubmit}
+      nextLabel={
+        submitting
+          ? 'Submitting...'
+
+          : allComplete
+            ? 'Submit Application →'
+
+            : 'Complete Required Sections'
+      }
+      nextDisabled={
+        !allComplete ||
+        submitting
+      }
+    >
+
+      {/* Application Score */}
+      <Card
+        style={{
+          padding:24,
+          marginBottom:20,
+
+          background:
+            `linear-gradient(
+              135deg,
+              ${C.primary}06,
+              ${C.primary}02
+            )`,
+
+          border:
+            `1px solid ${C.primary}20`
+        }}
+      >
+
+        <div
+          style={{
+            display:'flex',
+            justifyContent:
+              'space-between',
+            alignItems:'center',
+            marginBottom:12,
+            gap:20
+          }}
+        >
+
           <div>
-            <p style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Application Score</p>
-            <p style={{ fontSize:12, color:C.muted }}>{completedCount} of {sections.length} sections complete</p>
+
+            <p
+              style={{
+                fontSize:16,
+                fontWeight:900,
+                color:C.type,
+
+                fontFamily:
+                  'Manrope,sans-serif',
+
+                marginBottom:4
+              }}
+            >
+              Application Score
+            </p>
+
+            <p
+              style={{
+                fontSize:12,
+                color:C.muted
+              }}
+            >
+              {completedCount} of {sections.length} sections complete
+            </p>
+
           </div>
-          <div style={{ textAlign:'center' as const }}>
-            <p style={{ fontSize:40, fontWeight:900, color:score>=80?C.success:C.warning, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{score}%</p>
-            <Bdg label={score>=80?'Ready to Submit':'Almost There'} color={score>=80?C.success:C.warning} />
+
+          <div
+            style={{
+              textAlign:
+                'center' as const
+            }}
+          >
+
+            <p
+              style={{
+                fontSize:40,
+                fontWeight:900,
+
+                color:
+                  allComplete
+                    ? C.success
+                    : C.warning,
+
+                fontFamily:
+                  'Manrope,sans-serif',
+
+                lineHeight:1,
+                marginBottom:6
+              }}
+            >
+              {score}%
+            </p>
+
+            <Bdg
+              label={
+                allComplete
+                  ? 'Ready to Submit'
+                  : `${incompleteSections.length} Need Attention`
+              }
+
+              color={
+                allComplete
+                  ? C.success
+                  : C.warning
+              }
+            />
+
           </div>
+
         </div>
-        <div style={{ height:8, borderRadius:99, background:'rgba(0,115,122,0.1)', overflow:'hidden' }}>
-          <div style={{ width:`${score}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
+
+        {/* Progress */}
+        <div
+          style={{
+            height:8,
+            borderRadius:99,
+
+            background:
+              'rgba(0,115,122,0.1)',
+
+            overflow:'hidden'
+          }}
+        >
+          <div
+            style={{
+              width:
+                `${score}%`,
+
+              height:'100%',
+
+              background:
+                `linear-gradient(
+                  90deg,
+                  ${C.primary},
+                  ${C.success}
+                )`,
+
+              borderRadius:99,
+
+              transition:
+                'width 0.4s'
+            }}
+          />
         </div>
+
       </Card>
 
-      {/* Missing items alert */}
-      {sections.some(s=>!s.complete)&&(
-        <Card style={{ padding:18, marginBottom:20, border:`1.5px solid ${C.warning}40`, background:`${C.warning}05` }}>
-          <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-            <span style={{color:C.warning,display:'flex',marginTop:1}}>{I.warning}</span>
+      {/* Ready */}
+      {allComplete && (
+        <Card
+          style={{
+            padding:18,
+            marginBottom:20,
+
+            border:
+              `1.5px solid ${C.success}35`,
+
+            background:
+              `${C.success}05`
+          }}
+        >
+
+          <div
+            style={{
+              display:'flex',
+              gap:10,
+              alignItems:
+                'flex-start'
+            }}
+          >
+
+            <span
+              style={{
+                color:C.success,
+                display:'flex'
+              }}
+            >
+              {I.check}
+            </span>
+
             <div>
-              <p style={{ fontSize:13, fontWeight:700, color:C.warning }}>Action Required</p>
-              <p style={{ fontSize:12, color:C.sub }}>Please complete the following before submitting: Medical Certificate (Step 5), Agreements (Step 10).</p>
+
+              <p
+                style={{
+                  fontSize:13,
+                  fontWeight:800,
+                  color:C.success
+                }}
+              >
+                Your application is ready
+              </p>
+
+              <p
+                style={{
+                  fontSize:12,
+                  color:C.muted,
+                  lineHeight:1.6,
+                  marginTop:3
+                }}
+              >
+                All required onboarding sections are complete.
+                You can now submit your application for ReadyPal review.
+              </p>
+
             </div>
+
           </div>
+
         </Card>
       )}
 
-      {/* Sections */}
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {sections.map((s,i)=>(
-          <Card key={i} style={{ padding:18 }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:26, height:26, borderRadius:'50%', background:s.complete?`${C.success}10`:`${C.warning}10`, border:`2px solid ${s.complete?C.success:C.warning}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, color:s.complete?C.success:C.warning }}>
-                {s.complete?<span style={{display:'flex',transform:'scale(0.75)'}}>{I.check}</span>:<span style={{fontSize:11,fontWeight:900}}>!</span>}
+      {/* Action Required */}
+      {!allComplete &&
+        incompleteSections.length > 0 && (
+
+        <Card
+          style={{
+            padding:18,
+            marginBottom:20,
+
+            border:
+              `1.5px solid ${C.warning}40`,
+
+            background:
+              `${C.warning}05`
+          }}
+        >
+
+          <div
+            style={{
+              display:'flex',
+              gap:10,
+              alignItems:
+                'flex-start'
+            }}
+          >
+
+            <span
+              style={{
+                color:C.warning,
+                display:'flex',
+                marginTop:1
+              }}
+            >
+              {I.warning}
+            </span>
+
+            <div>
+
+              <p
+                style={{
+                  fontSize:13,
+                  fontWeight:700,
+                  color:C.warning
+                }}
+              >
+                Action Required
+              </p>
+
+              <p
+                style={{
+                  fontSize:12,
+                  color:C.muted,
+                  marginTop:3,
+                  lineHeight:1.6
+                }}
+              >
+                Please complete the following sections before submitting:
+              </p>
+
+              <div
+                style={{
+                  display:'flex',
+                  flexWrap:'wrap',
+                  gap:6,
+                  marginTop:8
+                }}
+              >
+
+                {incompleteSections.map(
+                  section => (
+
+                    <button
+                      type="button"
+
+                      key={
+                        section.step
+                      }
+
+                      onClick={() =>
+                        onGoto(
+                          section.step
+                        )
+                      }
+
+                      style={{
+                        padding:'5px 9px',
+                        borderRadius:8,
+
+                        border:
+                          `1px solid ${C.warning}30`,
+
+                        background:
+                          `${C.warning}05`,
+
+                        color:C.warning,
+
+                        cursor:'pointer',
+
+                        fontSize:11,
+                        fontWeight:700,
+
+                        fontFamily:
+                          'Manrope,sans-serif'
+                      }}
+                    >
+                      Step {section.step}:{' '}
+                      {section.title}
+                    </button>
+
+                  )
+                )}
+
               </div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.title}</p>
-                  <button style={{ fontSize:12, fontWeight:700, color:C.primary, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', display:'flex', gap:3, alignItems:'center' }}>
-                    <span style={{display:'flex'}}>{I.edit}</span>Edit
-                  </button>
-                </div>
-                <div style={{ display:'flex', flexWrap:'wrap' as const, gap:6 }}>
-                  {s.items.map((item,j)=>(
-                    <span key={j} style={{ fontSize:11, color:item.includes('Missing')||item.includes('Pending')?C.error:C.sub, background:item.includes('Missing')||item.includes('Pending')?`${C.error}08`:C.bg, padding:'3px 8px', borderRadius:6 }}>{item}</span>
-                  ))}
-                </div>
-              </div>
+
             </div>
-          </Card>
-        ))}
+
+          </div>
+
+        </Card>
+      )}
+
+      {/* Review sections */}
+      <div
+        style={{
+          display:'flex',
+          flexDirection:'column',
+          gap:12
+        }}
+      >
+
+        {sections.map(
+          section => (
+
+            <Card
+              key={
+                section.step
+              }
+
+              style={{
+                padding:18,
+
+                border:
+                  `1.5px solid ${
+                    section.complete
+                      ? C.border
+                      : C.warning + '35'
+                  }`,
+
+                background:
+                  section.complete
+                    ? C.surface
+                    : `${C.warning}02`
+              }}
+            >
+
+              <div
+                style={{
+                  display:'flex',
+                  gap:12,
+                  alignItems:
+                    'flex-start'
+                }}
+              >
+
+                {/* Status */}
+                <div
+                  style={{
+                    width:26,
+                    height:26,
+
+                    borderRadius:'50%',
+
+                    border:
+                      `1.5px solid ${
+                        section.complete
+                          ? C.success
+                          : C.warning
+                      }`,
+
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:
+                      'center',
+
+                    color:
+                      section.complete
+                        ? C.success
+                        : C.warning,
+
+                    flexShrink:0
+                  }}
+                >
+
+                  {section.complete
+                    ? I.check
+                    : '!'}
+
+                </div>
+
+                <div
+                  style={{
+                    flex:1,
+                    minWidth:0
+                  }}
+                >
+
+                  {/* Heading */}
+                  <div
+                    style={{
+                      display:'flex',
+                      justifyContent:
+                        'space-between',
+                      alignItems:'center',
+                      gap:12,
+                      marginBottom:8
+                    }}
+                  >
+
+                    <div>
+
+                      <p
+                        style={{
+                          fontSize:13,
+                          fontWeight:800,
+                          color:C.type
+                        }}
+                      >
+                        {section.title}
+                      </p>
+
+                      <p
+                        style={{
+                          fontSize:10,
+
+                          color:
+                            section.complete
+                              ? C.success
+                              : C.warning,
+
+                          fontWeight:700,
+                          marginTop:2
+                        }}
+                      >
+                        {section.complete
+                          ? 'Complete'
+                          : 'Needs Attention'}
+                      </p>
+
+                    </div>
+
+                    <button
+                      type="button"
+
+                      onClick={() =>
+                        onGoto(
+                          section.step
+                        )
+                      }
+
+                      style={{
+                        padding:'6px 10px',
+                        borderRadius:8,
+
+                        background:
+                          `${C.primary}05`,
+
+                        border:
+                          `1px solid ${C.primary}15`,
+
+                        color:C.primary,
+
+                        cursor:'pointer',
+
+                        fontSize:12,
+                        fontWeight:700,
+
+                        fontFamily:
+                          'Manrope,sans-serif'
+                      }}
+                    >
+                      Edit
+                    </button>
+
+                  </div>
+
+                  {/* Saved items */}
+                  {section.items.length > 0 && (
+                    <div
+                      style={{
+                        display:'flex',
+                        flexWrap:'wrap',
+                        gap:6
+                      }}
+                    >
+
+                      {section.items.map(
+                        (
+                          item,
+                          index
+                        ) => (
+
+                          <span
+                            key={index}
+
+                            style={{
+                              padding:
+                                '4px 8px',
+
+                              borderRadius:7,
+
+                              background:C.bg,
+
+                              color:C.muted,
+
+                              fontSize:11,
+                              lineHeight:1.4
+                            }}
+                          >
+                            {item}
+                          </span>
+
+                        )
+                      )}
+
+                    </div>
+                  )}
+
+                  {/* Missing */}
+                  {!section.complete && (
+                    <div
+                      style={{
+                        marginTop:10,
+                        padding:'8px 10px',
+
+                        background:
+                          `${C.error}04`,
+
+                        borderRadius:8
+                      }}
+                    >
+
+                      <p
+                        style={{
+                          fontSize:10,
+                          fontWeight:800,
+                          color:C.error,
+                          marginBottom:4,
+
+                          textTransform:
+                            'uppercase',
+
+                          letterSpacing:
+                            '0.05em'
+                        }}
+                      >
+                        Missing
+                      </p>
+
+                      {section.missing.map(
+                        (
+                          item,
+                          index
+                        ) => (
+
+                          <p
+                            key={index}
+
+                            style={{
+                              fontSize:11,
+                              color:C.error,
+
+                              marginTop:
+                                index === 0
+                                  ? 0
+                                  : 3
+                            }}
+                          >
+                            • {item}
+                          </p>
+
+                        )
+                      )}
+
+                    </div>
+                  )}
+
+                </div>
+
+              </div>
+
+            </Card>
+
+          )
+        )}
+
       </div>
+
+      {/* Final submit information */}
+      <Card
+        style={{
+          padding:18,
+          marginTop:20,
+
+          background:
+            `${C.info}04`,
+
+          border:
+            `1px solid ${C.info}18`
+        }}
+      >
+
+        <p
+          style={{
+            fontSize:12,
+            fontWeight:800,
+            color:C.type,
+            marginBottom:5
+          }}
+        >
+          What happens after submission?
+        </p>
+
+        <p
+          style={{
+            fontSize:11,
+            color:C.muted,
+            lineHeight:1.7
+          }}
+        >
+          Your application will move to Under Review.
+          ReadyPal administrators can then review your identity
+          documents, certifications, bank details, references,
+          and other verification information. Completing this
+          application does not mean those documents are already verified.
+        </p>
+
+      </Card>
+
+      {/* Submit error */}
+      {errorMessage && (
+        <div
+          style={{
+            padding:'12px 14px',
+            marginTop:16,
+
+            borderRadius:10,
+
+            background:
+              `${C.error}08`,
+
+            border:
+              `1px solid ${C.error}30`,
+
+            color:C.error,
+
+            fontSize:12,
+            fontWeight:600
+          }}
+        >
+          {errorMessage}
+        </div>
+      )}
+
     </StepWrap>
   )
 }
+
+
 
 // ─── Application Submitted ────────────────────────────────────────────────────
 function ApplicationSubmitted({ onStatus }:{ onStatus:()=>void }) {
@@ -5595,13 +12464,33 @@ export default function CareAgentOnboarding() {
   const [sub, setSub] = useState<SubView>('home')
   const [step, setStep] = useState(1)
   const [completed, setCompleted] = useState(new Set<number>())
-  const [submitted, setSubmitted] = useState(false)
+  const [editingFromReview, setEditingFromReview] = useState(false)
   const [toast, setToast] = useState<string|null>(null)
+  const [submitted, setSubmitted] = useState(false)
 
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),2800) }
 
-  const advance = (n:number) => { setCompleted(p=>new Set([...p,n])); setStep(n+1<12?n+1:11) }
-  const goTo = (n:number) => setStep(n)
+  const advance = (n:number) => {
+    setCompleted(p => new Set([...p, n]))
+
+    if (editingFromReview) {
+      setEditingFromReview(false)
+      setStep(11)
+      return
+    }
+
+    setStep(n + 1 < 12 ? n + 1 : 11)
+  }
+
+  const goTo = (n:number) => {
+    setEditingFromReview(false)
+    setStep(n)
+  }
+
+  const editFromReview = (n:number) => {
+    setEditingFromReview(true)
+    setStep(n)
+  }
 
   const renderStep = () => {
     if (submitted) return <ApplicationSubmitted onStatus={()=>setSub('status')} />
@@ -5616,7 +12505,7 @@ export default function CareAgentOnboarding() {
       case 8:  return <Step8 onBack={()=>setStep(7)} onNext={()=>advance(8)} />
       case 9:  return <Step9 onBack={()=>setStep(8)} onNext={()=>advance(9)} />
       case 10: return <Step10 onBack={()=>setStep(9)} onNext={()=>advance(10)} />
-      case 11: return <Step11 onBack={()=>setStep(10)} onSubmit={()=>setSubmitted(true)} />
+      case 11: return (<Step11 onBack={() => setStep(10)} onGoto={editFromReview} onSubmit={() => setSubmitted(true)}/>)
       default: return <Step1 onBack={()=>setSub('home')} onNext={()=>advance(1)} />
     }
   }
