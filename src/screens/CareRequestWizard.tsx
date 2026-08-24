@@ -841,7 +841,7 @@ function Step6({ data, setData, onNext, onBack, onClose }: { data: WizardData; s
 // ══════════════════════════════════════════════════════════════════════════════
 // STEP 7 — REVIEW
 // ══════════════════════════════════════════════════════════════════════════════
-function Step7({ data, setData, onNext, onBack, goTo, onClose }: { data: WizardData; setData: SetData; onNext: ()=>void; onBack: ()=>void; goTo: (n:number)=>void; onClose: ()=>void }) {
+function Step7({ data, setData, onNext, onBack, goTo, onClose, submitting }: { data: WizardData; setData: SetData; onNext: ()=>void; onBack: ()=>void; goTo: (n:number)=>void; onClose: ()=>void; submitting?: boolean }) {
   const [agreed, setAgreed] = useState(false)
   const [privacy, setPrivacy] = useState(false)
 
@@ -869,7 +869,7 @@ function Step7({ data, setData, onNext, onBack, goTo, onClose }: { data: WizardD
   const platformFee = Math.round(data.budget * 0.10)
 
   return (
-    <StepShell title="Review your request" sub="Double-check everything before submitting. You can edit any section." step={7} total={7} onBack={onBack} onNext={onNext} onSaveDraft={() => {}} nextLabel="Submit Request" nextDisabled={!agreed || !privacy} onClose={onClose}>
+    <StepShell title="Review your request" sub="Double-check everything before submitting. You can edit any section." step={7} total={7} onBack={onBack} onNext={onNext} onSaveDraft={() => {}} nextLabel={submitting ? 'Submitting...' : 'Submit Request'} nextDisabled={!agreed || !privacy || submitting} onClose={onClose}>
       <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
         <Section title="Beneficiary" step={1}>
           <Row label="Name" val={data.beneficiaryName} />
@@ -1063,16 +1063,21 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
   const saveDraft = () => { setDraftSaved(true); setTimeout(() => setDraftSaved(false), 2500) }
 
   const [submitError, setSubmitError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const submitRequest = async () => {
+    if (submitting) return
     setSubmitError('')
+    setSubmitting(true)
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { setSubmitError('You must be logged in.'); return }
+    if (!user) { setSubmitError('You must be logged in.'); setSubmitting(false); return }
     try {
       await createCareRequestFromWizard(data, user.id)
       next()
     } catch (err: any) {
       setSubmitError(err.message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -1101,7 +1106,7 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
               {step === 4 && <Step4 {...stepProps} />}
               {step === 5 && <Step5 {...stepProps} />}
               {step === 6 && <Step6 {...stepProps} />}
-              {step === 7 && <Step7 {...stepProps} onNext={submitRequest} goTo={goTo} />}
+              {step === 7 && <Step7 {...stepProps} onNext={submitRequest} goTo={goTo} submitting={submitting} />}
             </>
           )
           : <Step8 onDashboard={handleClose} onViewRequests={handleClose} />
