@@ -110,6 +110,16 @@ export async function getAgentsForBrowse() {
     .select('*, profiles(full_name, gender, city, province, district)')
   if (error) throw error
 
+  const ids = (data || []).map((r: any) => r.id)
+  let skillsByAgent: Record<string, string[]> = {}
+  if (ids.length) {
+    const { data: skillRows } = await supabase.from('agent_skills').select('agent_id, service_name').in('agent_id', ids)
+    for (const s of skillRows || []) {
+      if (!skillsByAgent[s.agent_id]) skillsByAgent[s.agent_id] = []
+      skillsByAgent[s.agent_id].push(s.service_name)
+    }
+  }
+
   return (data || []).map((row: any) => ({
     id: row.id,
     name: row.profiles?.full_name || 'Unnamed Agent',
@@ -126,7 +136,7 @@ export async function getAgentsForBrowse() {
     hourlyRate: row.hourly_rate || 0,
     maxRate: row.max_rate || 0,
     languages: row.languages || [],
-    skills: row.skills || [],
+    skills: skillsByAgent[row.id] || [],
     verified: row.verified || false,
     policeCleared: row.police_cleared || false,
     medCertified: row.med_certified || false,
@@ -151,6 +161,8 @@ export async function getAgentDetail(id: string) {
     .single()
   if (error) throw error
 
+  const { data: skillRows } = await supabase.from('agent_skills').select('service_name').eq('agent_id', id)
+
   return {
     name: data.profiles?.full_name || 'Unnamed Agent',
     age: data.age || 0,
@@ -165,7 +177,7 @@ export async function getAgentDetail(id: string) {
     experience: data.experience_years || 0,
     hourlyRate: data.hourly_rate || 0,
     languages: data.languages || [],
-    skills: data.skills || [],
+    skills: (skillRows || []).map((s: any) => s.service_name),
     verified: data.verified || false,
     policeCleared: data.police_cleared || false,
     medCertified: data.med_certified || false,
@@ -265,6 +277,16 @@ export async function getApplicationsForRequest(careRequestId: string) {
     .eq('care_request_id', careRequestId)
   if (error) throw error
 
+  const agentIds = (data || []).map((row: any) => row.agent_id).filter(Boolean)
+  let skillsByAgent: Record<string, string[]> = {}
+  if (agentIds.length) {
+    const { data: skillRows } = await supabase.from('agent_skills').select('agent_id, service_name').in('agent_id', agentIds)
+    for (const s of skillRows || []) {
+      if (!skillsByAgent[s.agent_id]) skillsByAgent[s.agent_id] = []
+      skillsByAgent[s.agent_id].push(s.service_name)
+    }
+  }
+
   return (data || []).map((row: any) => {
     const ad = row.profiles?.agent_details
     return {
@@ -279,7 +301,7 @@ export async function getApplicationsForRequest(careRequestId: string) {
       originalPrice: row.original_price || row.price || 0,
       duration: row.duration || '',
       languages: ad?.languages || [],
-      skills: ad?.skills || [],
+      skills: skillsByAgent[row.agent_id] || [],
       verified: ad?.verified || false,
       policeCleared: ad?.police_cleared || false,
       medCertified: ad?.med_certified || false,

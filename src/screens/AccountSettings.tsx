@@ -370,7 +370,7 @@ function PersonalInfo({ profile, onSave }: { profile:any; onSave:(f:Record<strin
       <SectionHeader title="Personal Information" desc="Used to personalise your care experience." />
       <Card style={{ padding:'8px 24px 24px' }}>
         <Field label="Full Name"                    value={profile.full_name || ''}   onSave={v=>onSave({full_name:v})} />
-        <Field label="Date of Birth"                 value={profile.dob || ''}          onSave={v=>onSave({dob:v})} />
+        <Field label="Date of Birth"                 value={profile.date_of_birth || ''}          onSave={v=>onSave({date_of_birth:v})} />
         <Field label="Gender"                        value={profile.gender || ''}       onSave={v=>onSave({gender:v})} />
         <Field label="Nationality"                   value={profile.nationality || ''} onSave={v=>onSave({nationality:v})} />
         <Field label="NIC"                            value={profile.nic || ''}          onSave={v=>onSave({nic:v})} />
@@ -390,7 +390,7 @@ function ContactInfo({ profile, onSave }: { profile:any; onSave:(f:Record<string
       <Card style={{ padding:'8px 24px 24px' }}>
         <Field label="Primary Email"   value={profile.email || ''}        verified onSave={v=>onSave({email:v})} hint="Used for login and important account notices." />
         <Field label="Primary Phone"   value={profile.phone || ''}        verified onSave={v=>onSave({phone:v})} hint="Used for SMS alerts and 2FA." />
-        <Field label="Full Address"    value={profile.full_address || ''} onSave={v=>onSave({full_address:v})} />
+        <Field label="Full Address"    value={profile.address || ''} onSave={v=>onSave({address:v})} />
         <Field label="City"            value={profile.city || ''}         onSave={v=>onSave({city:v})} />
         <Field label="Postal Code"     value={profile.postal_code || ''}  onSave={v=>onSave({postal_code:v})} />
       </Card>
@@ -833,10 +833,10 @@ function Appearance({ onToast }: { onToast:(m:string)=>void }) {
         <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:16, fontFamily:'Manrope,sans-serif' }}>Theme</h3>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12 }}>
           {([
-            ['light',  'Light',  I.sun,     '#FAFAFA','#2C3E43'],
-            ['dark',   'Dark',   I.moon,    '#1A2530','#FFFFFF'],
-            ['system', 'System', I.monitor, 'linear-gradient(135deg,#FAFAFA 50%,#1A2530 50%)','currentColor'],
-          ] as const).map(([k,l,icon,bg,fg])=>(
+            ['light',  'Light',  I.sun,     '#FAFAFA'],
+            ['dark',   'Dark',   I.moon,    '#1A2530'],
+            ['system', 'System', I.monitor, 'linear-gradient(135deg,#FAFAFA 50%,#1A2530 50%)'],
+            ] as const).map(([k,l,icon,bg])=>(
             <button key={k} onClick={()=>{ setTheme(k); onToast(`Theme set to ${l}`) }}
               style={{ padding:'20px 16px', borderRadius:14, border:`2px solid ${theme===k?C.primary:C.border}`, background:theme===k?`${C.primary}06`:'transparent', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:12, transition:'all 0.15s' }}>
               {/* Mini preview */}
