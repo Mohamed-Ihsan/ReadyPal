@@ -142,43 +142,6 @@ function Select({ label, options, value, onChange, hint }:{ label:string; option
   )
 }
 
-function UploadBox({ label, desc, file, onUpload, status='idle' }:{ label:string; desc?:string; file?:string; onUpload:()=>void; status?:'idle'|'uploading'|'done'|'error' }) {
-  const [over,setOver] = useState(false)
-  const colorMap = { idle:C.border, uploading:C.info, done:C.success, error:C.error }
-  const bgMap    = { idle:C.bg, uploading:`${C.info}06`, done:`${C.success}06`, error:`${C.error}04` }
-  return (
-    <div onMouseOver={()=>setOver(true)} onMouseOut={()=>setOver(false)}
-      onClick={onUpload}
-      style={{ padding:'20px', borderRadius:14, border:`2px dashed ${over&&status==='idle'?C.primary:colorMap[status]}`, background:over&&status==='idle'?`${C.primary}04`:bgMap[status], cursor:'pointer', textAlign:'center' as const, transition:'all 0.15s' }}>
-      {status==='done'&&file
-        ? <div style={{display:'flex',gap:10,alignItems:'center',justifyContent:'center'}}>
-            <span style={{color:C.success,display:'flex'}}>{I.check}</span>
-            <p style={{fontSize:13,fontWeight:700,color:C.success}}>{file}</p>
-            <Bdg label="Uploaded" color={C.success} />
-          </div>
-        : status==='uploading'
-        ? <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'center'}}>
-            <div style={{width:16,height:16,borderRadius:'50%',border:`2px solid ${C.info}`,borderTopColor:'transparent',animation:'spin 0.8s linear infinite'}}/>
-            <p style={{fontSize:13,fontWeight:600,color:C.info}}>Uploading…</p>
-          </div>
-        : status==='error'
-        ? <div>
-            <p style={{fontSize:13,fontWeight:700,color:C.error}}>Upload failed</p>
-            <p style={{fontSize:11,color:C.muted}}>Click to retry</p>
-          </div>
-        : <>
-            <div style={{width:40,height:40,borderRadius:13,background:`${C.primary}10`,display:'flex',alignItems:'center',justifyContent:'center',color:C.primary,margin:'0 auto 10px'}}>
-              <span style={{display:'flex',transform:'scale(1.3)'}}>{I.upload}</span>
-            </div>
-            <p style={{fontSize:13,fontWeight:700,color:C.type,marginBottom:3}}>{label}</p>
-            {desc&&<p style={{fontSize:11,color:C.muted}}>{desc}</p>}
-            <p style={{fontSize:11,color:C.primary,fontWeight:700,marginTop:8}}>Click to upload or drag & drop</p>
-          </>
-      }
-    </div>
-  )
-}
-
 function FormSection({ title, children }:{ title:string; children:ReactNode }) {
   return (
     <div style={{ marginBottom:28 }}>
@@ -192,14 +155,6 @@ function FormSection({ title, children }:{ title:string; children:ReactNode }) {
 
 function FormFull({ children }:{ children:ReactNode }) {
   return <div style={{ gridColumn:'1 / -1' }}>{children}</div>
-}
-
-function SuccessToast({ msg }:{ msg:string }) {
-  return (
-    <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:999, display:'flex', alignItems:'center', gap:10, padding:'12px 22px', borderRadius:14, background:C.type, color:'#fff', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, boxShadow:'0 8px 28px rgba(0,0,0,0.22)', pointerEvents:'none', whiteSpace:'nowrap' as const }}>
-      <span style={{display:'flex',color:C.success}}>{I.check}</span>{msg}
-    </div>
-  )
 }
 
 // ─── Steps definition ─────────────────────────────────────────────────────────
@@ -227,7 +182,7 @@ function ProgressSidebar({ current, onGoto, completed }:{ current:number; onGoto
     )
   )
   return (
-    <div style={{ width:240, background:C.surface, borderRight:`1px solid ${C.border}`, padding:'28px 0', display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
+    <div className="cao-sidebar" style={{ width:256, background:C.surface, borderRight:`1px solid ${C.border}`, padding:'28px 0', display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
       <div style={{ padding:'0 20px 20px' }}>
         <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:10 }}>Registration Progress</p>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
@@ -279,7 +234,7 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
     { done:false, label:'Smartphone with internet access' },
   ]
   return (
-    <div style={{ maxWidth:900, margin:'0 auto', padding:'40px 32px 80px' }}>
+    <PageContainer maxWidth={1080} style={{ padding:'40px 36px 80px' }}>
       {/* Hero */}
       <div style={{ textAlign:'center' as const, marginBottom:48 }}>
         <div style={{ width:72, height:72, borderRadius:24, background:`linear-gradient(135deg,${C.primary},#00959E)`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 20px', boxShadow:`0 12px 32px ${C.primary}30` }}>
@@ -302,23 +257,6 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
           </div>
         </div>
       </div>
-
-      {/* Progress indicator */}
-      <Card style={{ padding:24, marginBottom:32 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap' as const, gap:10 }}>
-          <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>11 Steps to Get Verified</p>
-          <Bdg label="0% Complete" color={C.muted} />
-        </div>
-        <div style={{ display:'flex', gap:4 }}>
-          {STEPS.map(s=>(
-            <div key={s.n} title={s.title} style={{ flex:1, height:6, borderRadius:99, background:C.bg }} />
-          ))}
-        </div>
-        <div style={{ display:'flex', justifyContent:'space-between', marginTop:10 }}>
-          <p style={{ fontSize:11, color:C.muted }}>Step 1: Personal Information</p>
-          <p style={{ fontSize:11, color:C.muted }}>Step 11: Review & Submit</p>
-        </div>
-      </Card>
 
       {/* Benefits + Requirements */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:24, marginBottom:32 }} className="cao-2col">
@@ -365,10 +303,18 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
 
           <div style={{ marginTop:24, display:'flex', flexDirection:'column', gap:10 }}>
             <Btn label="Start Registration" onClick={onStart} />
-            <Btn label="Save & Continue Later" variant="ghost" />
           </div>
         </div>
       </div>
+    </PageContainer>
+  )
+}
+
+// ─── Reusable responsive page container ────────────────────────────────────
+function PageContainer({ children, maxWidth=880, style={} }:{ children:ReactNode; maxWidth?:number; style?:CSSProperties }) {
+  return (
+    <div className="cao-container" style={{ maxWidth, margin:'0 auto', width:'100%', ...style }}>
+      {children}
     </div>
   )
 }
@@ -383,7 +329,8 @@ function StepWrap({
   onBack,
   onNext,
   nextLabel='Save & Continue',
-  nextDisabled=false
+  nextDisabled=false,
+  maxWidth=880
 }:{
   step:number
   total:number
@@ -394,11 +341,12 @@ function StepWrap({
   onNext:()=>void
   nextLabel?:string
   nextDisabled?:boolean
+  maxWidth?:number
 })
 {
   return (
-    <div style={{ flex:1, overflowY:'auto', padding:'32px 36px 80px' }}>
-      <div style={{ maxWidth:680 }}>
+    <div style={{ flex:1, overflowY:'auto', padding:'32px 0 80px' }}>
+      <PageContainer maxWidth={maxWidth}>
         {/* Step header */}
         <div style={{ marginBottom:28 }}>
           <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
@@ -413,7 +361,7 @@ function StepWrap({
           <Btn label="Back" variant="ghost" icon={I.chevL} onClick={onBack} />
           <Btn label={nextLabel} icon={I.chevR} onClick={onNext} disabled={nextDisabled}/>
         </div>
-      </div>
+      </PageContainer>
     </div>
   )
 }
@@ -1148,55 +1096,6 @@ function Step1({
             {saveError}
           </div>
         )}
-
-        {/* Live verification placeholder */}
-        <div
-          style={{
-            padding:'14px 16px',
-            borderRadius:12,
-            background:`${C.info}06`,
-            border:`1px solid ${C.info}20`,
-            display:'flex',
-            gap:10,
-            alignItems:'center'
-          }}
-        >
-          <span
-            style={{
-              color:C.info,
-              display:'flex'
-            }}
-          >
-            {I.camera}
-          </span>
-
-          <div>
-            <p
-              style={{
-                fontSize:12,
-                fontWeight:700,
-                color:C.info
-              }}
-            >
-              Live Verification Photo{' '}
-
-              <Bdg
-                label="Coming Soon"
-                color={C.info}
-              />
-            </p>
-
-            <p
-              style={{
-                fontSize:11,
-                color:C.muted
-              }}
-            >
-              Real-time selfie verification will be available
-              in the next update.
-            </p>
-          </div>
-        </div>
 
       </Card>
 
@@ -4915,62 +4814,6 @@ function Step5({
           </div>
         ))}
 
-        {/* Selfie verification placeholder */}
-        <div
-          style={{
-            marginTop:14,
-            padding:'14px 16px',
-            borderRadius:12,
-
-            background:
-              `${C.info}06`,
-
-            border:
-              `1px solid ${C.info}20`,
-
-            display:'flex',
-            gap:10,
-            alignItems:'center'
-          }}
-        >
-
-          <span
-            style={{
-              color:C.info,
-              display:'flex'
-            }}
-          >
-            {I.camera}
-          </span>
-
-          <div>
-            <p
-              style={{
-                fontSize:12,
-                fontWeight:700,
-                color:C.info
-              }}
-            >
-              Selfie Verification{' '}
-
-              <Bdg
-                label="Coming Soon"
-                color={C.info}
-              />
-            </p>
-
-            <p
-              style={{
-                fontSize:11,
-                color:C.muted
-              }}
-            >
-              Real-time liveness check will be required in future updates.
-            </p>
-          </div>
-
-        </div>
-
       </Card>
 
     </StepWrap>
@@ -5589,9 +5432,6 @@ function Step7({
   const [maxHours, setMaxHours] =
     useState(40)
 
-  const [maxDist, setMaxDist] =
-    useState(20)
-
   const [loading, setLoading] =
     useState(true)
 
@@ -5616,8 +5456,7 @@ function Step7({
     selectedShift:ShiftType,
     emergencyAvailable:boolean,
     holidayAvailable:boolean,
-    weeklyHours:number,
-    travelDistance:number
+    weeklyHours:number
   ) => {
 
     return JSON.stringify({
@@ -5635,10 +5474,7 @@ function Step7({
         holidayAvailable,
 
       maxHours:
-        weeklyHours,
-
-      maxDist:
-        travelDistance
+        weeklyHours
     })
   }
 
@@ -5648,8 +5484,7 @@ function Step7({
       shift,
       emergency,
       holiday,
-      maxHours,
-      maxDist
+      maxHours
     )
 
   const hasChanges =
@@ -5706,18 +5541,13 @@ function Step7({
               40
             )
 
-            setMaxDist(
-              20
-            )
-
             setInitialData(
               createSnapshot(
                 emptyDays,
                 'morning',
                 false,
                 false,
-                40,
-                20
+                40
               )
             )
 
@@ -5751,10 +5581,6 @@ function Step7({
             data.max_weekly_hours ??
             40
 
-          const loadedMaxDist =
-            data.max_travel_distance_km ??
-            20
-
           setActiveDays(
             loadedDays
           )
@@ -5775,10 +5601,6 @@ function Step7({
             loadedMaxHours
           )
 
-          setMaxDist(
-            loadedMaxDist
-          )
-
           // Determine whether Step 7
           // has meaningful saved data
           const availabilityHasData =
@@ -5786,8 +5608,7 @@ function Step7({
             Boolean(
               data.preferred_shift
             ) ||
-            data.max_weekly_hours != null ||
-            data.max_travel_distance_km != null
+            data.max_weekly_hours != null
 
           setHasSavedData(
             availabilityHasData
@@ -5799,8 +5620,7 @@ function Step7({
               loadedShift,
               loadedEmergency,
               loadedHoliday,
-              loadedMaxHours,
-              loadedMaxDist
+              loadedMaxHours
             )
           )
 
@@ -5929,15 +5749,6 @@ function Step7({
           )
         }
 
-        if (
-          !maxDist ||
-          maxDist < 5
-        ) {
-          throw new Error(
-            'Please select maximum travel distance'
-          )
-        }
-
         setSaving(true)
 
         const savedDays =
@@ -5959,10 +5770,7 @@ function Step7({
             holiday,
 
           max_weekly_hours:
-            maxHours,
-
-          max_travel_distance_km:
-            maxDist
+            maxHours
         })
 
         setHasSavedData(
@@ -5976,8 +5784,7 @@ function Step7({
             shift,
             emergency,
             holiday,
-            maxHours,
-            maxDist
+            maxHours
           )
         )
 
@@ -6439,77 +6246,6 @@ function Step7({
 
             onChange={event => {
               setMaxHours(
-                +event.target.value
-              )
-
-              setSaveError('')
-            }}
-
-            style={{
-              width:'100%',
-              accentColor:C.primary,
-              cursor:'pointer'
-            }}
-          />
-        </div>
-
-        {/* Maximum Travel Distance */}
-        <div
-          style={{
-            padding:'8px 0'
-          }}
-        >
-          <div
-            style={{
-              display:'flex',
-              justifyContent:
-                'space-between',
-              marginBottom:8
-            }}
-          >
-
-            <p
-              style={{
-                fontSize:12,
-                fontWeight:700,
-                color:C.muted
-              }}
-            >
-              Maximum Travel Distance{' '}
-              <span
-                style={{
-                  color:C.error
-                }}
-              >
-                *
-              </span>
-            </p>
-
-            <span
-              style={{
-                fontSize:13,
-                fontWeight:800,
-                color:C.primary,
-
-                fontFamily:
-                  'Manrope,sans-serif'
-              }}
-            >
-              {maxDist} km
-            </span>
-
-          </div>
-
-          <input
-            type="range"
-            min={5}
-            max={100}
-            step={5}
-
-            value={maxDist}
-
-            onChange={event => {
-              setMaxDist(
                 +event.target.value
               )
 
@@ -10496,16 +10232,6 @@ function Step11({
           )
         }
 
-        if (
-          availability
-            ?.max_travel_distance_km == null ||
-          availability.max_travel_distance_km < 5
-        ) {
-          availabilityMissing.push(
-            'Maximum Travel Distance'
-          )
-        }
-
         // ════════════════════════════════════════
         // STEP 8 — EQUIPMENT & TRANSPORT
         // ════════════════════════════════════════
@@ -10957,11 +10683,6 @@ function Step11({
                 : '',
 
               availability
-                ?.max_travel_distance_km
-                ? `${availability.max_travel_distance_km} km travel distance`
-                : '',
-
-              availability
                 ?.emergency_available
                 ? 'Emergency Available'
                 : '',
@@ -11260,6 +10981,7 @@ function Step11({
         onBack={onBack}
         onNext={() => {}}
         nextDisabled={true}
+        maxWidth={1040}
       >
 
         <Card
@@ -11306,6 +11028,7 @@ function Step11({
         !allComplete ||
         submitting
       }
+      maxWidth={1040}
     >
 
       {/* Application Score */}
@@ -11982,7 +11705,7 @@ function Step11({
 // ─── Application Submitted ────────────────────────────────────────────────────
 function ApplicationSubmitted({ onStatus }:{ onStatus:()=>void }) {
   return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'60px 32px', textAlign:'center' as const }}>
+    <PageContainer maxWidth={760} style={{ padding:'60px 36px', textAlign:'center' as const }}>
       <div style={{ width:80, height:80, borderRadius:'50%', background:`${C.success}10`, border:`3px solid ${C.success}`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 24px', fontSize:40 }}>🎉</div>
       <h1 style={{ fontSize:28, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:10 }}>Application Submitted!</h1>
       <p style={{ fontSize:15, color:C.muted, lineHeight:1.7, marginBottom:32 }}>Congratulations, Kasun! Your application has been received and is under review by the ReadyPal verification team.</p>
@@ -12036,7 +11759,7 @@ function ApplicationSubmitted({ onStatus }:{ onStatus:()=>void }) {
 
       <p style={{ fontSize:12, color:C.muted, marginBottom:20 }}>Questions? Contact support at agents@readypal.lk or call +94 11 234 5678.</p>
       <Btn label="View Application Status" onClick={onStatus} />
-    </div>
+    </PageContainer>
   )
 }
 
@@ -12053,7 +11776,7 @@ function ApplicationStatus() {
     { k:'Suspended',           color:C.error,   icon:'🚫', desc:'Your account has been temporarily suspended pending review.' },
   ]
   return (
-    <div style={{ padding:'32px 36px 80px', maxWidth:680 }}>
+    <PageContainer maxWidth={920} style={{ padding:'32px 36px 80px' }}>
       <div style={{ marginBottom:28 }}>
         <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Application Status</h2>
         <p style={{ fontSize:14, color:C.muted }}>Reference: <strong style={{color:C.primary}}>RP-AGT-2025-08741</strong></p>
@@ -12085,385 +11808,12 @@ function ApplicationStatus() {
           </Card>
         ))}
       </div>
-    </div>
-  )
-}
-
-// ─── Document Center ──────────────────────────────────────────────────────────
-function DocumentCenter() {
-  const docs = [
-    { name:'National ID (Front)',             status:'verified',  expiry:null,           icon:'🪪' },
-    { name:'National ID (Back)',              status:'verified',  expiry:null,           icon:'🪪' },
-    { name:'Police Clearance Certificate',    status:'verified',  expiry:'2025-06-30',   icon:'📋' },
-    { name:'Caregiving Certificate',          status:'verified',  expiry:'2028-03-09',   icon:'📜' },
-    { name:'First Aid Certificate',           status:'expiring',  expiry:'2025-06-01',   icon:'🩹' },
-    { name:'CPR Certificate',                 status:'expiring',  expiry:'2025-06-01',   icon:'❤️' },
-    { name:'Medical Fitness Certificate',     status:'pending',   expiry:null,           icon:'🏥' },
-    { name:'Recommendation Letter',           status:'verified',  expiry:null,           icon:'✉️' },
-  ]
-  const statusColor = { verified:C.success, expiring:C.warning, pending:C.muted, missing:C.error } as const
-  const statusLabel = { verified:'Verified', expiring:'Expiring Soon', pending:'Pending Review', missing:'Missing' } as const
-  return (
-    <div style={{ padding:'32px 36px 80px', maxWidth:680 }}>
-      <div style={{ marginBottom:24 }}>
-        <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Document Center</h2>
-        <p style={{ fontSize:14, color:C.muted }}>Manage all your uploaded documents and certifications.</p>
-      </div>
-      {/* Expiry alerts */}
-      <Card style={{ padding:18, marginBottom:20, border:`1.5px solid ${C.warning}40`, background:`${C.warning}05` }}>
-        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-          <span style={{color:C.warning,display:'flex'}}>{I.warning}</span>
-          <p style={{ fontSize:13, fontWeight:700, color:C.warning }}>2 documents expiring within 6 months — renew your First Aid and CPR certificates.</p>
-        </div>
-      </Card>
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {docs.map((d,i)=>(
-          <Card key={i} style={{ padding:18 }}>
-            <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:C.bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{d.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:3 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{d.name}</p>
-                  <Bdg label={statusLabel[d.status as keyof typeof statusLabel]} color={statusColor[d.status as keyof typeof statusColor]} />
-                </div>
-                {d.expiry&&<p style={{ fontSize:11, color:d.status==='expiring'?C.warning:C.muted }}>Expires {d.expiry}</p>}
-              </div>
-              <div style={{ display:'flex', gap:8 }}>
-                <Btn label="View" variant="ghost" small />
-                <Btn label="Replace" variant="secondary" small />
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Verification Center ──────────────────────────────────────────────────────
-function VerificationCenter() {
-  const timeline = [
-    { icon:'🪪', l:'Identity Submitted',          t:'14 Jan 2025 · 9:30 AM', done:true },
-    { icon:'🔍', l:'Identity Verified',            t:'14 Jan 2025 · 2:15 PM', done:true },
-    { icon:'🏛️', l:'Police Clearance Verified',   t:'15 Jan 2025 · 11:00 AM',done:true },
-    { icon:'🏥', l:'Medical Certificate Verified', t:'Pending',               done:false },
-    { icon:'📞', l:'References Checked',           t:'Pending',               done:false },
-    { icon:'✅', l:'Final Approval',               t:'Estimated: 21 Jan 2025',done:false },
-  ]
-  return (
-    <div style={{ padding:'32px 36px 80px', maxWidth:680 }}>
-      <div style={{ marginBottom:28 }}>
-        <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Verification Center</h2>
-        <p style={{ fontSize:14, color:C.muted }}>Track the progress of your identity and background verification.</p>
-      </div>
-      <div style={{ display:'flex', flexDirection:'column' }}>
-        {timeline.map((e,i,arr)=>(
-          <div key={i} style={{ display:'flex', gap:16 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:e.done?`${C.success}10`:`${C.muted}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20 }}>{e.icon}</div>
-              {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
-            </div>
-            <div style={{ paddingBottom:i<arr.length-1?22:0, paddingTop:4 }}>
-              <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:2 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:e.done?C.type:C.muted }}>{e.l}</p>
-                {e.done&&<Bdg label="Complete" color={C.success} />}
-              </div>
-              <p style={{ fontSize:11, color:C.muted }}>{e.t}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Profile Completeness ─────────────────────────────────────────────────────
-function ProfileCompleteness({ onGoto }:{ onGoto:(n:number)=>void }) {
-  const sections = [
-    { n:1,  l:'Personal Information',  pct:100 },
-    { n:2,  l:'Professional Profile',  pct:100 },
-    { n:3,  l:'Skills & Services',     pct:100 },
-    { n:4,  l:'Certifications',        pct:80  },
-    { n:5,  l:'Identity Verification', pct:75  },
-    { n:6,  l:'Banking & Payouts',     pct:100 },
-    { n:7,  l:'Availability',          pct:100 },
-    { n:8,  l:'Equipment',             pct:100 },
-    { n:9,  l:'References',            pct:100 },
-    { n:10, l:'Agreements',            pct:40  },
-  ]
-  const overall = Math.round(sections.reduce((a,s)=>a+s.pct,0)/sections.length)
-  return (
-    <div style={{ padding:'32px 36px 80px', maxWidth:680 }}>
-      <div style={{ marginBottom:24 }}>
-        <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Profile Completeness</h2>
-        <p style={{ fontSize:14, color:C.muted }}>A complete profile gets 3× more client matches.</p>
-      </div>
-      <Card style={{ padding:24, marginBottom:20 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-          <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Overall Completion</p>
-          <p style={{ fontSize:28, fontWeight:900, color:overall>=80?C.success:C.warning, fontFamily:'Manrope,sans-serif' }}>{overall}%</p>
-        </div>
-        <div style={{ height:10, borderRadius:99, background:C.bg, overflow:'hidden', marginBottom:10 }}>
-          <div style={{ width:`${overall}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.6s' }} />
-        </div>
-        <p style={{ fontSize:12, color:C.muted }}>Complete all sections to maximise your visibility to clients.</p>
-      </Card>
-      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {sections.map(s=>(
-          <Card key={s.n} hover style={{ padding:16 }} onClick={()=>onGoto(s.n)}>
-            <div style={{ display:'flex', alignItems:'center', gap:14 }}>
-              <div style={{ width:36, height:36, borderRadius:11, background:s.pct===100?`${C.success}10`:`${C.warning}10`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                <p style={{ fontSize:11, fontWeight:900, color:s.pct===100?C.success:C.warning, fontFamily:'Manrope,sans-serif' }}>{s.n}</p>
-              </div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.l}</p>
-                  <p style={{ fontSize:12, fontWeight:800, color:s.pct===100?C.success:C.warning }}>{s.pct}%</p>
-                </div>
-                <div style={{ height:4, borderRadius:99, background:C.bg, overflow:'hidden' }}>
-                  <div style={{ width:`${s.pct}%`, height:'100%', background:s.pct===100?C.success:C.warning, borderRadius:99, transition:'width 0.4s' }} />
-                </div>
-              </div>
-              {s.pct<100&&<span style={{ color:C.primary, display:'flex' }}>{I.chevR}</span>}
-            </div>
-          </Card>
-        ))}
-      </div>
-      {/* Rewards placeholder */}
-      <Card style={{ padding:20, marginTop:20, background:`${C.accent}06`, border:`1px solid ${C.accent}20`, opacity:0.75 }}>
-        <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-          <span style={{ fontSize:28 }}>🏆</span>
-          <div>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Completion Rewards</p>
-            <p style={{ fontSize:12, color:C.muted }}>Reach 100% to unlock featured placement and priority matching. <Bdg label="Coming Soon" color={C.accent} /></p>
-          </div>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-// ─── Help Center ──────────────────────────────────────────────────────────────
-function HelpCenter() {
-  const faqs = [
-    { q:'How long does verification take?',  a:'Document verification typically takes 3–5 working days. We may contact you if we need additional information.' },
-    { q:'What documents do I need?',          a:'NIC (front & back), Police Clearance Certificate (within 6 months), Medical Fitness Certificate, and any relevant professional qualifications.' },
-    { q:'Can I update my documents later?',   a:'Yes, you can replace any document at any time from the Document Center. Updated documents will be re-verified.' },
-    { q:'How do I set my service rates?',      a:'After approval you can set your hourly rates from your Agent Dashboard. ReadyPal recommends competitive rates based on your experience level.' },
-    { q:'When do I get paid?',                a:'Weekly transfers to your verified bank account every Monday for jobs completed the previous week.' },
-  ]
-  const [open, setOpen] = useState<number|null>(0)
-  return (
-    <div style={{ padding:'32px 36px 80px', maxWidth:680 }}>
-      <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Help Center</h2>
-      <p style={{ fontSize:14, color:C.muted, marginBottom:24 }}>Find answers to common questions about agent registration.</p>
-
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:24 }} className="cao-2col">
-        {[{icon:'📖',l:'Registration Guide'},{icon:'📄',l:'Document Requirements'},{icon:'💬',l:'Contact Support'},{icon:'🗨️',l:'Live Chat'}].map((s,i)=>(
-          <Card key={i} hover style={{ padding:18, textAlign:'center' as const }}>
-            <div style={{ fontSize:28, marginBottom:8 }}>{s.icon}</div>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:6 }}>{s.l}</p>
-            <Btn label={s.l==='Live Chat'?'Coming Soon':'Open'} variant="secondary" small disabled={s.l==='Live Chat'} />
-          </Card>
-        ))}
-      </div>
-
-      <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:14 }}>Frequently Asked Questions</h3>
-      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {faqs.map((faq,i)=>(
-          <Card key={i} style={{ padding:0, overflow:'hidden' }}>
-            <button onClick={()=>setOpen(open===i?null:i)} style={{ width:'100%', padding:'16px 20px', background:'transparent', border:'none', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center', fontFamily:'Manrope,sans-serif', textAlign:'left' as const }}>
-              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{faq.q}</p>
-              <span style={{ color:C.muted, display:'flex', transform:open===i?'rotate(90deg)':'none', transition:'transform 0.2s', flexShrink:0 }}>{I.chevR}</span>
-            </button>
-            {open===i&&(
-              <div style={{ padding:'0 20px 16px' }}>
-                <p style={{ fontSize:13, color:C.sub, lineHeight:1.7 }}>{faq.a}</p>
-              </div>
-            )}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Notifications ────────────────────────────────────────────────────────────
-function Notifications() {
-  const items = [
-    { icon:'📤', title:'Application Submitted',        body:'Your application RP-AGT-2025-08741 has been received.',          time:'Just now',          color:C.success, read:false },
-    { icon:'🔍', title:'Verification in Progress',     body:'Our team has started reviewing your documents.',                  time:'2 hours ago',       color:C.primary, read:false },
-    { icon:'📂', title:'Document Request',             body:'Please upload your Medical Fitness Certificate to continue.',     time:'Yesterday',         color:C.warning, read:false },
-    { icon:'✅', title:'Reference Check Complete',     body:'Dr. Priya Fernando has confirmed your reference.',               time:'2 days ago',        color:C.success, read:true },
-    { icon:'⏰', title:'Complete Your Registration',   body:"You're 85% complete. Just a few more steps remaining.",          time:'3 days ago',        color:C.accent,  read:true },
-    { icon:'✅', title:'Approval Granted',             body:'Congratulations! You are now an approved ReadyPal Care Agent.',  time:'Coming soon',       color:C.success, read:true, preview:true },
-  ]
-  return (
-    <div style={{ padding:'32px 36px 80px', maxWidth:680 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div>
-          <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Notifications</h2>
-          <p style={{ fontSize:14, color:C.muted }}>Updates about your registration and verification.</p>
-        </div>
-        <Bdg label={`${items.filter(i=>!i.read).length} unread`} color={C.primary} />
-      </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {items.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.color}04`, border:`1px solid ${n.read?C.border:n.color+'20'}`, opacity:n.preview?0.5:1 }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:42, height:42, borderRadius:13, background:`${n.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
-                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.color }} />}
-                    {n.preview&&<Bdg label="Preview" color={C.muted} />}
-                  </div>
-                  <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{n.time}</p>
-                </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>{n.body}</p>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Empty States ─────────────────────────────────────────────────────────────
-function EmptyStates() {
-  const items = [
-    { emoji:'📂', title:'No Documents',      desc:'No documents have been uploaded yet. Start your registration to add documents.',   cta:'Upload Documents' },
-    { emoji:'👥', title:'No References',     desc:'You haven\'t added any professional references yet.',                               cta:'Add References' },
-    { emoji:'📜', title:'No Certifications', desc:'No professional certifications have been uploaded.',                                cta:'Upload Certificates' },
-    { emoji:'📅', title:'No Availability',   desc:'You haven\'t set your availability schedule yet.',                                 cta:'Set Availability' },
-  ]
-  return (
-    <div style={{ padding:'32px 36px 80px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }} className="cao-2col">
-        {items.map((s,i)=>(
-          <Card key={i} style={{ padding:'40px 24px', textAlign:'center' as const }}>
-            <div style={{ fontSize:44, marginBottom:14 }}>{s.emoji}</div>
-            <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{s.title}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7, marginBottom:18 }}>{s.desc}</p>
-            <Btn label={s.cta} variant="secondary" small />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Loading States ───────────────────────────────────────────────────────────
-function LoadingStates() {
-  function Shimmer({ style={} }:{ style?:CSSProperties }) {
-    return <div style={{ borderRadius:10, background:'linear-gradient(90deg,#E4E8EA 25%,#F2F4F5 50%,#E4E8EA 75%)', backgroundSize:'200% 100%', animation:'shimmer 1.6s ease-in-out infinite', ...style }} />
-  }
-  return (
-    <div style={{ padding:'32px 36px 80px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-        {[
-          { label:'Loading Registration' },
-          { label:'Uploading Documents' },
-          { label:'Loading Verification' },
-        ].map((s,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:14 }}>{s.label}</p>
-            <div style={{ display:'flex', gap:14, alignItems:'center', marginBottom:14 }}>
-              <Shimmer style={{ width:56, height:56, borderRadius:16, flexShrink:0 }} />
-              <div style={{ flex:1 }}>
-                <Shimmer style={{ height:14, width:'70%', marginBottom:8 }} />
-                <Shimmer style={{ height:11, width:'50%' }} />
-              </div>
-            </div>
-            {[...Array(3)].map((_,j)=>(
-              <Shimmer key={j} style={{ height:48, marginBottom:10, borderRadius:12 }} />
-            ))}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Error States ─────────────────────────────────────────────────────────────
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  const errors = [
-    { icon:'📂', title:'Document Upload Failed',  desc:'The file could not be uploaded. Please check your connection and try again.', cta:'Retry Upload',     color:C.error },
-    { icon:'🔍', title:'Verification Error',       desc:'We were unable to verify your document. Please ensure it is clear and fully visible.', cta:'Try Again', color:C.warning },
-    { icon:'📤', title:'Submission Failed',        desc:'Your application could not be submitted. Please review your details and try again.', cta:'Retry',       color:C.error },
-    { icon:'📶', title:'Connection Lost',          desc:'You appear to be offline. Your progress has been saved. Reconnect to continue.', cta:'Retry',            color:C.muted },
-  ]
-  return (
-    <div style={{ padding:'32px 36px 80px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {errors.map((e,i)=>(
-          <Card key={i} style={{ padding:22, border:`1.5px solid ${e.color}30`, background:`${e.color}04` }}>
-            <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${e.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{e.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:800, color:e.color, marginBottom:4 }}>{e.title}</p>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:12 }}>{e.desc}</p>
-                <Btn label={e.cta} variant="secondary" small icon={I.refresh} onClick={()=>onToast(`${e.cta} triggered`)} />
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Success States ───────────────────────────────────────────────────────────
-function SuccessStates() {
-  const items = [
-    { icon:'📄', title:'Document Uploaded',    desc:'Your document has been successfully uploaded and is pending verification.', color:C.success },
-    { icon:'🔐', title:'Identity Verified',    desc:'Your NIC and personal details have been verified successfully.', color:C.success },
-    { icon:'🏦', title:'Bank Details Saved',   desc:'Your bank account has been verified and saved for payouts.', color:C.success },
-    { icon:'🎉', title:'Application Submitted',desc:'Your application has been submitted and is now under review.', color:C.success },
-  ]
-  return (
-    <div style={{ padding:'32px 36px 80px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {items.map((s,i)=>(
-          <Card key={i} style={{ padding:20, border:`1.5px solid ${C.success}30`, background:`${C.success}04` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${C.success}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:C.success, marginBottom:3 }}>{s.title}</p>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{s.desc}</p>
-              </div>
-              <span style={{ color:C.success, display:'flex', transform:'scale(1.3)' }}>{I.check}</span>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
+    </PageContainer>
   )
 }
 
 // ─── Sub-view nav ─────────────────────────────────────────────────────────────
-type SubView = 'home'|'wizard'|'status'|'docs'|'verify'|'completeness'|'help'|'notifications'|'empty'|'loading'|'error'|'success'
-
-const SUB_NAV: {k:SubView;l:string}[] = [
-  {k:'home',          l:'Onboarding Home'},
-  {k:'wizard',        l:'Registration Wizard'},
-  {k:'status',        l:'Application Status'},
-  {k:'docs',          l:'Document Center'},
-  {k:'verify',        l:'Verification Center'},
-  {k:'completeness',  l:'Profile Completeness'},
-  {k:'help',          l:'Help Center'},
-  {k:'notifications', l:'Notifications'},
-  {k:'empty',         l:'Empty States'},
-  {k:'loading',       l:'Loading States'},
-  {k:'error',         l:'Error States'},
-  {k:'success',       l:'Success States'},
-]
+type SubView = 'home'|'wizard'|'status'
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareAgentOnboarding() {
@@ -12471,11 +11821,8 @@ export default function CareAgentOnboarding() {
   const [step, setStep] = useState(1)
   const [completed, setCompleted] = useState(new Set<number>())
   const [editingFromReview, setEditingFromReview] = useState(false)
-  const [toast, setToast] = useState<string|null>(null)
   const [submitted, setSubmitted] = useState(false)
   const [progressLoading, setProgressLoading] = useState(true)
-
-  const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),2800) }
 
   useEffect(() => {
     let cancelled = false
@@ -12645,10 +11992,7 @@ export default function CareAgentOnboarding() {
           ) &&
           availability
             ?.max_weekly_hours != null &&
-          availability.max_weekly_hours >= 10 &&
-          availability
-            ?.max_travel_distance_km != null &&
-          availability.max_travel_distance_km >= 5
+          availability.max_weekly_hours >= 10
 
         if (step7Complete) {
           restoredCompleted.add(7)
@@ -12826,41 +12170,17 @@ export default function CareAgentOnboarding() {
 
   return (
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
-      {/* Top sub-nav */}
-      <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:40, background:C.surface, borderBottom:`1px solid ${C.border}`, padding:'0 24px', display:'flex', gap:2, overflowX:'auto', height:48, alignItems:'center' }}>
-        <p style={{ fontSize:11, fontWeight:800, color:C.muted, marginRight:12, whiteSpace:'nowrap' as const }}>16 Agent Onboarding</p>
-        {SUB_NAV.map(n=>(
-          <button key={n.k} onClick={()=>{ setSub(n.k); if(n.k==='home'){ setSubmitted(false) } }}
-            style={{ padding:'6px 14px', borderRadius:8, border:'none', background:sub===n.k?`${C.primary}10`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:sub===n.k?700:500, color:sub===n.k?C.primary:C.sub, whiteSpace:'nowrap' as const, flexShrink:0, borderBottom:sub===n.k?`2px solid ${C.primary}`:'2px solid transparent' }}>
-            {n.l}
-          </button>
-        ))}
+      {/* Progress sidebar (wizard only) */}
+      {sub==='wizard'&&!submitted&&(
+        <ProgressSidebar current={step} onGoto={goTo} completed={completed} />
+      )}
+
+      {/* Main content */}
+      <div style={{ flex:1, overflowY:'auto' }}>
+        {sub==='home'   && <OnboardingHome onStart={()=>{ setSub('wizard'); setStep(1) }} />}
+        {sub==='wizard' && renderStep()}
+        {sub==='status' && <ApplicationStatus />}
       </div>
-
-      <div style={{ display:'flex', flex:1, marginTop:48 }}>
-        {/* Progress sidebar (wizard only) */}
-        {sub==='wizard'&&!submitted&&(
-          <ProgressSidebar current={step} onGoto={goTo} completed={completed} />
-        )}
-
-        {/* Main content */}
-        <div style={{ flex:1, overflowY:'auto' }}>
-          {sub==='home'         && <OnboardingHome onStart={()=>{ setSub('wizard'); setStep(1) }} />}
-          {sub==='wizard'       && renderStep()}
-          {sub==='status'       && <ApplicationStatus />}
-          {sub==='docs'         && <DocumentCenter />}
-          {sub==='verify'       && <VerificationCenter />}
-          {sub==='completeness' && <ProfileCompleteness onGoto={n=>{ setSub('wizard'); setStep(n); setSubmitted(false) }} />}
-          {sub==='help'         && <HelpCenter />}
-          {sub==='notifications'&& <Notifications />}
-          {sub==='empty'        && <EmptyStates />}
-          {sub==='loading'      && <LoadingStates />}
-          {sub==='error'        && <ErrorStates onToast={showToast} />}
-          {sub==='success'      && <SuccessStates />}
-        </div>
-      </div>
-
-      {toast&&<SuccessToast msg={toast} />}
     </div>
   )
 }
