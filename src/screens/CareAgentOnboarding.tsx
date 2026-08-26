@@ -11817,50 +11817,239 @@ function ApplicationSubmitted({ onStatus }:{ onStatus:()=>void }) {
 }
 
 // ─── Application Status ───────────────────────────────────────────────────────
-function ApplicationStatus() {
-  const statuses = [
-    { k:'Submitted',           color:C.info,    icon:'📤', desc:'Application received and queued for review.' },
-    { k:'Under Review',        color:C.primary, icon:'🔍', desc:'Our team is reviewing your documents and profile.', active:true },
-    { k:'Documents Requested', color:C.warning, icon:'📂', desc:'Additional documents have been requested from you.' },
-    { k:'Approved',            color:C.success, icon:'✅', desc:'Congratulations! Your application has been approved.' },
-    { k:'Rejected',            color:C.error,   icon:'❌', desc:'Your application did not meet current requirements.' },
-    { k:'Draft',               color:C.muted,   icon:'✏️', desc:'Application started but not yet submitted.' },
-    { k:'Incomplete',          color:C.warning, icon:'⚠️', desc:'Required information is missing from your application.' },
-    { k:'Suspended',           color:C.error,   icon:'🚫', desc:'Your account has been temporarily suspended pending review.' },
+const SUBMITTED_APPLICATION_STATUSES = ['submitted','under_review','approved','rejected']
+
+const APPLICATION_STATUS_META:Record<string,{ title:string; message:string; icon:string }> = {
+  submitted: {
+    title:'Application Submitted',
+    message:'Your application has been received successfully and is waiting to enter the review process.',
+    icon:'📤',
+  },
+  under_review: {
+    title:'Application Under Review',
+    message:'The ReadyPal team is currently reviewing your application and verification documents.',
+    icon:'🔍',
+  },
+  approved: {
+    title:'Application Approved',
+    message:'Your Care Agent application has been approved.',
+    icon:'✅',
+  },
+  rejected: {
+    title:'Application Needs Attention',
+    message:'Your application was not approved at this time.',
+    icon:'⚠️',
+  },
+}
+
+type TimelineStageState = 'done'|'active'|'pending'
+
+function applicationTimeline(status:string):{ label:string; state:TimelineStageState }[] {
+  if (status === 'approved') {
+    return [
+      { label:'Registration Completed', state:'done' },
+      { label:'Application Submitted',  state:'done' },
+      { label:'Application Review',     state:'done' },
+      { label:'Approved',               state:'done' },
+    ]
+  }
+  if (status === 'rejected') {
+    return [
+      { label:'Registration Completed', state:'done' },
+      { label:'Application Submitted',  state:'done' },
+      { label:'Application Review',     state:'done' },
+      { label:'Decision Issued',        state:'active' },
+    ]
+  }
+  if (status === 'under_review') {
+    return [
+      { label:'Registration Completed', state:'done' },
+      { label:'Application Submitted',  state:'done' },
+      { label:'Application Review',     state:'active' },
+      { label:'Final Decision',         state:'pending' },
+    ]
+  }
+  // submitted
+  return [
+    { label:'Registration Completed', state:'done' },
+    { label:'Application Submitted',  state:'done' },
+    { label:'Application Review',     state:'pending' },
+    { label:'Final Decision',         state:'pending' },
   ]
+}
+
+function applicationNextSteps(status:string):string {
+  if (status === 'approved') {
+    return "Congratulations! Our team will reach out with the next steps to get you started on the ReadyPal platform."
+  }
+  if (status === 'rejected') {
+    return "Your application was not approved at this time. If you have questions about this decision, please contact ReadyPal support."
+  }
+  return "Your application is being processed by our verification team. We'll update this page as soon as a decision has been made — no action is needed from you right now."
+}
+
+function formatApplicationDate(value:string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })
+}
+
+function TimelineStageIcon({ state }:{ state:TimelineStageState }) {
+  if (state === 'done') {
+    return (
+      <div style={{ width:26, height:26, borderRadius:'50%', background:C.success, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, color:'#fff' }}>
+        <span style={{ display:'flex', transform:'scale(0.7)' }}>{I.check}</span>
+      </div>
+    )
+  }
+  if (state === 'active') {
+    return (
+      <div style={{ width:26, height:26, borderRadius:'50%', background:C.primary, border:`2px solid ${C.primary}`, flexShrink:0 }} />
+    )
+  }
+  return (
+    <div style={{ width:26, height:26, borderRadius:'50%', background:C.bg, border:`2px solid ${C.border}`, flexShrink:0 }} />
+  )
+}
+
+function ApplicationStatus({ onHome }:{ onHome:()=>void }) {
+  const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [agentDetails, setAgentDetails] = useState<any>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadApplicationStatus = async () => {
+      try {
+        setLoading(true)
+        setErrorMessage('')
+
+        const details = await getMyAgentDetails()
+
+        if (cancelled) return
+
+        setAgentDetails(details)
+
+      } catch (error) {
+        if (cancelled) return
+
+        console.error('Failed to load application status:', error)
+        setErrorMessage('We couldn\'t load your application status. Please try again.')
+
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    loadApplicationStatus()
+
+    return () => { cancelled = true }
+  }, [])
+
+  if (loading) {
+    return (
+      <PageContainer maxWidth={920} style={{ padding:'32px 36px 80px' }}>
+        <Card style={{ padding:30, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>Loading your application status...</p>
+        </Card>
+      </PageContainer>
+    )
+  }
+
+  if (errorMessage) {
+    return (
+      <PageContainer maxWidth={920} style={{ padding:'32px 36px 80px' }}>
+        <Card style={{ padding:30, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, fontWeight:700, color:C.error, marginBottom:6 }}>{errorMessage}</p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Please check your connection and try again.</p>
+          <Btn label="Back to Onboarding Home" variant="secondary" onClick={onHome} />
+        </Card>
+      </PageContainer>
+    )
+  }
+
+  const status:string|undefined = agentDetails?.application_status
+
+  if (!status || !SUBMITTED_APPLICATION_STATUSES.includes(status)) {
+    return (
+      <PageContainer maxWidth={920} style={{ padding:'32px 36px 80px' }}>
+        <Card style={{ padding:30, textAlign:'center' as const }}>
+          <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>No submitted application yet</p>
+          <p style={{ fontSize:13, color:C.muted, marginBottom:18 }}>You haven't submitted your Care Agent application yet. Complete your registration to submit it for review.</p>
+          <Btn label="Back to Onboarding Home" onClick={onHome} />
+        </Card>
+      </PageContainer>
+    )
+  }
+
+  const meta = APPLICATION_STATUS_META[status]
+  const color = APPLICATION_STATUS_COLOR[status] ?? C.primary
+  const submittedAt:string|null = agentDetails?.submitted_at ?? null
+  const rejectionReason:string|null = agentDetails?.rejection_reason ?? null
+  const timeline = applicationTimeline(status)
+
   return (
     <PageContainer maxWidth={920} style={{ padding:'32px 36px 80px' }}>
       <div style={{ marginBottom:28 }}>
         <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Application Status</h2>
-        <p style={{ fontSize:14, color:C.muted }}>Reference: <strong style={{color:C.primary}}>RP-AGT-2025-08741</strong></p>
+        <p style={{ fontSize:14, color:C.muted }}>Track the progress of your Care Agent application.</p>
       </div>
-      {/* Current status highlight */}
-      <Card style={{ padding:22, marginBottom:24, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1px solid ${C.primary}20` }}>
-        <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-          <div style={{ width:52, height:52, borderRadius:16, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, flexShrink:0 }}>🔍</div>
+
+      {/* Current status */}
+      <Card style={{ padding:24, marginBottom:20, background:`linear-gradient(135deg,${color}08,${color}02)`, border:`1px solid ${color}20` }}>
+        <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
+          <div style={{ width:52, height:52, borderRadius:16, background:`${color}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, flexShrink:0 }}>{meta.icon}</div>
           <div>
-            <p style={{ fontSize:11, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:4 }}>Current Status</p>
-            <p style={{ fontSize:18, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>Under Review</p>
-            <p style={{ fontSize:12, color:C.muted }}>Submitted 14 Jan 2025 · Est. approval by 21 Jan 2025</p>
+            <p style={{ fontSize:11, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>{formatStatusLabel(status)}</p>
+            <p style={{ fontSize:19, fontWeight:900, color, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{meta.title}</p>
+            <p style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>{meta.message}</p>
+            {status === 'rejected' && rejectionReason && (
+              <p style={{ fontSize:13, color:C.type, lineHeight:1.6, marginTop:10, padding:'10px 12px', borderRadius:10, background:`${C.error}08` }}>{rejectionReason}</p>
+            )}
+            {submittedAt && (
+              <p style={{ fontSize:12, color:C.muted, marginTop:10 }}>Submitted {formatApplicationDate(submittedAt)}</p>
+            )}
           </div>
         </div>
       </Card>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="cao-2col">
-        {statuses.map((s,i)=>(
-          <Card key={i} style={{ padding:18, border:`1.5px solid ${(s as any).active?s.color+'40':C.border}`, background:(s as any).active?`${s.color}04`:C.surface }}>
-            <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-              <span style={{ fontSize:22 }}>{s.icon}</span>
-              <div>
-                <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:4 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.k}</p>
-                  {(s as any).active&&<Bdg label="Current" color={s.color} />}
-                </div>
-                <p style={{ fontSize:11, color:C.muted, lineHeight:1.5 }}>{s.desc}</p>
-              </div>
+
+      {/* Timeline */}
+      <Card style={{ padding:24, marginBottom:20 }}>
+        <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Application Progress</p>
+        {timeline.map((stage,i)=>(
+          <div key={stage.label} style={{ display:'flex', gap:14 }}>
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+              <TimelineStageIcon state={stage.state} />
+              {i<timeline.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'3px 0' }} />}
             </div>
-          </Card>
+            <div style={{ paddingBottom:i<timeline.length-1?18:0, paddingTop:3 }}>
+              <p style={{ fontSize:13, fontWeight:700, color:stage.state==='pending'?C.muted:C.type }}>{stage.label}</p>
+            </div>
+          </div>
         ))}
-      </div>
+      </Card>
+
+      {/* Application details */}
+      <Card style={{ padding:22, marginBottom:20 }}>
+        <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:14 }}>Application Details</p>
+        <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
+          <p style={{ fontSize:13, color:C.muted }}>Application Status</p>
+          <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{formatStatusLabel(status)}</p>
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0' }}>
+          <p style={{ fontSize:13, color:C.muted }}>Submitted Date</p>
+          <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{submittedAt ? formatApplicationDate(submittedAt) : '—'}</p>
+        </div>
+      </Card>
+
+      {/* Next steps */}
+      <Card style={{ padding:22, marginBottom:24, background:`${C.primary}05`, border:`1px solid ${C.primary}15` }}>
+        <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:6 }}>What happens next?</p>
+        <p style={{ fontSize:12, color:C.sub, lineHeight:1.7 }}>{applicationNextSteps(status)}</p>
+      </Card>
+
+      <Btn label="Back to Onboarding Home" variant="secondary" onClick={onHome} />
     </PageContainer>
   )
 }
@@ -12281,7 +12470,7 @@ export default function CareAgentOnboarding() {
       <div style={{ flex:1, overflowY:'auto' }}>
         {sub==='home'   && <OnboardingHome status={homeStatus} onPrimary={handleHomePrimaryAction} />}
         {sub==='wizard' && renderStep()}
-        {sub==='status' && <ApplicationStatus />}
+        {sub==='status' && <ApplicationStatus onHome={()=>setSub('home')} />}
       </div>
     </div>
   )
