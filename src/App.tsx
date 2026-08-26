@@ -4,6 +4,7 @@ import MarketingWebsite from "./screens/MarketingWebsite"
 import AuthOnboarding from "./screens/AuthOnboarding"
 import ClientDashboard from "./screens/ClientDashboard"
 import CareAgentOnboarding from "./screens/CareAgentOnboarding"
+import BrowseJobs from './screens/BrowseJobs'
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
           path="/agent/onboarding"
           element={<CareAgentOnboarding />}
         />
+        <Route path="/agent/jobs" element={<BrowseJobs />} />
       </Routes>
     </BrowserRouter>
   )

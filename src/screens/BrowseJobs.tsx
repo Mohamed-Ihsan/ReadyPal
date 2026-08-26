@@ -884,138 +884,6 @@ function NotifView() {
   )
 }
 
-// ─── Status Badges showcase ───────────────────────────────────────────────────
-function StatusBadgesView() {
-  const badges = [
-    {status:'open',color:C.success},{status:'applied',color:C.primary},{status:'shortlisted',color:C.warning},
-    {status:'closed',color:C.muted},{status:'filled',color:'#8B5CF6'},{status:'expired',color:C.error},
-    {status:'urgent',color:C.error},{status:'featured',color:C.accent},
-  ]
-  return (
-    <div style={{ padding:'28px 28px 60px', maxWidth:680, margin:'0 auto' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Job Status Badges</h2>
-      <Card style={{ padding:28 }}>
-        <div style={{ display:'flex', flexWrap:'wrap' as const, gap:12 }}>
-          {badges.map((b,i)=><Bdg key={i} label={b.status.charAt(0).toUpperCase()+b.status.slice(1)} color={b.color} dot pill />)}
-        </div>
-        <div style={{ marginTop:24 }}>
-          <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:12, textTransform:'uppercase' as const, letterSpacing:'0.06em' }}>Full job card examples</p>
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {badges.slice(0,4).map((b,i)=>(
-              <div key={i} style={{ padding:'12px 16px', borderRadius:12, border:`1.5px solid ${b.color}30`, background:`${b.color}04`, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                <p style={{ fontSize:13, fontWeight:600, color:C.type }}>Hospital Appointment Assistance</p>
-                <Bdg label={b.status.charAt(0).toUpperCase()+b.status.slice(1)} color={b.color} dot />
-              </div>
-            ))}
-          </div>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-// ─── Empty / Loading / Error / Success ────────────────────────────────────────
-function EmptyStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="bjb-2col">
-        {[
-          { e:'💼', t:'No Jobs Available',   d:'There are no open care requests matching your criteria. Try adjusting your filters.', cta:'Clear Filters' },
-          { e:'🔍', t:'No Matches Found',    d:'Your search returned no results. Try a different keyword or location.',               cta:'Try Again' },
-          { e:'🔖', t:'No Saved Jobs',       d:'You have not saved any jobs yet. Tap the heart icon on a job to save it.',            cta:'Browse Jobs' },
-          { e:'📋', t:'No Applications Yet', d:'You have not applied to any jobs. Start browsing to find your next opportunity.',     cta:'Browse Jobs' },
-        ].map((s,i)=>(
-          <Card key={i} style={{ padding:'40px 24px', textAlign:'center' as const }}>
-            <div style={{ fontSize:48, marginBottom:14 }}>{s.e}</div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{s.t}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7, marginBottom:18 }}>{s.d}</p>
-            <Btn label={s.cta} variant="secondary" small />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LoadingStates() {
-  function Shimmer({ w='100%', h=16 }:{ w?:string; h?:number }) {
-    return <div style={{ width:w, height:h, borderRadius:8, background:'linear-gradient(90deg,#E4E8EA 25%,#F2F4F5 50%,#E4E8EA 75%)', backgroundSize:'200% 100%', animation:'shimmer 1.6s ease-in-out infinite' }} />
-  }
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="bjb-2col">
-        {['Loading Jobs','Loading Map','Loading Application','Loading Filters'].map((l,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:14 }}>{l}</p>
-            <Shimmer h={12} w="60%" /><div style={{height:8}}/>
-            <Shimmer h={200} /><div style={{height:10}}/>
-            {[...Array(3)].map((_,j)=>(
-              <div key={j} style={{ display:'flex', gap:10, marginBottom:10 }}>
-                <Shimmer w="44px" h={44} />
-                <div style={{ flex:1 }}>
-                  <Shimmer h={12} w="70%" /><div style={{height:6}}/>
-                  <Shimmer h={10} w="45%" />
-                </div>
-              </div>
-            ))}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ padding:'28px 28px 60px', maxWidth:600, margin:'0 auto' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      {[
-        {e:'📊',t:'Unable to Load Jobs',     d:'We could not fetch available jobs. Please check your connection and try again.',col:C.error},
-        {e:'📩',t:'Application Failed',      d:'Your application could not be submitted. Your draft has been saved.',          col:C.warning},
-        {e:'📶',t:'Network Error',           d:'You appear to be offline. Please reconnect to continue browsing.',            col:C.muted},
-      ].map((er,i)=>(
-        <Card key={i} style={{ padding:22, marginBottom:12, border:`1.5px solid ${er.col}30`, background:`${er.col}04` }}>
-          <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${er.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{er.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:800, color:er.col, marginBottom:4 }}>{er.t}</p>
-              <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:12 }}>{er.d}</p>
-              <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={()=>onToast('Retrying…')} />
-            </div>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
-function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ padding:'28px 28px 60px', maxWidth:600, margin:'0 auto' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      {[
-        {e:'✅',t:'Application Submitted',  d:'Your application for Hospital Appointment has been sent to Mohamed Ihsan.',    col:C.success},
-        {e:'🔖',t:'Job Saved',              d:'Hospital Appointment Assistance has been added to your saved jobs.',           col:C.primary},
-        {e:'💬',t:'Counter Offer Sent',     d:'Your counter offer of LKR 7,500 has been sent. Awaiting response.',           col:C.info},
-        {e:'🎯',t:'Profile Matched',        d:"Great news! Your profile is a 98% match for today's top jobs.",               col:C.accent},
-      ].map((s,i)=>(
-        <Card key={i} style={{ padding:20, marginBottom:10, border:`1.5px solid ${s.col}30`, background:`${s.col}04` }}>
-          <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${s.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:s.col, marginBottom:3 }}>{s.t}</p>
-              <p style={{ fontSize:12, color:C.sub }}>{s.d}</p>
-            </div>
-            <span style={{ color:s.col, display:'flex', transform:'scale(1.2)' }}>{I.check}</span>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
 // ─── Marketplace ──────────────────────────────────────────────────────────────
 type SortKey = 'recommended'|'nearest'|'highest_pay'|'newest'|'urgent'|'best_match'
 function Marketplace({ jobs, saved, onSave, onView, onApply, onToast }:{
@@ -1180,7 +1048,7 @@ function Marketplace({ jobs, saved, onSave, onView, onApply, onToast }:{
 }
 
 // ─── Sub-view ─────────────────────────────────────────────────────────────────
-type SubView = 'marketplace'|'saved'|'history'|'recommendations'|'badges'|'notifications'|'empty'|'loading'|'error'|'success'
+type SubView = 'marketplace'|'saved'|'history'|'recommendations'|'notifications'
 
 const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode }[] = [
   { k:'marketplace',     l:'Browse Jobs',      icon:I.search },
@@ -1188,11 +1056,6 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode }[] = [
   { k:'saved',           l:'Saved Jobs',       icon:I.heart },
   { k:'history',         l:'Applications',     icon:I.briefcase },
   { k:'notifications',   l:'Notifications',    icon:I.bell },
-  { k:'badges',          l:'Status Badges',    icon:I.shield },
-  { k:'empty',           l:'Empty States',     icon:I.list },
-  { k:'loading',         l:'Loading States',   icon:I.refresh },
-  { k:'error',           l:'Error States',     icon:I.zap },
-  { k:'success',         l:'Success States',   icon:I.check },
 ]
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
@@ -1231,11 +1094,6 @@ export default function BrowseJobs() {
       case 'history':         return <div style={{flex:1,overflowY:'auto'}}><AppHistory /></div>
       case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations {...props} /></div>
       case 'notifications':   return <div style={{flex:1,overflowY:'auto'}}><NotifView /></div>
-      case 'badges':          return <div style={{flex:1,overflowY:'auto'}}><StatusBadgesView /></div>
-      case 'empty':           return <div style={{flex:1,overflowY:'auto'}}><EmptyStates /></div>
-      case 'loading':         return <div style={{flex:1,overflowY:'auto'}}><LoadingStates /></div>
-      case 'error':           return <div style={{flex:1,overflowY:'auto'}}><ErrorStates onToast={showToast} /></div>
-      case 'success':         return <div style={{flex:1,overflowY:'auto'}}><SuccessStates onToast={showToast} /></div>
       default: return null
     }
   }
