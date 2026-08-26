@@ -216,7 +216,23 @@ function ProgressSidebar({ current, onGoto, completed }:{ current:number; onGoto
 }
 
 // ─── Onboarding Home ──────────────────────────────────────────────────────────
-function OnboardingHome({ onStart }:{ onStart:()=>void }) {
+type HomeStatus =
+  | { kind:'new' }
+  | { kind:'incomplete'; percent:number }
+  | { kind:'ready' }
+  | { kind:'submitted'; applicationStatus:string; submittedAt:string|null }
+
+const formatStatusLabel = (value:string) =>
+  value.replace(/_/g,' ').replace(/\b\w/g, char => char.toUpperCase())
+
+const APPLICATION_STATUS_COLOR:Record<string,string> = {
+  submitted:C.info,
+  under_review:C.primary,
+  approved:C.success,
+  rejected:C.error,
+}
+
+function OnboardingHome({ status, onPrimary }:{ status:HomeStatus; onPrimary:()=>void }) {
   const benefits = [
     { icon:'💰', title:'Earn LKR 800–2,500/hr',    desc:'Set your own rates and get paid weekly' },
     { icon:'🕐', title:'Flexible Schedule',          desc:'Choose when and where you work' },
@@ -233,6 +249,29 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
     { done:false, label:'Bank account for payouts' },
     { done:false, label:'Smartphone with internet access' },
   ]
+  const statusTitle =
+    status.kind==='new'        ? 'Registration not started' :
+    status.kind==='incomplete' ? 'Registration in progress' :
+    status.kind==='ready'      ? 'Ready to submit' :
+    formatStatusLabel(status.applicationStatus)
+
+  const statusColor =
+    status.kind==='new'        ? C.muted :
+    status.kind==='incomplete' ? C.primary :
+    status.kind==='ready'      ? C.accent :
+    APPLICATION_STATUS_COLOR[status.applicationStatus] ?? C.primary
+
+  const buttonLabel =
+    status.kind==='new'        ? 'Start Registration' :
+    status.kind==='incomplete' ? 'Continue Registration' :
+    status.kind==='ready'      ? 'Review & Submit' :
+    'View Application Status'
+
+  const formattedSubmittedDate =
+    status.kind==='submitted' && status.submittedAt
+      ? new Date(status.submittedAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })
+      : null
+
   return (
     <PageContainer maxWidth={1080} style={{ padding:'40px 36px 80px' }}>
       {/* Hero */}
@@ -257,6 +296,24 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
           </div>
         </div>
       </div>
+
+      {/* Application status */}
+      <Card style={{ padding:24, marginBottom:32, background:`linear-gradient(135deg,${statusColor}08,${statusColor}02)`, border:`1px solid ${statusColor}20` }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:20, flexWrap:'wrap' as const }}>
+          <div>
+            <p style={{ fontSize:11, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>Application Status</p>
+            <p style={{ fontSize:20, fontWeight:900, color:statusColor, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{statusTitle}</p>
+            {status.kind==='incomplete' && <p style={{ fontSize:13, color:C.muted }}>{status.percent}% complete</p>}
+            {status.kind==='submitted' && formattedSubmittedDate && <p style={{ fontSize:13, color:C.muted }}>Submitted {formattedSubmittedDate}</p>}
+          </div>
+          <Btn label={buttonLabel} onClick={onPrimary} />
+        </div>
+        {status.kind==='incomplete' && (
+          <div style={{ height:8, borderRadius:99, background:C.bg, overflow:'hidden', marginTop:18 }}>
+            <div style={{ width:`${status.percent}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
+          </div>
+        )}
+      </Card>
 
       {/* Benefits + Requirements */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:24, marginBottom:32 }} className="cao-2col">
@@ -300,10 +357,6 @@ function OnboardingHome({ onStart }:{ onStart:()=>void }) {
               </div>
             </div>
           </Card>
-
-          <div style={{ marginTop:24, display:'flex', flexDirection:'column', gap:10 }}>
-            <Btn label="Start Registration" onClick={onStart} />
-          </div>
         </div>
       </div>
     </PageContainer>
@@ -11823,6 +11876,7 @@ export default function CareAgentOnboarding() {
   const [editingFromReview, setEditingFromReview] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [progressLoading, setProgressLoading] = useState(true)
+  const [homeStatus, setHomeStatus] = useState<HomeStatus>({ kind:'new' })
 
   useEffect(() => {
     let cancelled = false
@@ -11855,6 +11909,19 @@ export default function CareAgentOnboarding() {
         ])
 
         if (cancelled) return
+
+        // ─────────────────────────────
+        // Already-submitted applications
+        // ─────────────────────────────
+        // The user still always lands on Onboarding Home — this only
+        // determines what that home screen shows and where its
+        // primary button routes to. `submitted` (session state) must
+        // stay false here — it only means "just submitted this session".
+        const applicationAlreadySubmitted =
+          agentDetails?.application_status === 'submitted' ||
+          agentDetails?.application_status === 'under_review' ||
+          agentDetails?.application_status === 'approved' ||
+          agentDetails?.application_status === 'rejected'
 
         const restoredCompleted =
           new Set<number>()
@@ -12084,6 +12151,30 @@ export default function CareAgentOnboarding() {
           setStep(11)
         }
 
+        // ─────────────────────────────
+        // Onboarding Home status
+        // ─────────────────────────────
+        // Onboarding Home is always shown on load; this decides which
+        // of the four status cards it renders and where its primary
+        // button routes to (the wizard `step` above is already set
+        // correctly for cases A/B/C).
+        if (applicationAlreadySubmitted) {
+          setHomeStatus({
+            kind:'submitted',
+            applicationStatus: agentDetails?.application_status ?? 'submitted',
+            submittedAt: agentDetails?.submitted_at ?? null
+          })
+        } else if (!firstIncompleteStep) {
+          setHomeStatus({ kind:'ready' })
+        } else if (restoredCompleted.size > 0) {
+          setHomeStatus({
+            kind:'incomplete',
+            percent: Math.round((restoredCompleted.size / 10) * 100)
+          })
+        } else {
+          setHomeStatus({ kind:'new' })
+        }
+
       } catch (error) {
 
         console.error(
@@ -12133,6 +12224,17 @@ export default function CareAgentOnboarding() {
     setStep(n)
   }
 
+  // `step` is already restored to the right place (1, the first
+  // incomplete step, or 11) by loadRegistrationProgress — this just
+  // decides which sub-view Home's primary button opens.
+  const handleHomePrimaryAction = () => {
+    if (homeStatus.kind==='submitted') {
+      setSub('status')
+    } else {
+      setSub('wizard')
+    }
+  }
+
   const renderStep = () => {
     if (submitted) return <ApplicationSubmitted onStatus={()=>setSub('status')} />
     switch(step) {
@@ -12177,7 +12279,7 @@ export default function CareAgentOnboarding() {
 
       {/* Main content */}
       <div style={{ flex:1, overflowY:'auto' }}>
-        {sub==='home'   && <OnboardingHome onStart={()=>{ setSub('wizard'); setStep(1) }} />}
+        {sub==='home'   && <OnboardingHome status={homeStatus} onPrimary={handleHomePrimaryAction} />}
         {sub==='wizard' && renderStep()}
         {sub==='status' && <ApplicationStatus />}
       </div>
