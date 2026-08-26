@@ -167,6 +167,7 @@ const APPLICATIONS: Application[] = [
 ]
 
 let CARE_REQUEST = {
+  beneficiaryId:'',
   title:'Home Wellness Care — Amara Fernando',
   service:'Hospital Companion + Medication Management',
   beneficiary:'Amara Fernando, 74 · Colombo 07',
@@ -1132,11 +1133,11 @@ export default function HiringNegotiation() {
       Object.assign(CARE_REQUEST, real)
       forceUpdate(n => n + 1)
     }).catch(console.error)
-    getApplicationsForRequest(id).then(loaded => {
+    getApplicationsForRequest(id, clientId).then(loaded => {
       setApps(loaded)
       if (loaded[0]) setSelectedId(loaded[0].id)
     }).catch(console.error)
-  }, [id])
+  }, [id, clientId])
 
   const selected = apps.find(a=>a.id===selectedId) ?? apps[0]
 
@@ -1152,7 +1153,7 @@ export default function HiringNegotiation() {
     const app: any = apps.find(a => a.id === selectedId)
     if (!app || !id) return
     try {
-      await hireApplication(selectedId, id, app.agentId, clientId, '')
+      await hireApplication(selectedId, id, app.agentId, clientId, CARE_REQUEST.beneficiaryId)
       setShowHireModal(false)
       setSubView('success')
     } catch (err) {

@@ -258,6 +258,7 @@ export async function getCareRequestDetail(id: string) {
 
   return {
     id: data.id,
+    beneficiaryId: data.beneficiary_id,
     title: data.title,
     service: data.service_type,
     beneficiary: data.beneficiaries ? `${data.beneficiaries.name}${data.beneficiaries.age ? ', ' + data.beneficiaries.age : ''}` : '',
@@ -270,7 +271,7 @@ export async function getCareRequestDetail(id: string) {
   }
 }
 
-export async function getApplicationsForRequest(careRequestId: string) {
+export async function getApplicationsForRequest(careRequestId: string, clientId: string) {
   const { data, error } = await supabase
     .from('applications')
     .select('*, profiles!agent_id(full_name, city, agent_details(*))')
@@ -279,11 +280,22 @@ export async function getApplicationsForRequest(careRequestId: string) {
 
   const agentIds = (data || []).map((row: any) => row.agent_id).filter(Boolean)
   let skillsByAgent: Record<string, string[]> = {}
+  let repeatCountByAgent: Record<string, number> = {}
   if (agentIds.length) {
     const { data: skillRows } = await supabase.from('agent_skills').select('agent_id, service_name').in('agent_id', agentIds)
     for (const s of skillRows || []) {
       if (!skillsByAgent[s.agent_id]) skillsByAgent[s.agent_id] = []
       skillsByAgent[s.agent_id].push(s.service_name)
+    }
+
+    const { data: pastBookings } = await supabase
+      .from('bookings')
+      .select('agent_id')
+      .eq('client_id', clientId)
+      .in('agent_id', agentIds)
+      .eq('status', 'completed')
+    for (const b of pastBookings || []) {
+      repeatCountByAgent[b.agent_id] = (repeatCountByAgent[b.agent_id] || 0) + 1
     }
   }
 
@@ -312,7 +324,7 @@ export async function getApplicationsForRequest(careRequestId: string) {
       trustScore: row.trust_score_snapshot || 0,
       coverLetter: row.cover_letter || '',
       notes: row.notes || '',
-      repeatClients: 0,
+      repeatClients: repeatCountByAgent[row.agent_id] || 0,
       matchScore: row.match_score || 0,
       agentId: row.agent_id,
     }
