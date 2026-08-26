@@ -1106,6 +1106,184 @@ export async function saveMyAgreements(
 
 
 
+// ─────────────────────────────────────────────────────────────────────────
+// Marketplace: care requests, applications, saved items, notifications
+// ─────────────────────────────────────────────────────────────────────────
+
+const CARE_REQUEST_SELECT =
+  "*, client:profiles!client_id(id, full_name, avatar_url), beneficiary:beneficiaries!beneficiary_id(id, name, preferred_name, age)"
+
+export async function getOpenCareRequests() {
+  // ─── TEMP DEBUG — remove once the empty Browse Jobs issue is diagnosed ───
+  const debugUser = await getCurrentUser()
+  console.log("[DEBUG getOpenCareRequests] current user:", debugUser)
+
+  const withBeneficiary = await supabase
+    .from("care_requests")
+    .select(CARE_REQUEST_SELECT)
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+  console.log("[DEBUG getOpenCareRequests] WITH beneficiary embed -> data:", withBeneficiary.data)
+  console.log("[DEBUG getOpenCareRequests] WITH beneficiary embed -> error:", withBeneficiary.error)
+
+  const withoutBeneficiary = await supabase
+    .from("care_requests")
+    .select("*, client:profiles!client_id(id, full_name, avatar_url)")
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+  console.log("[DEBUG getOpenCareRequests] WITHOUT beneficiary embed -> data:", withoutBeneficiary.data)
+  console.log("[DEBUG getOpenCareRequests] WITHOUT beneficiary embed -> error:", withoutBeneficiary.error)
+  // ─── END TEMP DEBUG ───
+
+  const { data, error } = withBeneficiary
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function applyToCareRequest(input: {
+  care_request_id: string
+  price: number
+  original_price?: number | null
+  duration?: string | null
+  cover_letter?: string | null
+  notes?: string | null
+}) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("applications")
+    .insert({
+      care_request_id: input.care_request_id,
+      agent_id: user.id,
+      price: input.price,
+      original_price: input.original_price ?? null,
+      duration: input.duration ?? null,
+      cover_letter: input.cover_letter ?? null,
+      notes: input.notes ?? null,
+      status: "applied",
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function getMyApplications() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("applications")
+    .select("*, care_request:care_requests(id, title, service_type, currency, client:profiles!client_id(full_name))")
+    .eq("agent_id", user.id)
+    .order("applied_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function getMySavedCareRequests() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("saved_items")
+    .select(`id, target_id, created_at, care_request:care_requests(${CARE_REQUEST_SELECT})`)
+    .eq("user_id", user.id)
+    .eq("target_type", "care_request")
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function saveCareRequest(careRequestId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("saved_items")
+    .insert({
+      user_id: user.id,
+      target_type: "care_request",
+      target_id: careRequestId,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function unsaveCareRequest(careRequestId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { error } = await supabase
+    .from("saved_items")
+    .delete()
+    .eq("user_id", user.id)
+    .eq("target_type", "care_request")
+    .eq("target_id", careRequestId)
+
+  if (error) {
+    throw error
+  }
+}
+
+export async function getMyNotifications() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
 export async function submitMyCareAgentApplication() {
   const user = await getCurrentUser()
 

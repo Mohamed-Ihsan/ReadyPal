@@ -1,4 +1,14 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import {
+  getMyProfile,
+  getOpenCareRequests,
+  getMySavedCareRequests,
+  saveCareRequest,
+  unsaveCareRequest,
+  applyToCareRequest,
+  getMyApplications,
+  getMyNotifications,
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -83,6 +93,34 @@ function SectionTitle({ title, action, onAction }:{ title:string; action?:string
   )
 }
 
+// ─── Real loading / empty / error states for marketplace pages ────────────────
+function LoadingCard({ label }:{ label:string }) {
+  return (
+    <div style={{ padding:'60px 28px', textAlign:'center' as const }}>
+      <p style={{ fontSize:13, color:C.muted }}>{label}</p>
+    </div>
+  )
+}
+
+function ErrorCard({ message, onRetry }:{ message:string; onRetry?:()=>void }) {
+  return (
+    <div style={{ padding:'60px 28px', textAlign:'center' as const, maxWidth:480, margin:'0 auto' }}>
+      <p style={{ fontSize:13, fontWeight:700, color:C.error, marginBottom:6 }}>{message}</p>
+      {onRetry&&<Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={onRetry} />}
+    </div>
+  )
+}
+
+function EmptyCard({ emoji, title, desc }:{ emoji:string; title:string; desc:string }) {
+  return (
+    <div style={{ padding:'60px 28px', textAlign:'center' as const, maxWidth:480, margin:'0 auto' }}>
+      <div style={{ fontSize:52, marginBottom:16 }}>{emoji}</div>
+      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{title}</h2>
+      <p style={{ fontSize:13, color:C.muted, lineHeight:1.7 }}>{desc}</p>
+    </div>
+  )
+}
+
 function SuccessToast({ msg }:{ msg:string }) {
   return (
     <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:999, display:'flex', alignItems:'center', gap:10, padding:'12px 22px', borderRadius:14, background:C.type, color:'#fff', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, boxShadow:'0 8px 28px rgba(0,0,0,0.22)', pointerEvents:'none', whiteSpace:'nowrap' as const }}>
@@ -92,26 +130,91 @@ function SuccessToast({ msg }:{ msg:string }) {
 }
 
 // ─── Job data ─────────────────────────────────────────────────────────────────
+// A `Job` is a UI-shaped projection of a real `care_requests` row (see
+// careRequestToJob below). Fields with no backing column in the current
+// schema are optional and simply omitted from the row — never faked.
 interface Job {
-  id:string; title:string; service:string; client:string; clientRating:number; clientJobs:number; clientVerified:boolean
-  beneficiary:string; beneficiaryAge:number; location:string; district:string; distance:string
-  date:string; duration:string; budget:number; urgent:boolean; featured:boolean; status:string
-  requirements:string[]; languages:string[]; tasks:string[]; notes:string; posted:string; match:number
-  attachments:number
+  id:string; title:string; service:string; client:string; clientRating?:number; clientJobs?:number; clientVerified?:boolean
+  beneficiary?:string; beneficiaryAge?:number; location:string; district:string
+  date:string; duration:string; budget:number; budgetMin?:number; currency:string; negotiable?:boolean
+  urgent:boolean; featured:boolean; status:string
+  requirements:string[]; languages:string[]; tasks:string[]; notes:string; posted:string; createdAt:string; match?:number
 }
-const JOBS: Job[] = [
-  { id:'JOB-001', title:'Hospital Appointment Assistance', service:'Hospital Companion', client:'Mohamed Ihsan', clientRating:4.8, clientJobs:12, clientVerified:true, beneficiary:'Nimal Perera', beneficiaryAge:74, location:'Colombo National Hospital, Col 10', district:'Colombo', distance:'3.2 km', date:'Tomorrow, 9:00 AM', duration:'4 hrs', budget:6000, urgent:true, featured:true, status:'open', requirements:['First Aid','Driving licence'], languages:['Sinhala','English'], tasks:['Collect beneficiary from home','Assist at registration','Support during consultation','Return home safely'], notes:'Beneficiary uses a walking aid and requires patient, gentle support.', posted:'2 hrs ago', match:98, attachments:2 },
-  { id:'JOB-002', title:'Medication Collection & Delivery', service:'Errand & Delivery', client:'Priya Fernando', clientRating:4.6, clientJobs:7, clientVerified:true, beneficiary:'Rukmini Fernando', beneficiaryAge:68, location:'Liberty Plaza, Col 03', district:'Colombo', distance:'4.8 km', date:'Today, 2:00 PM', duration:'1.5 hrs', budget:3500, urgent:false, featured:false, status:'open', requirements:['Experience with elderly'], languages:['Sinhala'], tasks:['Collect prescriptions from house','Visit pharmacy at Liberty Plaza','Return to beneficiary'], notes:'Straightforward task, no special medical requirements.', posted:'30 min ago', match:92, attachments:1 },
-  { id:'JOB-003', title:'Post-Surgery Home Care', service:'Home Care', client:'Chamari Dissanayake', clientRating:5.0, clientJobs:3, clientVerified:true, beneficiary:'Siripala Dissanayake', beneficiaryAge:79, location:'Malay Street, Col 02', district:'Colombo', distance:'6.1 km', date:'Sat, Jan 18, 9:00 AM', duration:'6 hrs', budget:9500, urgent:false, featured:true, status:'open', requirements:['First Aid','Wound care experience'], languages:['Sinhala','English'], tasks:['Morning hygiene assistance','Wound dressing check','Medication administration','Light meal preparation','Post-op exercise support'], notes:'Client recently had hip replacement. Handle with extreme care.', posted:'1 hr ago', match:85, attachments:3 },
-  { id:'JOB-004', title:'Wheelchair Assistance — Physiotherapy', service:'Medical Escort', client:'Fathima Rasheed', clientRating:4.9, clientJobs:18, clientVerified:true, beneficiary:'Hassan Rasheed', beneficiaryAge:82, location:'Lady Ridgeway Hospital, Col 08', district:'Colombo', distance:'7.4 km', date:'Mon, Jan 20, 10:30 AM', duration:'3 hrs', budget:5500, urgent:false, featured:false, status:'open', requirements:['Wheelchair handling','Patience'], languages:['Sinhala','Tamil','English'], tasks:['Wheelchair transfer','Hospital escort','Wait and assist during session','Return home'], notes:'Has mild dementia. Calm and reassuring manner essential.', posted:'5 hrs ago', match:78, attachments:0 },
-  { id:'JOB-005', title:'Home Wellness Visit & Light Housekeeping', service:'Wellness Visit', client:'Arjuna Wijesinghe', clientRating:4.7, clientJobs:9, clientVerified:false, beneficiary:'Lalitha Wijesinghe', beneficiaryAge:71, location:'Dehiwela', district:'Colombo', distance:'8.9 km', date:'Wed, Jan 22, 10:00 AM', duration:'5 hrs', budget:7000, urgent:false, featured:false, status:'open', requirements:['Cooking','House care'], languages:['Sinhala'], tasks:['Morning wellness check','Light cooking','Housekeeping','Companionship'], notes:'Family overseas. Beneficiary lives alone. Weekly recurring role available.', posted:'1 day ago', match:88, attachments:1 },
-  { id:'JOB-006', title:'Urgent Night Care Assistance', service:'Night Care', client:'Suresh Perera', clientRating:4.5, clientJobs:5, clientVerified:true, beneficiary:'Indrani Perera', beneficiaryAge:85, location:'Borella, Col 08', district:'Colombo', distance:'5.5 km', date:'Tonight, 8:00 PM', duration:'10 hrs', budget:12000, urgent:true, featured:false, status:'open', requirements:['Night shift experience','First Aid'], languages:['Sinhala','English'], tasks:['Evening routine','Night monitoring','Medication at midnight','Morning handover'], notes:'Client recovering from stroke. Highly experienced carer strongly preferred.', posted:'20 min ago', match:72, attachments:1 },
-  { id:'JOB-007', title:'Hospital Appointment — Kandy Teaching Hospital', service:'Hospital Companion', client:'Rohan Bandara', clientRating:4.4, clientJobs:4, clientVerified:false, beneficiary:'Soma Bandara', beneficiaryAge:69, location:'Kandy Teaching Hospital', district:'Kandy', distance:'115 km', date:'Fri, Jan 24, 8:00 AM', duration:'5 hrs', budget:8500, urgent:false, featured:false, status:'open', requirements:['Driving licence','Sinhala'], languages:['Sinhala'], tasks:['Travel to Kandy','Hospital escort','Support during appointment','Return'], notes:'Long distance — accommodation may be required. Client will cover travel expenses.', posted:'3 hrs ago', match:65, attachments:2 },
-  { id:'JOB-008', title:'Home Physiotherapy Support — Galle', service:'Physiotherapy Support', client:'Nirosha Jayawardena', clientRating:4.9, clientJobs:21, clientVerified:true, beneficiary:'Dayaratne Jayawardena', beneficiaryAge:77, location:'Galle Face Area, Galle', district:'Galle', distance:'120 km', date:'Sun, Jan 19, 11:00 AM', duration:'2 hrs', budget:4500, urgent:false, featured:false, status:'open', requirements:['Physiotherapy assistance'], languages:['Sinhala','English'], tasks:['Assist with guided exercises','Monitor comfort levels','Document progress'], notes:'Recurring weekly opportunity. Physio guidance will be given on first visit.', posted:'6 hrs ago', match:81, attachments:0 },
-]
+
+function formatRelativeTime(iso:string|null|undefined):string {
+  if(!iso) return ''
+  const then = new Date(iso).getTime()
+  if(Number.isNaN(then)) return ''
+  const minutes = Math.round((Date.now()-then)/60000)
+  if(minutes<1) return 'Just now'
+  if(minutes<60) return `${minutes} min ago`
+  const hours = Math.round(minutes/60)
+  if(hours<24) return `${hours} hr${hours===1?'':'s'} ago`
+  const days = Math.round(hours/24)
+  if(days<7) return `${days} day${days===1?'':'s'} ago`
+  return new Date(iso).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' })
+}
+
+function formatScheduleLabel(row:any):string {
+  const datePart = row.scheduled_date
+    ? new Date(row.scheduled_date).toLocaleDateString('en-GB',{ weekday:'short', day:'numeric', month:'short' })
+    : ''
+  const base = [datePart, row.scheduled_time].filter(Boolean).join(', ') || 'Schedule to be confirmed'
+  return row.recurring ? `${base} · Recurring${row.frequency?` (${row.frequency})`:''}` : base
+}
+
+function formatLocationLabel(row:any):string {
+  const line = [row.address1, row.address2].filter(Boolean).join(', ')
+  return line || row.city || row.province || 'Location to be confirmed'
+}
+
+// Maps a raw `care_requests` row (with embedded `client` profile and
+// `beneficiary` record) into the shape the existing Browse Jobs UI already
+// expects. Only non-sensitive beneficiary fields (preferred_name/name, age)
+// are surfaced — no NIC, medical notes, medications, emergency contacts, or
+// address. Fields with no source column (clientRating, clientJobs,
+// clientVerified, match) are intentionally left undefined — see the summary.
+function careRequestToJob(row:any): Job {
+  return {
+    id: row.id,
+    title: row.title,
+    service: row.service_type,
+    client: row.client?.full_name ?? 'Client',
+    beneficiary: row.beneficiary?.preferred_name ?? row.beneficiary?.name ?? undefined,
+    beneficiaryAge: row.beneficiary?.age ?? undefined,
+    location: formatLocationLabel(row),
+    district: row.city ?? row.province ?? '',
+    date: formatScheduleLabel(row),
+    duration: row.duration ?? '',
+    budget: row.budget_max ?? row.budget_min ?? 0,
+    budgetMin: row.budget_min ?? undefined,
+    currency: row.currency ?? 'LKR',
+    negotiable: row.negotiable ?? false,
+    urgent: !!row.urgent,
+    featured: !!row.featured,
+    status: row.status,
+    requirements: row.required_skills ?? [],
+    languages: row.languages ?? [],
+    tasks: row.tasks ?? [],
+    notes: row.instructions ?? '',
+    posted: formatRelativeTime(row.created_at),
+    createdAt: row.created_at,
+  }
+}
+
+function formatStatusLabel(status:string):string {
+  return status.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase())
+}
+
+function formatBudget(job:Job):string {
+  if(job.budgetMin!=null && job.budgetMin!==job.budget) {
+    return `${job.currency} ${job.budgetMin.toLocaleString()}–${job.budget.toLocaleString()}`
+  }
+  return `${job.currency} ${job.budget.toLocaleString()}`
+}
 
 const STATUS_COLORS: Record<string,string> = {
-  open:'#22C55E', applied:C.primary, shortlisted:C.warning, closed:C.muted, filled:'#8B5CF6', expired:C.error, urgent:C.error, featured:C.accent
+  open:'#22C55E', published:'#22C55E', applied:C.primary, shortlisted:C.warning, closed:C.muted, filled:'#8B5CF6', expired:C.error, urgent:C.error, featured:C.accent
 }
 
 // ─── Job Card ─────────────────────────────────────────────────────────────────
@@ -131,11 +234,11 @@ function JobCard({ job, saved, onSave, onView, onApply, compact=false }:{
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const, marginBottom:6 }}>
               {job.urgent&&<Bdg label="Urgent" color={C.error} dot />}
               {job.featured&&<Bdg label="Featured" color={C.accent} />}
-              <Bdg label={`${job.match}% match`} color={job.match>=90?C.success:job.match>=75?C.primary:C.warning} />
+              {job.match!=null&&<Bdg label={`${job.match}% match`} color={job.match>=90?C.success:job.match>=75?C.primary:C.warning} />}
             </div>
             <h3 onClick={onView} style={{ fontSize:compact?13:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', cursor:'pointer', marginBottom:3, lineHeight:1.3 }}
               onMouseOver={e=>(e.currentTarget.style.color=C.primary)} onMouseOut={e=>(e.currentTarget.style.color=C.type)}>{job.title}</h3>
-            <p style={{ fontSize:12, color:C.muted }}>{job.service} · {job.beneficiaryAge}yr beneficiary</p>
+            <p style={{ fontSize:12, color:C.muted }}>{job.service}{job.beneficiaryAge!=null&&` · ${job.beneficiaryAge}yr beneficiary`}</p>
           </div>
           <div style={{ display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
             <button onClick={onSave} style={{ width:32, height:32, borderRadius:9, border:`1.5px solid ${saved?C.error:C.border}`, background:saved?`${C.error}08`:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:saved?C.error:C.muted, transition:'all 0.15s' }}>
@@ -174,8 +277,8 @@ function JobCard({ job, saved, onSave, onView, onApply, compact=false }:{
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingTop:12, borderTop:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
             <div>
-              <p style={{ fontSize:16, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>LKR {job.budget.toLocaleString()}</p>
-              <p style={{ fontSize:10, color:C.muted }}>{job.distance} · {job.posted}</p>
+              <p style={{ fontSize:16, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{formatBudget(job)}</p>
+              <p style={{ fontSize:10, color:C.muted }}>{job.posted}</p>
             </div>
             {job.clientVerified&&<span style={{ display:'flex', color:C.primary, transform:'scale(0.9)' }}>{I.shield}</span>}
           </div>
@@ -212,7 +315,7 @@ function FilterPanel({ open, onClose, filters, setFilters }:{
         <div style={{ padding:'20px 24px 16px', borderBottom:`1px solid ${C.border}`, display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top:0, background:C.surface, zIndex:1 }}>
           <h3 style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Filters</h3>
           <div style={{ display:'flex', gap:8 }}>
-            <Btn label="Clear All" variant="ghost" small onClick={()=>setLocal({ services:[], districts:[], schedules:[], radius:50, minBudget:0, maxBudget:20000, verified:false, urgent:false })} />
+            <Btn label="Clear All" variant="ghost" small onClick={()=>setLocal({ services:[], districts:[], schedules:[], radius:50, minBudget:0, maxBudget:20000, urgent:false })} />
             <button onClick={onClose} style={{ width:28, height:28, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}><span style={{display:'flex'}}>{I.close}</span></button>
           </div>
         </div>
@@ -263,7 +366,10 @@ function FilterPanel({ open, onClose, filters, setFilters }:{
             <input type="range" min={0} max={20000} step={500} value={local.maxBudget} onChange={e=>setLocal(f=>({...f,maxBudget:+e.target.value}))} style={{ width:'100%', accentColor:C.primary, cursor:'pointer' }} />
           </div>
 
-          {/* Travel Radius */}
+          {/* Travel Radius — UI/local state only; not yet backed by
+              location coordinates in care_requests, so it does not
+              filter results against real data yet. Pending DB support
+              (see Maximum Travel Distance follow-up on onboarding). */}
           <div style={{ padding:'18px 0', borderBottom:`1px solid ${C.border}` }}>
             <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
               <p style={{ fontSize:12, fontWeight:800, color:C.type }}>Travel Radius</p>
@@ -275,7 +381,6 @@ function FilterPanel({ open, onClose, filters, setFilters }:{
           {/* Toggles */}
           <div style={{ padding:'18px 0' }}>
             {[
-              { l:'Verified Clients Only', k:'verified' as const },
               { l:'Emergency Requests',    k:'urgent' as const },
             ].map(t=>(
               <div key={t.k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
@@ -298,12 +403,10 @@ function FilterPanel({ open, onClose, filters, setFilters }:{
 }
 
 // ─── Map View ─────────────────────────────────────────────────────────────────
-function MapView({ jobs, onSelect, selected }:{ jobs:Job[]; onSelect:(id:string)=>void; selected:string|null }) {
-  const pins = [
-    {id:'JOB-001',x:42,y:52},{id:'JOB-002',x:55,y:44},{id:'JOB-003',x:38,y:48},
-    {id:'JOB-004',x:60,y:57},{id:'JOB-005',x:70,y:65},{id:'JOB-006',x:48,y:60},
-    {id:'JOB-007',x:20,y:30},{id:'JOB-008',x:75,y:75},
-  ]
+// care_requests has no location coordinates yet, so individual job pins
+// can't be plotted truthfully. This keeps the map chrome/toggle in place
+// as a clearly-labelled placeholder rather than faking pin positions.
+function MapView({ jobs }:{ jobs:Job[] }) {
   return (
     <div style={{ position:'relative', width:'100%', height:'100%', background:`linear-gradient(135deg,${C.bg},#DCE8EA)`, borderRadius:0, overflow:'hidden' }}>
       {/* Decorative grid */}
@@ -317,30 +420,11 @@ function MapView({ jobs, onSelect, selected }:{ jobs:Job[]; onSelect:(id:string)
       <div style={{ position:'absolute', top:'48%', left:'45%', transform:'translate(-50%,-50%)', zIndex:5 }}>
         <div style={{ width:16, height:16, borderRadius:'50%', background:C.primary, boxShadow:`0 0 0 6px ${C.primary}30` }} />
       </div>
-      {/* Job pins */}
-      {pins.map(p=>{
-        const job = jobs.find(j=>j.id===p.id)
-        if(!job) return null
-        const isSel = selected===p.id
-        return (
-          <button key={p.id} onClick={()=>onSelect(p.id)}
-            style={{ position:'absolute', left:`${p.x}%`, top:`${p.y}%`, transform:'translate(-50%,-100%)', border:'none', background:'transparent', cursor:'pointer', zIndex:isSel?10:4 }}>
-            <div style={{ background:isSel?C.accent:job.urgent?C.error:C.primary, color:'#fff', borderRadius:`8px 8px 2px 2px`, padding:'5px 9px', fontSize:10, fontWeight:800, boxShadow:`0 3px 12px ${isSel?C.accent:C.primary}60`, whiteSpace:'nowrap' as const, transform:isSel?'scale(1.1)':undefined, transition:'all 0.15s', fontFamily:'Manrope,sans-serif' }}>
-              LKR {(job.budget/1000).toFixed(0)}K
-            </div>
-            <div style={{ width:8, height:8, background:isSel?C.accent:job.urgent?C.error:C.primary, transform:'rotate(45deg)', margin:'-4px auto 0', borderRadius:2 }} />
-          </button>
-        )
-      })}
-      {/* Map legend */}
-      <div style={{ position:'absolute', bottom:14, left:14, background:'rgba(255,255,255,0.92)', borderRadius:10, padding:'8px 14px', backdropFilter:'blur(8px)', border:`1px solid ${C.border}` }}>
-        <div style={{ display:'flex', gap:12 }}>
-          {[{col:C.primary,l:'Available'},{col:C.error,l:'Urgent'},{col:C.accent,l:'Selected'}].map((l,i)=>(
-            <div key={i} style={{ display:'flex', gap:4, alignItems:'center' }}>
-              <div style={{ width:8, height:8, borderRadius:2, background:l.col }} />
-              <p style={{ fontSize:10, color:C.type }}>{l.l}</p>
-            </div>
-          ))}
+      {/* Placeholder message */}
+      <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', padding:24, zIndex:6 }}>
+        <div style={{ textAlign:'center' as const, background:'rgba(255,255,255,0.92)', borderRadius:14, padding:'20px 24px', backdropFilter:'blur(8px)', border:`1px solid ${C.border}`, maxWidth:280 }}>
+          <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Map view coming soon</p>
+          <p style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>Location coordinates aren't part of the current job data yet, so pins can't be plotted. Use the list on the right to browse {jobs.length} job{jobs.length===1?'':'s'}.</p>
         </div>
       </div>
       <div style={{ position:'absolute', top:14, right:14, background:'rgba(255,255,255,0.92)', borderRadius:8, padding:'6px 12px', backdropFilter:'blur(8px)', border:`1px solid ${C.border}` }}>
@@ -368,8 +452,8 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const, marginBottom:10 }}>
               {job.urgent&&<Bdg label="Urgent" color={C.error} dot />}
               {job.featured&&<Bdg label="Featured" color={C.accent} />}
-              <Bdg label="Open" color={C.success} dot />
-              <Bdg label={`${job.match}% match`} color={job.match>=90?C.success:C.primary} />
+              <Bdg label={formatStatusLabel(job.status)} color={STATUS_COLORS[job.status] ?? C.primary} dot />
+              {job.match!=null&&<Bdg label={`${job.match}% match`} color={job.match>=90?C.success:C.primary} />}
             </div>
             <h1 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6, lineHeight:1.2 }}>{job.title}</h1>
             <p style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{job.service} · Posted {job.posted} · Ref: {job.id}</p>
@@ -383,8 +467,8 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
             </div>
           </div>
           <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-            <p style={{ fontSize:28, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>LKR {job.budget.toLocaleString()}</p>
-            <p style={{ fontSize:11, color:C.muted, marginBottom:10 }}>{job.distance} away</p>
+            <p style={{ fontSize:28, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{formatBudget(job)}</p>
+            {job.negotiable&&<p style={{ fontSize:11, color:C.muted, marginBottom:10 }}>Negotiable</p>}
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
               <button onClick={onSave} style={{ padding:'8px 14px', borderRadius:10, border:`1.5px solid ${saved?C.error:C.border}`, background:saved?`${C.error}08`:'transparent', cursor:'pointer', color:saved?C.error:C.muted, display:'flex', gap:5, alignItems:'center', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>
                 {saved?I.heartFill:I.heart}{saved?'Saved':'Save'}
@@ -447,15 +531,15 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
             <div style={{ marginBottom:12 }}>
               <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
                 <p style={{ fontSize:12, color:C.sub }}>Service fee</p>
-                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>LKR {Math.round(job.budget * 0.92).toLocaleString()}</p>
+                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{job.currency} {Math.round(job.budget * 0.92).toLocaleString()}</p>
               </div>
               <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
                 <p style={{ fontSize:12, color:C.sub }}>Platform fee (8%)</p>
-                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>LKR {Math.round(job.budget * 0.08).toLocaleString()}</p>
+                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{job.currency} {Math.round(job.budget * 0.08).toLocaleString()}</p>
               </div>
               <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0 0' }}>
                 <p style={{ fontSize:13, fontWeight:800, color:C.type }}>You receive</p>
-                <p style={{ fontSize:15, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {Math.round(job.budget * 0.92).toLocaleString()}</p>
+                <p style={{ fontSize:15, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{job.currency} {Math.round(job.budget * 0.92).toLocaleString()}</p>
               </div>
             </div>
           </Card>
@@ -496,17 +580,19 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
                   <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{job.client}</p>
                   {job.clientVerified&&<span style={{ color:C.primary, display:'flex', transform:'scale(0.85)' }}>{I.shield}</span>}
                 </div>
-                <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-                  <span style={{ color:C.warning, display:'flex', transform:'scale(0.9)' }}>{I.star}</span>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{job.clientRating}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>· {job.clientJobs} jobs posted</p>
-                </div>
+                {job.clientRating!=null&&(
+                  <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+                    <span style={{ color:C.warning, display:'flex', transform:'scale(0.9)' }}>{I.star}</span>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{job.clientRating}</p>
+                    {job.clientJobs!=null&&<p style={{ fontSize:11, color:C.muted }}>· {job.clientJobs} jobs posted</p>}
+                  </div>
+                )}
               </div>
             </div>
             {clientOpen&&(
               <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12 }}>
                 {[
-                  {l:'Response Rate',v:'97%'},{l:'Repeat Hires',v:'64%'},{l:'Location',v:job.district}
+                  {l:'Location',v:job.district || '—'}
                 ].map((r,i)=>(
                   <div key={i} style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
                     <p style={{ fontSize:11, color:C.muted }}>{r.l}</p>
@@ -517,17 +603,21 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
             )}
           </Card>
 
-          {/* Beneficiary */}
-          <Card style={{ padding:22 }}>
-            <SectionTitle title="Beneficiary Summary" />
-            <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-              <div style={{ width:40, height:40, borderRadius:'50%', background:`${C.accent}18`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>👴</div>
-              <div>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{job.beneficiary}</p>
-                <p style={{ fontSize:11, color:C.muted }}>Age {job.beneficiaryAge} · {job.district}</p>
+          {/* Beneficiary — hidden until the beneficiaries table/fields
+              are confirmed (see summary); job.beneficiary is currently
+              never populated by careRequestToJob. */}
+          {job.beneficiary&&(
+            <Card style={{ padding:22 }}>
+              <SectionTitle title="Beneficiary Summary" />
+              <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                <div style={{ width:40, height:40, borderRadius:'50%', background:`${C.accent}18`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>👴</div>
+                <div>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{job.beneficiary}</p>
+                  <p style={{ fontSize:11, color:C.muted }}>{job.beneficiaryAge!=null&&`Age ${job.beneficiaryAge} · `}{job.district}</p>
+                </div>
               </div>
-            </div>
-          </Card>
+            </Card>
+          )}
         </div>
       </div>
 
@@ -543,18 +633,21 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
 }
 
 // ─── Application Wizard ───────────────────────────────────────────────────────
-interface FilterState { services:string[]; districts:string[]; schedules:string[]; radius:number; minBudget:number; maxBudget:number; verified:boolean; urgent:boolean }
+interface FilterState { services:string[]; districts:string[]; schedules:string[]; radius:number; minBudget:number; maxBudget:number; urgent:boolean }
 
-function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; onCancel:()=>void }) {
+function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:(applicationId:string)=>void; onCancel:()=>void }) {
   const [step, setStep] = useState(1)
   const [cover, setCover] = useState('')
   const [availability, setAvailability] = useState(true)
   const [priceMode, setPriceMode] = useState<'accept'|'counter'>('accept')
   const [counter, setCounter] = useState(job.budget.toString())
   const TOTAL = 5
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const careRecipient = job.beneficiary ?? 'the person in your care'
   const templates = [
-    "Dear "+job.client+", I am Kasun Perera, an experienced care professional based in Colombo. I have extensive experience in hospital companion services and am familiar with Colombo National Hospital procedures. I would be honoured to assist "+job.beneficiary+" and ensure the appointment runs smoothly. My approach is patient, gentle, and reassuring.",
-    "I am Kasun Perera, a verified ReadyPal Care Agent with a proven track record in hospital and medical escort services. I have First Aid certification and am comfortable supporting elderly clients with mobility needs. I look forward to supporting "+job.beneficiary+" through this appointment.",
+    "Dear "+job.client+", I am an experienced care professional and would be honoured to support "+careRecipient+" with this "+job.service.toLowerCase()+" request. My approach is patient, gentle, and reassuring.",
+    "I am a verified ReadyPal Care Agent with a proven track record in "+job.service.toLowerCase()+" services. I look forward to supporting "+careRecipient+" with this request.",
   ]
   const steps = ['Introduction','Availability','Pricing','Experience','Review']
 
@@ -619,19 +712,18 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; o
             </button>
           </div>
           <div style={{ padding:'14px', borderRadius:12, background:C.bg, border:`1px solid ${C.border}` }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:6 }}>Travel confirmation</p>
+            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:6 }}>Location</p>
             <div style={{ display:'flex', gap:8, alignItems:'center' }}>
               <span style={{color:C.primary,display:'flex'}}>{I.pin}</span>
-              <p style={{ fontSize:13, color:C.type }}>{job.location} — {job.distance} from your area</p>
+              <p style={{ fontSize:13, color:C.type }}>{job.location}</p>
             </div>
-            <p style={{ fontSize:12, color:C.muted, marginTop:6 }}>Estimated arrival with 10 min buffer: <strong style={{color:C.type}}>8:50 AM</strong></p>
           </div>
         </Card>
       )}
       {step===3&&(
         <Card style={{ padding:24 }}>
           <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Pricing</h3>
-          <p style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Client offered: <strong style={{color:C.success}}>LKR {job.budget.toLocaleString()}</strong></p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:18 }}>Client offered: <strong style={{color:C.success}}>{formatBudget(job)}</strong></p>
           <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:18 }}>
             {(['accept','counter'] as const).map(m=>(
               <button key={m} onClick={()=>setPriceMode(m)}
@@ -640,7 +732,7 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; o
                   {priceMode===m&&<div style={{ width:7, height:7, borderRadius:'50%', background:'#fff' }} />}
                 </div>
                 <div>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{m==='accept'?`Accept LKR ${job.budget.toLocaleString()}`:'Submit Counter Offer'}</p>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{m==='accept'?`Accept ${formatBudget(job)}`:'Submit Counter Offer'}</p>
                   <p style={{ fontSize:11, color:C.muted }}>{m==='accept'?'Proceed at the offered amount':'Propose a different amount'}</p>
                 </div>
               </button>
@@ -648,7 +740,7 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; o
           </div>
           {priceMode==='counter'&&(
             <div style={{ padding:'16px', borderRadius:12, border:`1.5px solid ${C.border}`, background:C.bg }}>
-              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8 }}>Your Counter Offer (LKR)</p>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8 }}>Your Counter Offer ({job.currency})</p>
               <input type="number" value={counter} onChange={e=>setCounter(e.target.value)}
                 style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:14, fontWeight:700, color:C.type, background:'#fff', outline:'none', boxSizing:'border-box' as const }} />
               <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>Client may accept, negotiate, or decline your counter offer.</p>
@@ -670,14 +762,6 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; o
                 style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.6 }} />
             </div>
           ))}
-          <div>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8 }}>Your Certifications</p>
-            <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const }}>
-              {['First Aid (Verified)','Hospital Companion (Verified)','Driving Licence'].map((c,i)=>(
-                <span key={i} style={{ padding:'5px 11px', borderRadius:99, fontSize:11, fontWeight:700, background:`${C.success}10`, color:C.success, border:`1px solid ${C.success}30` }}>✓ {c}</span>
-              ))}
-            </div>
-          </div>
         </Card>
       )}
       {step===5&&(
@@ -686,7 +770,7 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; o
           <div style={{ display:'flex', flexDirection:'column', gap:12, marginBottom:20 }}>
             {[
               {l:'Job',v:job.title},{l:'Client',v:job.client},{l:'Date',v:job.date},
-              {l:'Duration',v:job.duration},{l:'Your Rate',v:`LKR ${priceMode==='accept'?job.budget.toLocaleString():parseInt(counter).toLocaleString()}`},
+              {l:'Duration',v:job.duration},{l:'Your Rate',v:priceMode==='accept'?formatBudget(job):`${job.currency} ${(parseInt(counter)||0).toLocaleString()}`},
               {l:'Cover Letter',v:cover?'Written ✓':'Not provided ⚠'},
             ].map((r,i)=>(
               <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'10px 0', borderBottom:i<5?`1px solid ${C.border}`:'none' }}>
@@ -695,32 +779,51 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:()=>void; o
               </div>
             ))}
           </div>
-          {/* Estimated match score */}
-          <div style={{ padding:'16px', borderRadius:12, background:`linear-gradient(135deg,${C.primary}08,${C.success}06)`, border:`1.5px solid ${C.primary}20`, marginBottom:16 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-              <p style={{ fontSize:12, fontWeight:700, color:C.primary }}>Estimated Match Score</p>
-              <p style={{ fontSize:22, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{job.match}%</p>
+          {submitError&&(
+            <div style={{ padding:'12px 14px', borderRadius:10, background:`${C.error}08`, border:`1px solid ${C.error}30`, color:C.error, fontSize:12, fontWeight:600, marginBottom:16 }}>
+              {submitError}
             </div>
-            <div style={{ height:6, borderRadius:99, background:`${C.primary}15`, overflow:'hidden' }}>
-              <div style={{ width:`${job.match}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99 }} />
-            </div>
-            <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>Based on your profile, certifications, and location</p>
-          </div>
+          )}
         </Card>
       )}
 
       {/* Navigation */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:20 }}>
-        <Btn label={step===1?'Cancel':'Back'} variant="ghost" onClick={()=>step===1?onCancel():setStep(s=>s-1)} />
-        <Btn label={step===TOTAL?'Submit Application':'Continue'} icon={step===TOTAL?I.check:undefined} onClick={()=>step===TOTAL?onSuccess():setStep(s=>s+1)} disabled={step===1&&cover.length<20} />
+        <Btn label={step===1?'Cancel':'Back'} variant="ghost" onClick={()=>step===1?onCancel():setStep(s=>s-1)} disabled={submitting} />
+        <Btn
+          label={step===TOTAL?(submitting?'Submitting...':'Submit Application'):'Continue'}
+          icon={step===TOTAL?I.check:undefined}
+          disabled={(step===1&&cover.length<20)||submitting}
+          onClick={async ()=>{
+            if(step!==TOTAL){ setStep(s=>s+1); return }
+            try {
+              setSubmitting(true)
+              setSubmitError('')
+              const price = priceMode==='accept' ? job.budget : (parseInt(counter)||0)
+              const created = await applyToCareRequest({
+                care_request_id: job.id,
+                price,
+                original_price: job.budget,
+                duration: job.duration,
+                cover_letter: cover || null,
+                notes: null,
+              })
+              onSuccess(created.id)
+            } catch(error) {
+              console.error('Failed to submit application:', error)
+              setSubmitError(error instanceof Error ? error.message : 'Failed to submit application. Please try again.')
+            } finally {
+              setSubmitting(false)
+            }
+          }}
+        />
       </div>
     </div>
   )
 }
 
 // ─── Application Success ──────────────────────────────────────────────────────
-function AppSuccess({ job, onBack }:{ job:Job; onBack:()=>void }) {
-  const ref = `RP-APP-2025-${Math.floor(10000+Math.random()*90000)}`
+function AppSuccess({ job, applicationId, onBack }:{ job:Job; applicationId?:string; onBack:()=>void }) {
   return (
     <div style={{ maxWidth:580, margin:'0 auto', padding:'60px 28px', textAlign:'center' as const }}>
       <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${C.success},${C.primary})`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 24px', boxShadow:`0 12px 36px ${C.success}40` }}>
@@ -730,11 +833,10 @@ function AppSuccess({ job, onBack }:{ job:Job; onBack:()=>void }) {
       <p style={{ fontSize:14, color:C.muted, marginBottom:28, lineHeight:1.7 }}>Your application for <strong style={{color:C.type}}>{job.title}</strong> has been sent to {job.client}.</p>
       <Card style={{ padding:24, marginBottom:24, textAlign:'left' as const }}>
         {[
-          {l:'Reference Number', v:ref, accent:true},
+          ...(applicationId ? [{l:'Reference Number', v:applicationId.slice(0,8).toUpperCase(), accent:true}] : []),
           {l:'Job',v:job.title},{l:'Client',v:job.client},
-          {l:'Expected Response',v:'24–48 hours'},
-        ].map((r,i)=>(
-          <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'9px 0', borderBottom:i<3?`1px solid ${C.border}`:'none' }}>
+        ].map((r,i,arr)=>(
+          <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'9px 0', borderBottom:i<arr.length-1?`1px solid ${C.border}`:'none' }}>
             <p style={{ fontSize:12, color:C.muted }}>{r.l}</p>
             <p style={{ fontSize:12, fontWeight:800, color:(r as any).accent?C.primary:C.type }}>{r.v}</p>
           </div>
@@ -742,7 +844,7 @@ function AppSuccess({ job, onBack }:{ job:Job; onBack:()=>void }) {
       </Card>
       <Card style={{ padding:20, marginBottom:24, textAlign:'left' as const, background:`${C.info}04`, border:`1.5px solid ${C.info}20` }}>
         <p style={{ fontSize:12, fontWeight:700, color:C.info, marginBottom:10 }}>What happens next</p>
-        {['Client reviews your application','ReadyPal notifies you of the decision','Confirm final schedule if accepted','Complete the job and earn LKR '+Math.round(job.budget*.92).toLocaleString()].map((s,i)=>(
+        {['Client reviews your application','ReadyPal notifies you of the decision','Confirm final schedule if accepted','Complete the job and earn '+job.currency+' '+Math.round(job.budget*.92).toLocaleString()].map((s,i)=>(
           <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', marginBottom:8 }}>
             <div style={{ width:20, height:20, borderRadius:'50%', background:`${C.info}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:900, color:C.info, flexShrink:0 }}>{i+1}</div>
             <p style={{ fontSize:12, color:C.sub, paddingTop:2 }}>{s}</p>
@@ -758,36 +860,26 @@ function AppSuccess({ job, onBack }:{ job:Job; onBack:()=>void }) {
 }
 
 // ─── Saved Jobs ───────────────────────────────────────────────────────────────
-function SavedJobs({ jobs, saved, onSave, onView, onApply }:{ jobs:Job[]; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void }) {
-  const savedJobs = jobs.filter(j=>saved.has(j.id))
-  if(savedJobs.length===0) return (
-    <div style={{ padding:'60px 28px', textAlign:'center' as const, maxWidth:480, margin:'0 auto' }}>
-      <div style={{ fontSize:52, marginBottom:16 }}>🔖</div>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>No Saved Jobs</h2>
-      <p style={{ fontSize:13, color:C.muted, lineHeight:1.7 }}>Tap the heart icon on any job to save it for later. Your shortlist will appear here.</p>
-    </div>
-  )
+function SavedJobs({ jobs, loading, error, saved, onSave, onView, onApply }:{
+  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
+}) {
+  if(loading) return <LoadingCard label="Loading your saved jobs…" />
+  if(error) return <ErrorCard message={error} />
+  if(jobs.length===0) return <EmptyCard emoji="🔖" title="No Saved Jobs" desc="Tap the heart icon on any job to save it for later. Your shortlist will appear here." />
   return (
     <div style={{ padding:'28px 28px 60px', maxWidth:760, margin:'0 auto' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
         <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Saved Jobs</h2>
-        <Bdg label={`${savedJobs.length} saved`} color={C.primary} />
+        <Bdg label={`${jobs.length} saved`} color={C.primary} />
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {savedJobs.map(j=><JobCard key={j.id} job={j} saved onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} />)}
+        {jobs.map(j=><JobCard key={j.id} job={j} saved={saved.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} />)}
       </div>
     </div>
   )
 }
 
 // ─── Application History ──────────────────────────────────────────────────────
-const APP_HISTORY = [
-  { job:'Hospital Appointment Assistance', client:'Mohamed Ihsan', date:'15 Jan 2025', status:'accepted',    amount:6000, ref:'RP-APP-2025-08741' },
-  { job:'Home Care',                        client:'Priya Fernando',date:'10 Jan 2025', status:'shortlisted', amount:4800, ref:'RP-APP-2025-08695' },
-  { job:'Medication Collection',            client:'Nirosha J.',   date:'05 Jan 2025', status:'applied',     amount:3500, ref:'RP-APP-2025-08621' },
-  { job:'Night Care Assistance',            client:'Suresh Perera', date:'28 Dec 2024', status:'rejected',   amount:12000, ref:'RP-APP-2024-08540' },
-  { job:'Post-Surgery Care',                client:'Chamari D.',   date:'20 Dec 2024', status:'withdrawn',   amount:9500, ref:'RP-APP-2024-08420' },
-]
 const HIST_STATUS: Record<string,{color:string;label:string}> = {
   accepted:   {color:C.success, label:'Accepted'},
   shortlisted:{color:C.warning, label:'Shortlisted'},
@@ -796,38 +888,82 @@ const HIST_STATUS: Record<string,{color:string;label:string}> = {
   withdrawn:  {color:C.muted,   label:'Withdrawn'},
   negotiating:{color:C.accent,  label:'Negotiating'},
 }
+// Fallback for any applications.status value not in HIST_STATUS above —
+// keeps this resilient if the real status enum differs.
+function histStatusMeta(status:string) {
+  return HIST_STATUS[status] ?? { color:C.muted, label:formatStatusLabel(status) }
+}
+
 function AppHistory() {
+  const [items, setItems] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError('')
+        const data = await getMyApplications()
+        if(!cancelled) setItems(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load applications:', err)
+        setError("We couldn't load your applications. Please try again.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  if(loading) return <LoadingCard label="Loading your applications…" />
+  if(error) return <ErrorCard message={error} />
+  if(items.length===0) return <EmptyCard emoji="📋" title="No Applications Yet" desc="You have not applied to any jobs. Start browsing to find your next opportunity." />
+
   return (
     <div style={{ padding:'28px 28px 60px', maxWidth:700, margin:'0 auto' }}>
       <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Application History</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>5 applications · Track your job application pipeline</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>{items.length} application{items.length===1?'':'s'} · Track your job application pipeline</p>
       <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {APP_HISTORY.map((a,i)=>(
-          <Card key={i} style={{ padding:20 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:10 }}>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:5 }}>
-                  <h3 style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>{a.job}</h3>
-                  <Bdg label={HIST_STATUS[a.status].label} color={HIST_STATUS[a.status].color} dot />
+        {items.map((a:any)=>{
+          const meta = histStatusMeta(a.status)
+          const amount = a.price ?? a.original_price
+          return (
+            <Card key={a.id} style={{ padding:20 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:10 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:5 }}>
+                    <h3 style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.title ?? 'Care request'}</h3>
+                    <Bdg label={meta.label} color={meta.color} dot />
+                  </div>
+                  <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{a.care_request?.client?.full_name ?? 'Client'}{a.applied_at&&` · ${formatRelativeTime(a.applied_at)}`}</p>
+                  <p style={{ fontSize:10, color:C.muted }}>Ref: {String(a.id).slice(0,8).toUpperCase()}</p>
                 </div>
-                <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{a.client} · {a.date}</p>
-                <p style={{ fontSize:10, color:C.muted }}>Ref: {a.ref}</p>
+                {amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.currency ?? 'LKR'} {Number(amount).toLocaleString()}</p>}
               </div>
-              <p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {a.amount.toLocaleString()}</p>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          )
+        })}
       </div>
     </div>
   )
 }
 
 // ─── Recommendations ──────────────────────────────────────────────────────────
-function Recommendations({ jobs, saved, onSave, onView, onApply }:{ jobs:Job[]; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void }) {
+function Recommendations({ jobs, loading, error, saved, onSave, onView, onApply }:{
+  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
+}) {
+  if(loading) return <LoadingCard label="Loading recommendations…" />
+  if(error) return <ErrorCard message={error} />
+  if(jobs.length===0) return <EmptyCard emoji="💼" title="No Jobs Available" desc="There are no open care requests right now. Check back soon." />
+
+  // Real, non-fabricated categories only — no invented match %/distance.
   const cats = [
-    { label:'Best Match',        jobs:jobs.filter(j=>j.match>=90) },
+    { label:'Featured',          jobs:jobs.filter(j=>j.featured) },
     { label:'Highest Paying',    jobs:[...jobs].sort((a,b)=>b.budget-a.budget).slice(0,3) },
-    { label:'Nearby',            jobs:jobs.filter(j=>parseFloat(j.distance)<7) },
     { label:'Urgent',            jobs:jobs.filter(j=>j.urgent) },
   ]
   return (
@@ -846,84 +982,122 @@ function Recommendations({ jobs, saved, onSave, onView, onApply }:{ jobs:Job[]; 
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
+// `type` values aren't confirmed against the live enum, so icon/color use a
+// small best-effort map with a safe generic fallback rather than assuming.
+const NOTIF_TYPE_META: Record<string,{ icon:string; color:string }> = {
+  new_job:            { icon:'💼', color:C.accent },
+  application_viewed: { icon:'👁', color:C.primary },
+  shortlisted:         { icon:'🏆', color:C.warning },
+  counter_offer:       { icon:'💰', color:C.info },
+  application_accepted:{ icon:'✅', color:C.success },
+  job_closed:          { icon:'❌', color:C.error },
+}
+function notifTypeMeta(type:string) {
+  return NOTIF_TYPE_META[type] ?? { icon:'🔔', color:C.primary }
+}
+
 function NotifView() {
-  const items = [
-    { icon:'💼', title:'New Matching Job',    body:'Hospital Appointment in Colombo · LKR 6,000',        time:'5 min ago',   color:C.accent,  read:false },
-    { icon:'👁', title:'Application Viewed',  body:'Mohamed Ihsan viewed your application for RP-008741', time:'2 hrs ago',   color:C.primary, read:false },
-    { icon:'🏆', title:'Shortlisted',         body:'You have been shortlisted for Home Care · Dehiwela',  time:'4 hrs ago',   color:C.warning, read:false },
-    { icon:'💰', title:'Counter Offer',       body:'Nirosha Jayawardena sent a counter offer: LKR 8,000', time:'Yesterday',   color:C.info,    read:true  },
-    { icon:'✅', title:'Application Accepted',body:'Post-Surgery Care · Chamari Dissanayake',            time:'2 days ago',  color:C.success, read:true  },
-    { icon:'❌', title:'Job Closed',          body:'Night Care at Borella has been filled',               time:'3 days ago',  color:C.error,   read:true  },
-  ]
+  const [items, setItems] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError('')
+        const data = await getMyNotifications()
+        if(!cancelled) setItems(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load notifications:', err)
+        setError("We couldn't load your notifications. Please try again.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  if(loading) return <LoadingCard label="Loading your notifications…" />
+  if(error) return <ErrorCard message={error} />
+  if(items.length===0) return <EmptyCard emoji="🔔" title="No Notifications" desc="You're all caught up. Updates about your applications will appear here." />
+
   return (
     <div style={{ padding:'28px 28px 60px', maxWidth:660, margin:'0 auto' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
-        <Bdg label={`${items.filter(n=>!n.read).length} new`} color={C.primary} dot />
+        <Bdg label={`${items.filter((n:any)=>!n.read).length} new`} color={C.primary} dot />
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-        {items.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.color}04`, border:`1px solid ${n.read?C.border:n.color+'20'}` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:42, height:42, borderRadius:12, background:`${n.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
-                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.color }} />}
+        {items.map((n:any)=>{
+          const meta = notifTypeMeta(n.type)
+          return (
+            <Card key={n.id} style={{ padding:18, background:n.read?C.surface:`${meta.color}04`, border:`1px solid ${n.read?C.border:meta.color+'20'}` }}>
+              <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>{meta.icon}</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
+                      {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:meta.color }} />}
+                    </div>
+                    <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{formatRelativeTime(n.created_at)}</p>
                   </div>
-                  <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{n.time}</p>
+                  <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body}</p>
               </div>
-            </div>
-          </Card>
-        ))}
+            </Card>
+          )
+        })}
       </div>
     </div>
   )
 }
 
 // ─── Marketplace ──────────────────────────────────────────────────────────────
-type SortKey = 'recommended'|'nearest'|'highest_pay'|'newest'|'urgent'|'best_match'
-function Marketplace({ jobs, saved, onSave, onView, onApply, onToast }:{
-  jobs:Job[]; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void; onToast:(m:string)=>void
+type SortKey = 'recommended'|'highest_pay'|'newest'|'urgent'
+function Marketplace({ jobs, loading, error, saved, onSave, onView, onApply }:{
+  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
 }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('recommended')
   const [viewMode, setViewMode] = useState<'list'|'map'>('list')
   const [filterOpen, setFilterOpen] = useState(false)
-  const [filters, setFilters] = useState<FilterState>({ services:[], districts:[], schedules:[], radius:50, minBudget:0, maxBudget:20000, verified:false, urgent:false })
-  const [mapSel, setMapSel] = useState<string|null>(null)
-  const [activeTab, setActiveTab] = useState<'all'|'recommended'|'nearby'|'urgent'>('all')
+  // radius is preserved for a future Travel Radius / Maximum Travel Distance
+  // integration — it is not yet backed by real location/distance data, so
+  // it is not applied to `filtered` below and is excluded from activeFiltersCount.
+  const [filters, setFilters] = useState<FilterState>({ services:[], districts:[], schedules:[], radius:50, minBudget:0, maxBudget:20000, urgent:false })
+  const [activeTab, setActiveTab] = useState<'all'|'recommended'|'urgent'>('all')
 
   const sortLabels: {k:SortKey;l:string}[] = [
-    {k:'recommended',l:'Recommended'},{k:'best_match',l:'Best Match'},{k:'nearest',l:'Nearest'},
-    {k:'highest_pay',l:'Highest Pay'},{k:'newest',l:'Newest'},{k:'urgent',l:'Urgent'},
+    {k:'recommended',l:'Recommended'},{k:'highest_pay',l:'Highest Pay'},{k:'newest',l:'Newest'},{k:'urgent',l:'Urgent'},
   ]
   const filtered = jobs
     .filter(j=>!query||(j.title.toLowerCase().includes(query.toLowerCase())||j.location.toLowerCase().includes(query.toLowerCase())||j.service.toLowerCase().includes(query.toLowerCase())))
-    .filter(j=>!filters.verified||j.clientVerified)
     .filter(j=>!filters.urgent||j.urgent)
     .filter(j=>filters.districts.length===0||filters.districts.includes(j.district))
     .filter(j=>filters.services.length===0||filters.services.includes(j.service))
     .filter(j=>j.budget>=filters.minBudget&&j.budget<=filters.maxBudget)
     .filter(j=>activeTab==='all'||
-      (activeTab==='recommended'&&j.match>=80)||
-      (activeTab==='nearby'&&parseFloat(j.distance)<8)||
+      (activeTab==='recommended'&&j.featured)||
       (activeTab==='urgent'&&j.urgent)
     )
     .sort((a,b)=>{
-      if(sort==='nearest') return parseFloat(a.distance)-parseFloat(b.distance)
       if(sort==='highest_pay') return b.budget-a.budget
-      if(sort==='best_match') return b.match-a.match
+      if(sort==='newest') return new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime()
       if(sort==='urgent') return (b.urgent?1:0)-(a.urgent?1:0)
-      return b.match-a.match
+      // recommended: featured first, otherwise keep the fetched (newest-first) order
+      return (b.featured?1:0)-(a.featured?1:0)
     })
 
-  const activeFiltersCount = filters.services.length+filters.districts.length+filters.schedules.length+(filters.verified?1:0)+(filters.urgent?1:0)+(filters.maxBudget<20000?1:0)+(filters.radius<50?1:0)
+  const activeFiltersCount = filters.services.length+filters.districts.length+filters.schedules.length+(filters.urgent?1:0)+(filters.maxBudget<20000?1:0)
 
-  const selJob = mapSel ? jobs.find(j=>j.id===mapSel) : null
+  if(loading) return <LoadingCard label="Loading open jobs…" />
+  if(error) return <ErrorCard message={error} />
+  if(jobs.length===0) return <EmptyCard emoji="💼" title="No Jobs Available" desc="There are no open care requests right now. Check back soon." />
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
@@ -953,7 +1127,7 @@ function Marketplace({ jobs, saved, onSave, onView, onApply, onToast }:{
 
         {/* Tabs */}
         <div style={{ display:'flex', gap:4 }}>
-          {(['all','recommended','nearby','urgent'] as const).map(tab=>(
+          {(['all','recommended','urgent'] as const).map(tab=>(
             <button key={tab} onClick={()=>setActiveTab(tab)}
               style={{ padding:'6px 14px', borderRadius:99, border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:11, fontWeight:700, background:activeTab===tab?C.primary:`${C.bg}`, color:activeTab===tab?'#fff':C.sub, transition:'all 0.12s' }}>
               {tab.charAt(0).toUpperCase()+tab.slice(1)}
@@ -972,44 +1146,24 @@ function Marketplace({ jobs, saved, onSave, onView, onApply, onToast }:{
       {viewMode==='map' ? (
         <div style={{ flex:1, display:'flex', position:'relative' as const, overflow:'hidden' }}>
           <div style={{ flex:1 }}>
-            <MapView jobs={jobs} onSelect={setMapSel} selected={mapSel} />
+            <MapView jobs={filtered} />
           </div>
-          {/* Map side panel */}
+          {/* Map side panel — pin-based selection needs job coordinates,
+              which aren't in the current schema, so this always shows
+              the list of jobs in view. */}
           <div style={{ width:320, height:'100%', background:C.surface, borderLeft:`1px solid ${C.border}`, overflowY:'auto', flexShrink:0 }}>
-            {selJob ? (
-              <div style={{ padding:18 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12 }}>
-                  <div>
-                    <p style={{ fontSize:12, fontWeight:800, color:C.type, marginBottom:4 }}>{selJob.title}</p>
-                    <p style={{ fontSize:11, color:C.muted }}>{selJob.location}</p>
+            <div style={{ padding:18 }}>
+              <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:12 }}>{filtered.length} jobs found</p>
+              {filtered.map(j=>(
+                <div key={j.id} onClick={()=>onView(j.id)} style={{ padding:'12px 0', borderBottom:`1px solid ${C.border}`, cursor:'pointer' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{j.title}</p>
+                    <p style={{ fontSize:12, fontWeight:800, color:C.success }}>{formatBudget(j)}</p>
                   </div>
-                  <button onClick={()=>setMapSel(null)} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.close}</span></button>
+                  <p style={{ fontSize:11, color:C.muted }}>{j.date}</p>
                 </div>
-                <div style={{ display:'flex', gap:8, flexWrap:'wrap' as const, marginBottom:12 }}>
-                  {selJob.urgent&&<Bdg label="Urgent" color={C.error} dot />}
-                  <Bdg label={`${selJob.match}% match`} color={selJob.match>=90?C.success:C.primary} />
-                </div>
-                <p style={{ fontSize:16, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', marginBottom:12 }}>LKR {selJob.budget.toLocaleString()}</p>
-                <p style={{ fontSize:11, color:C.muted, marginBottom:12 }}>{selJob.date} · {selJob.duration} · {selJob.distance}</p>
-                <div style={{ display:'flex', gap:8 }}>
-                  <Btn label="View" variant="secondary" small full onClick={()=>onView(selJob.id)} />
-                  <Btn label="Apply" variant="primary" small full onClick={()=>onApply(selJob.id)} />
-                </div>
-              </div>
-            ) : (
-              <div style={{ padding:18 }}>
-                <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:12 }}>{filtered.length} jobs in view</p>
-                {filtered.slice(0,6).map(j=>(
-                  <div key={j.id} onClick={()=>setMapSel(j.id)} style={{ padding:'12px 0', borderBottom:`1px solid ${C.border}`, cursor:'pointer' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                      <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{j.title}</p>
-                      <p style={{ fontSize:12, fontWeight:800, color:C.success }}>LKR {(j.budget/1000).toFixed(0)}K</p>
-                    </div>
-                    <p style={{ fontSize:11, color:C.muted }}>{j.distance} · {j.date}</p>
-                  </div>
-                ))}
-              </div>
-            )}
+              ))}
+            </div>
           </div>
         </div>
       ) : (
@@ -1061,42 +1215,112 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode }[] = [
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function BrowseJobs() {
   const [sub, setSub] = useState<SubView>('marketplace')
-  const [saved, setSaved] = useState<Set<string>>(new Set())
   const [viewingId, setViewingId] = useState<string|null>(null)
   const [applyId, setApplyId] = useState<string|null>(null)
-  const [applied, setApplied] = useState<Set<string>>(new Set())
+  const [completedApplication, setCompletedApplication] = useState<{ jobId:string; applicationId:string }|null>(null)
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
+  const [profile, setProfile] = useState<any>(null)
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [jobsLoading, setJobsLoading] = useState(true)
+  const [jobsError, setJobsError] = useState('')
+  const [savedJobs, setSavedJobs] = useState<Job[]>([])
+  const [savedLoading, setSavedLoading] = useState(true)
+  const [savedError, setSavedError] = useState('')
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0)
+
+  const saved = new Set(savedJobs.map(j=>j.id))
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setJobsLoading(true); setJobsError('')
+        setSavedLoading(true); setSavedError('')
+        const [profileData, openRows, savedRows] = await Promise.all([
+          getMyProfile().catch(()=>null),
+          getOpenCareRequests(),
+          getMySavedCareRequests(),
+        ])
+        if(cancelled) return
+        setProfile(profileData)
+        setJobs((openRows ?? []).map(careRequestToJob))
+        setSavedJobs((savedRows ?? []).map((r:any)=>r.care_request).filter(Boolean).map(careRequestToJob))
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load marketplace data:', err)
+        setJobsError("We couldn't load open jobs. Please try again.")
+        setSavedError("We couldn't load your saved jobs. Please try again.")
+      } finally {
+        if(!cancelled) { setJobsLoading(false); setSavedLoading(false) }
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  // Best-effort, non-blocking: just for the sidebar unread badge.
+  useEffect(() => {
+    let cancelled = false
+    getMyNotifications()
+      .then(rows => { if(!cancelled) setUnreadNotifCount((rows ?? []).filter((n:any)=>!n.read).length) })
+      .catch(err => console.error('Failed to load notification count:', err))
+    return () => { cancelled = true }
+  }, [])
+
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
-  const toggleSave = (id:string) => {
-    setSaved(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n })
-    showToast(saved.has(id)?'Removed from saved':'Job saved!')
+
+  const toggleSave = async (id:string) => {
+    const isSaved = saved.has(id)
+    // Optimistic update
+    if(isSaved) {
+      setSavedJobs(list => list.filter(j=>j.id!==id))
+    } else {
+      const job = jobs.find(j=>j.id===id) ?? savedJobs.find(j=>j.id===id)
+      if(job) setSavedJobs(list => [job, ...list])
+    }
+    try {
+      if(isSaved) await unsaveCareRequest(id)
+      else await saveCareRequest(id)
+      showToast(isSaved?'Removed from saved':'Job saved!')
+    } catch(err) {
+      console.error('Failed to update saved job:', err)
+      showToast("Couldn't update saved job")
+      try {
+        const fresh = await getMySavedCareRequests()
+        setSavedJobs((fresh ?? []).map((r:any)=>r.care_request).filter(Boolean).map(careRequestToJob))
+      } catch(refetchErr) {
+        console.error('Failed to refresh saved jobs:', refetchErr)
+      }
+    }
   }
 
-  const viewJob = JOBS.find(j=>j.id===viewingId)
-  const applyJob = JOBS.find(j=>j.id===applyId)
+  const viewJob = jobs.find(j=>j.id===viewingId) ?? savedJobs.find(j=>j.id===viewingId)
+  const applyJob = jobs.find(j=>j.id===applyId) ?? savedJobs.find(j=>j.id===applyId)
 
   const renderMain = () => {
-    if(applied.has(applyId??'') && applyJob) {
-      return <div style={{flex:1,overflowY:'auto'}}><AppSuccess job={applyJob} onBack={()=>{ setApplyId(null); setSub('marketplace') }} /></div>
+    if(completedApplication?.jobId===applyId && applyJob) {
+      return <div style={{flex:1,overflowY:'auto'}}><AppSuccess job={applyJob} applicationId={completedApplication.applicationId} onBack={()=>{ setApplyId(null); setCompletedApplication(null); setSub('marketplace') }} /></div>
     }
     if(applyJob) {
-      return <div style={{flex:1,overflowY:'auto'}}><AppWizard job={applyJob} onSuccess={()=>{ setApplied(s=>new Set([...s,applyJob.id])); showToast('Application submitted! 🎉') }} onCancel={()=>setApplyId(null)} /></div>
+      return <div style={{flex:1,overflowY:'auto'}}><AppWizard job={applyJob} onSuccess={(applicationId)=>{ setCompletedApplication({ jobId:applyJob.id, applicationId }); showToast('Application submitted! 🎉') }} onCancel={()=>setApplyId(null)} /></div>
     }
     if(viewJob) {
       return <div style={{flex:1,overflowY:'auto'}}><JobDetails job={viewJob} saved={saved.has(viewJob.id)} onSave={()=>toggleSave(viewJob.id)} onApply={()=>setApplyId(viewJob.id)} onBack={()=>setViewingId(null)} /></div>
     }
-    const props = { jobs:JOBS, saved, onSave:toggleSave, onView:(id:string)=>setViewingId(id), onApply:(id:string)=>setApplyId(id), onToast:showToast }
     switch(sub) {
-      case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace {...props} /></div>
-      case 'saved':           return <div style={{flex:1,overflowY:'auto'}}><SavedJobs {...props} /></div>
+      case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
+      case 'saved':           return <div style={{flex:1,overflowY:'auto'}}><SavedJobs jobs={savedJobs} loading={savedLoading} error={savedError} saved={saved} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'history':         return <div style={{flex:1,overflowY:'auto'}}><AppHistory /></div>
-      case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations {...props} /></div>
+      case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'notifications':   return <div style={{flex:1,overflowY:'auto'}}><NotifView /></div>
       default: return null
     }
   }
+
+  const initials = (profile?.full_name ?? '')
+    .split(' ').filter(Boolean).map((x:string)=>x[0]).slice(0,2).join('').toUpperCase() || '?'
 
   return (
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
@@ -1104,9 +1328,9 @@ export default function BrowseJobs() {
       <div className="bjb-sidebar" style={{ width:216, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
         <div style={{ padding:'18px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-            <div style={{ width:36, height:36, borderRadius:'50%', background:`${C.primary}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:14, color:C.primary, fontFamily:'Manrope,sans-serif' }}>KP</div>
+            <div style={{ width:36, height:36, borderRadius:'50%', background:`${C.primary}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:14, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{initials}</div>
             <div>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
+              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{profile?.full_name ?? 'Care Agent'}</p>
               <p style={{ fontSize:11, color:C.success, fontWeight:700 }}>● Online</p>
             </div>
           </div>
@@ -1120,8 +1344,8 @@ export default function BrowseJobs() {
                 style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?C.primary:C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                 <span style={{ display:'flex', color:active?C.primary:C.muted }}>{n.icon}</span>
                 {n.l}
-                {n.k==='saved'&&saved.size>0&&<span style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.primary, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{saved.size}</span>}
-                {n.k==='notifications'&&<span style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>3</span>}
+                {n.k==='saved'&&savedJobs.length>0&&<span style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.primary, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{savedJobs.length}</span>}
+                {n.k==='notifications'&&unreadNotifCount>0&&<span style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{unreadNotifCount}</span>}
               </button>
             )
           })}
