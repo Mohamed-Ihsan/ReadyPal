@@ -195,6 +195,8 @@ export async function saveMyAgentDetails(details: {
   current_employer?: string
   previous_employment?: string
   service_areas?: string[]
+  lat?: number | null
+  lng?: number | null
 }) {
   const user = await getCurrentUser()
 

@@ -28,6 +28,7 @@ import {
   saveMyAgreements,
   submitMyCareAgentApplication
 } from '../lib/api'
+import { geocodeAddress } from '../lib/geocode'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -475,6 +476,16 @@ function Step1({
   const [hasSavedData, setHasSavedData] = useState(false)
   const [loadingProfile, setLoadingProfile] = useState(true)
 
+  // Last-saved address fields, used to skip re-geocoding when a save is
+  // triggered by changes to unrelated Personal Information fields.
+  const savedLocationRef = useRef<{ address:string; province:string; district:string; city:string } | null>(null)
+
+  // Whether agent_details currently holds valid coordinates. Starts `false`
+  // so that if the agent_details lookup itself fails, saving still attempts
+  // to resolve coordinates rather than silently skipping agents who need
+  // them most.
+  const hasCoordsRef = useRef(false)
+
   const f = (key:string) => (value:string) => {
     setForm(prev => ({
       ...prev,
@@ -515,7 +526,34 @@ function Step1({
       try {
         setLoadingProfile(true)
 
-        const profile = await getMyProfile()
+        // Agent location (agent_details.lat/lng) is fetched alongside the
+        // profile, best-effort — its failure must not block Personal
+        // Information from loading, it only affects whether a later save
+        // re-attempts geocoding for an address that hasn't changed.
+        const [profileResult, agentDetailsResult] = await Promise.allSettled([
+          getMyProfile(),
+          getMyAgentDetails()
+        ])
+
+        if (agentDetailsResult.status === 'fulfilled') {
+          const details = agentDetailsResult.value as any
+          const lat = details?.lat
+          const lng = details?.lng
+          hasCoordsRef.current =
+            lat != null && lng != null &&
+            Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))
+        } else {
+          console.error(
+            'Failed to load agent location details:',
+            agentDetailsResult.reason
+          )
+        }
+
+        if (profileResult.status === 'rejected') {
+          throw profileResult.reason
+        }
+
+        const profile = profileResult.value
 
         if (!profile) {
           setHasSavedData(false)
@@ -555,6 +593,13 @@ function Step1({
         setForm(loadedForm)
         setPhotoUrl(loadedPhotoUrl)
         setSelectedPhoto(null)
+
+        savedLocationRef.current = {
+          address: loadedForm.address,
+          province: loadedForm.province,
+          district: loadedForm.district,
+          city: loadedForm.city
+        }
 
         // Consider it saved only when Step 1 actually contains data.
         const profileHasData =
@@ -758,6 +803,75 @@ function Step1({
             uploadedAvatarUrl
         })
       })
+
+      // Resolve real coordinates for the saved address and persist them to
+      // agent_details.lat/lng, powering Travel Radius / Nearby / Nearest in
+      // Browse Jobs. Re-run whenever the location fields changed, OR the
+      // agent still has no valid saved coordinates (covers existing agents
+      // saving an unrelated field with lat/lng still NULL). Never let a
+      // geocoding failure affect the profile save above — it has already
+      // succeeded by this point.
+      const currentLocation = {
+        address: form.address.trim(),
+        province: form.province,
+        district: form.district,
+        city: form.city.trim()
+      }
+
+      const locationChanged =
+        !savedLocationRef.current ||
+        currentLocation.address !== savedLocationRef.current.address ||
+        currentLocation.province !== savedLocationRef.current.province ||
+        currentLocation.district !== savedLocationRef.current.district ||
+        currentLocation.city !== savedLocationRef.current.city
+
+      const hadCoordsBeforeThisSave = hasCoordsRef.current
+
+      // The address fields themselves are already saved successfully via
+      // updateMyProfile above, regardless of how geocoding below turns out.
+      savedLocationRef.current = currentLocation
+
+      if (locationChanged || !hasCoordsRef.current) {
+        try {
+          const coords = await geocodeAddress(currentLocation)
+
+          if (coords) {
+            await saveMyAgentDetails({
+              lat: coords.lat,
+              lng: coords.lng
+            })
+            hasCoordsRef.current = true
+          } else {
+            console.warn(
+              'Could not resolve coordinates for the saved address; location-based Browse Jobs features remain unavailable until a resolvable address is saved.'
+            )
+
+            // The address changed away from whatever produced the
+            // previously saved coordinates — those are now stale for the
+            // new address and must not keep being used by Browse Jobs.
+            if (locationChanged && hadCoordsBeforeThisSave) {
+              await saveMyAgentDetails({ lat: null, lng: null }).catch(clearError =>
+                console.error('Failed to clear stale agent coordinates:', clearError)
+              )
+            }
+
+            hasCoordsRef.current = false
+          }
+        } catch (error) {
+          console.error(
+            'Failed to resolve/save agent location coordinates:',
+            error
+          )
+
+          if (locationChanged && hadCoordsBeforeThisSave) {
+            await saveMyAgentDetails({ lat: null, lng: null }).catch(clearError =>
+              console.error('Failed to clear stale agent coordinates:', clearError)
+            )
+          }
+
+          hasCoordsRef.current = false
+        }
+      }
 
       // Reset dirty state after successful save
       setSelectedPhoto(null)
