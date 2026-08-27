@@ -1141,6 +1141,27 @@ export async function applyToCareRequest(input: {
     throw new Error("No authenticated user found")
   }
 
+  // No DB constraint enforces one application per agent per care request,
+  // so check here before inserting.
+  const { data: existing, error: existingError } = await supabase
+    .from("applications")
+    .select("id")
+    .eq("care_request_id", input.care_request_id)
+    .eq("agent_id", user.id)
+    .maybeSingle()
+
+  if (existingError) {
+    throw existingError
+  }
+
+  if (existing) {
+    const duplicateError = new Error(
+      "You have already applied for this job."
+    ) as Error & { code?: string }
+    duplicateError.code = "ALREADY_APPLIED"
+    throw duplicateError
+  }
+
   const { data, error } = await supabase
     .from("applications")
     .insert({
@@ -1293,6 +1314,49 @@ export async function getMyNotifications() {
   }
 
   return data
+}
+
+export async function markNotificationRead(notificationId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("notifications")
+    .update({ read: true })
+    .eq("id", notificationId)
+    .eq("user_id", user.id)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function markAllNotificationsRead() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("notifications")
+    .update({ read: true })
+    .eq("user_id", user.id)
+    .eq("read", false)
+    .select()
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
 }
 
 export async function submitMyCareAgentApplication() {

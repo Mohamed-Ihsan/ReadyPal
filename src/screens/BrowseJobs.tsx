@@ -5,6 +5,7 @@ import 'leaflet/dist/leaflet.css'
 import {
   getCurrentUser,
   getMyProfile,
+  getMyAgentDetails,
   getOpenCareRequests,
   getMySavedCareRequests,
   saveCareRequest,
@@ -12,6 +13,8 @@ import {
   applyToCareRequest,
   getMyApplications,
   getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -144,6 +147,7 @@ interface Job {
   urgent:boolean; featured:boolean; status:string
   requirements:string[]; languages:string[]; tasks:string[]; notes:string; posted:string; createdAt:string; match?:number
   lat?: number | null; lng?: number | null
+  scheduledDate?: string | null; recurring:boolean
 }
 
 function formatRelativeTime(iso:string|null|undefined):string {
@@ -206,6 +210,8 @@ function careRequestToJob(row:any): Job {
     createdAt: row.created_at,
     lat: row.lat != null ? Number(row.lat) : null,
     lng: row.lng != null ? Number(row.lng) : null,
+    scheduledDate: row.scheduled_date ?? null,
+    recurring: !!row.recurring,
   }
 }
 
@@ -224,9 +230,26 @@ const STATUS_COLORS: Record<string,string> = {
   open:'#22C55E', published:'#22C55E', applied:C.primary, shortlisted:C.warning, closed:C.muted, filled:'#8B5CF6', expired:C.error, urgent:C.error, featured:C.accent
 }
 
+// Straight-line (haversine) distance in km — never a routed/driving estimate.
+function haversineKm(lat1:number, lng1:number, lat2:number, lng2:number): number {
+  const R = 6371
+  const dLat = (lat2-lat1) * Math.PI/180
+  const dLng = (lng2-lng1) * Math.PI/180
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+}
+
+// Real distance from the agent's saved location to a job's coordinates, or
+// null when either side is missing/invalid — never fabricated.
+function jobDistanceKm(job:Job, agentLat:number|null, agentLng:number|null): number|null {
+  if(agentLat==null || agentLng==null || !Number.isFinite(agentLat) || !Number.isFinite(agentLng)) return null
+  if(job.lat==null || job.lng==null || !Number.isFinite(Number(job.lat)) || !Number.isFinite(Number(job.lng))) return null
+  return haversineKm(agentLat, agentLng, Number(job.lat), Number(job.lng))
+}
+
 // ─── Job Card ─────────────────────────────────────────────────────────────────
-function JobCard({ job, saved, onSave, onView, onApply, compact=false }:{
-  job:Job; saved:boolean; onSave:()=>void; onView:()=>void; onApply:()=>void; compact?:boolean
+function JobCard({ job, saved, applied=false, onSave, onView, onApply, compact=false }:{
+  job:Job; saved:boolean; applied?:boolean; onSave:()=>void; onView:()=>void; onApply:()=>void; compact?:boolean
 }) {
   const [h,setH] = useState(false)
   return (
@@ -291,7 +314,7 @@ function JobCard({ job, saved, onSave, onView, onApply, compact=false }:{
           </div>
           <div style={{ display:'flex', gap:6 }}>
             <Btn label="View" variant="secondary" small onClick={onView} />
-            <Btn label="Apply" variant="primary" small onClick={onApply} />
+            <Btn label={applied?'Applied':'Apply'} variant={applied?'secondary':'primary'} small disabled={applied} onClick={onApply} />
           </div>
         </div>
       </div>
@@ -300,9 +323,9 @@ function JobCard({ job, saved, onSave, onView, onApply, compact=false }:{
 }
 
 // ─── Filter Panel ─────────────────────────────────────────────────────────────
-function FilterPanel({ open, onClose, filters, setFilters }:{
+function FilterPanel({ open, onClose, filters, setFilters, radiusAvailable }:{
   open:boolean; onClose:()=>void;
-  filters:FilterState; setFilters:(f:FilterState)=>void
+  filters:FilterState; setFilters:(f:FilterState)=>void; radiusAvailable:boolean
 }) {
   const [local, setLocal] = useState<FilterState>(filters)
   if (!open) return null
@@ -373,16 +396,20 @@ function FilterPanel({ open, onClose, filters, setFilters }:{
             <input type="range" min={0} max={20000} step={500} value={local.maxBudget} onChange={e=>setLocal(f=>({...f,maxBudget:+e.target.value}))} style={{ width:'100%', accentColor:C.primary, cursor:'pointer' }} />
           </div>
 
-          {/* Travel Radius — UI/local state only; not yet backed by
-              location coordinates in care_requests, so it does not
-              filter results against real data yet. Pending DB support
-              (see Maximum Travel Distance follow-up on onboarding). */}
+          {/* Travel Radius — filters against real care_requests lat/lng
+              using the agent's own saved agent_details lat/lng, only when
+              both are available. See radiusAvailable below. */}
           <div style={{ padding:'18px 0', borderBottom:`1px solid ${C.border}` }}>
             <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
               <p style={{ fontSize:12, fontWeight:800, color:C.type }}>Travel Radius</p>
               <p style={{ fontSize:11, fontWeight:700, color:C.primary }}>{local.radius} km</p>
             </div>
             <input type="range" min={5} max={200} step={5} value={local.radius} onChange={e=>setLocal(f=>({...f,radius:+e.target.value}))} style={{ width:'100%', accentColor:C.primary, cursor:'pointer' }} />
+            <p style={{ fontSize:10, color:C.muted, marginTop:6, lineHeight:1.5 }}>
+              {radiusAvailable
+                ? 'Applied using your saved profile location and real job coordinates.'
+                : "Your profile doesn't have a saved location yet, so this isn't applied — all jobs are shown regardless of distance."}
+            </p>
           </div>
 
           {/* Toggles */}
@@ -472,7 +499,7 @@ function MapView({ jobs, selectedJobId, onSelectJob }:{ jobs:Job[]; selectedJobI
 }
 
 // ─── Job Details ──────────────────────────────────────────────────────────────
-function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boolean; onSave:()=>void; onApply:()=>void; onBack:()=>void }) {
+function JobDetails({ job, saved, applied=false, onSave, onApply, onGoToApplications, onBack }:{ job:Job; saved:boolean; applied?:boolean; onSave:()=>void; onApply:()=>void; onGoToApplications?:()=>void; onBack:()=>void }) {
   const [clientOpen, setClientOpen] = useState(false)
   return (
     <div style={{ maxWidth:780, margin:'0 auto', padding:'24px 28px 80px' }}>
@@ -663,7 +690,14 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
         <button onClick={onSave} style={{ padding:'11px 20px', borderRadius:12, border:`1.5px solid ${saved?C.error:C.border}`, background:saved?`${C.error}08`:'transparent', cursor:'pointer', color:saved?C.error:C.muted, display:'flex', gap:6, alignItems:'center', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>
           {saved?I.heartFill:I.heart}{saved?'Saved':'Save Job'}
         </button>
-        <Btn label="Apply Now" icon={I.briefcase} onClick={onApply} />
+        {applied ? (
+          <>
+            <Btn label="Applied" variant="secondary" icon={I.check} disabled />
+            {onGoToApplications&&<Btn label="View Applications" icon={I.briefcase} onClick={onGoToApplications} />}
+          </>
+        ) : (
+          <Btn label="Apply Now" icon={I.briefcase} onClick={onApply} />
+        )}
       </div>
     </div>
   )
@@ -672,7 +706,7 @@ function JobDetails({ job, saved, onSave, onApply, onBack }:{ job:Job; saved:boo
 // ─── Application Wizard ───────────────────────────────────────────────────────
 interface FilterState { services:string[]; districts:string[]; schedules:string[]; radius:number; minBudget:number; maxBudget:number; urgent:boolean }
 
-function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:(applicationId:string)=>void; onCancel:()=>void }) {
+function AppWizard({ job, onSuccess, onCancel, onGoToApplications }:{ job:Job; onSuccess:(applicationId:string)=>void; onCancel:()=>void; onGoToApplications?:()=>void }) {
   const [step, setStep] = useState(1)
   const [cover, setCover] = useState('')
   const [availability, setAvailability] = useState(true)
@@ -681,6 +715,7 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:(applicatio
   const TOTAL = 5
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
+  const [alreadyApplied, setAlreadyApplied] = useState(false)
   const careRecipient = job.beneficiary ?? 'the person in your care'
   const templates = [
     "Dear "+job.client+", I am an experienced care professional and would be honoured to support "+careRecipient+" with this "+job.service.toLowerCase()+" request. My approach is patient, gentle, and reassuring.",
@@ -817,8 +852,9 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:(applicatio
             ))}
           </div>
           {submitError&&(
-            <div style={{ padding:'12px 14px', borderRadius:10, background:`${C.error}08`, border:`1px solid ${C.error}30`, color:C.error, fontSize:12, fontWeight:600, marginBottom:16 }}>
-              {submitError}
+            <div style={{ padding:'12px 14px', borderRadius:10, background:`${C.error}08`, border:`1px solid ${C.error}30`, color:C.error, fontSize:12, fontWeight:600, marginBottom:16, display:'flex', flexDirection:'column', gap:8, alignItems:'flex-start' }}>
+              <span>{submitError}</span>
+              {alreadyApplied&&onGoToApplications&&<Btn label="View Applications" variant="secondary" small onClick={onGoToApplications} />}
             </div>
           )}
         </Card>
@@ -836,6 +872,7 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:(applicatio
             try {
               setSubmitting(true)
               setSubmitError('')
+              setAlreadyApplied(false)
               const price = priceMode==='accept' ? job.budget : (parseInt(counter)||0)
               const created = await applyToCareRequest({
                 care_request_id: job.id,
@@ -848,7 +885,11 @@ function AppWizard({ job, onSuccess, onCancel }:{ job:Job; onSuccess:(applicatio
               onSuccess(created.id)
             } catch(error) {
               console.error('Failed to submit application:', error)
-              setSubmitError(error instanceof Error ? error.message : 'Failed to submit application. Please try again.')
+              const isDuplicate = (error as any)?.code === 'ALREADY_APPLIED'
+              setAlreadyApplied(isDuplicate)
+              setSubmitError(isDuplicate
+                ? 'You have already applied for this job.'
+                : (error instanceof Error ? error.message : 'Failed to submit application. Please try again.'))
             } finally {
               setSubmitting(false)
             }
@@ -897,8 +938,8 @@ function AppSuccess({ job, applicationId, onBack }:{ job:Job; applicationId?:str
 }
 
 // ─── Saved Jobs ───────────────────────────────────────────────────────────────
-function SavedJobs({ jobs, loading, error, saved, onSave, onView, onApply }:{
-  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
+function SavedJobs({ jobs, loading, error, saved, appliedJobIds, onSave, onView, onApply }:{
+  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; appliedJobIds:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
 }) {
   if(loading) return <LoadingCard label="Loading your saved jobs…" />
   if(error) return <ErrorCard message={error} />
@@ -910,20 +951,21 @@ function SavedJobs({ jobs, loading, error, saved, onSave, onView, onApply }:{
         <Bdg label={`${jobs.length} saved`} color={C.primary} />
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {jobs.map(j=><JobCard key={j.id} job={j} saved={saved.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} />)}
+        {jobs.map(j=><JobCard key={j.id} job={j} saved={saved.has(j.id)} applied={appliedJobIds.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} />)}
       </div>
     </div>
   )
 }
 
 // ─── Application History ──────────────────────────────────────────────────────
+// The only valid applications.status values in the live schema.
 const HIST_STATUS: Record<string,{color:string;label:string}> = {
-  accepted:   {color:C.success, label:'Accepted'},
-  shortlisted:{color:C.warning, label:'Shortlisted'},
   applied:    {color:C.primary, label:'Applied'},
-  rejected:   {color:C.error,   label:'Rejected'},
-  withdrawn:  {color:C.muted,   label:'Withdrawn'},
+  shortlisted:{color:C.warning, label:'Shortlisted'},
   negotiating:{color:C.accent,  label:'Negotiating'},
+  hired:      {color:C.success, label:'Hired'},
+  declined:   {color:C.error,   label:'Declined'},
+  withdrawn:  {color:C.muted,   label:'Withdrawn'},
 }
 // Fallback for any applications.status value not in HIST_STATUS above —
 // keeps this resilient if the real status enum differs.
@@ -976,8 +1018,12 @@ function AppHistory() {
                     <h3 style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.title ?? 'Care request'}</h3>
                     <Bdg label={meta.label} color={meta.color} dot />
                   </div>
-                  <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{a.care_request?.client?.full_name ?? 'Client'}{a.applied_at&&` · ${formatRelativeTime(a.applied_at)}`}</p>
-                  <p style={{ fontSize:10, color:C.muted }}>Ref: {String(a.id).slice(0,8).toUpperCase()}</p>
+                  <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>
+                    {[a.care_request?.service_type, a.care_request?.client?.full_name ?? 'Client', a.duration].filter(Boolean).join(' · ')}
+                    {a.applied_at&&` · ${formatRelativeTime(a.applied_at)}`}
+                  </p>
+                  <p style={{ fontSize:10, color:C.muted, marginBottom:a.cover_letter?6:0 }}>Ref: {String(a.id).slice(0,8).toUpperCase()}</p>
+                  {a.cover_letter&&<p style={{ fontSize:11, color:C.sub, lineHeight:1.5 }}>{String(a.cover_letter).slice(0,140)}{String(a.cover_letter).length>140?'…':''}</p>}
                 </div>
                 {amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.currency ?? 'LKR'} {Number(amount).toLocaleString()}</p>}
               </div>
@@ -990,8 +1036,8 @@ function AppHistory() {
 }
 
 // ─── Recommendations ──────────────────────────────────────────────────────────
-function Recommendations({ jobs, loading, error, saved, onSave, onView, onApply }:{
-  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
+function Recommendations({ jobs, loading, error, saved, appliedJobIds, onSave, onView, onApply }:{
+  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; appliedJobIds:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
 }) {
   if(loading) return <LoadingCard label="Loading recommendations…" />
   if(error) return <ErrorCard message={error} />
@@ -1010,7 +1056,7 @@ function Recommendations({ jobs, loading, error, saved, onSave, onView, onApply 
         <div key={i} style={{ marginBottom:28 }}>
           <SectionTitle title={cat.label} />
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:14 }}>
-            {cat.jobs.slice(0,3).map(j=><JobCard key={j.id} job={j} saved={saved.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} compact />)}
+            {cat.jobs.slice(0,3).map(j=><JobCard key={j.id} job={j} saved={saved.has(j.id)} applied={appliedJobIds.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} compact />)}
           </div>
         </div>
       ))}
@@ -1033,10 +1079,11 @@ function notifTypeMeta(type:string) {
   return NOTIF_TYPE_META[type] ?? { icon:'🔔', color:C.primary }
 }
 
-function NotifView() {
+function NotifView({ onUnreadCountChange }:{ onUnreadCountChange?:(count:number)=>void }) {
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [markingAll, setMarkingAll] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -1045,7 +1092,10 @@ function NotifView() {
         setLoading(true)
         setError('')
         const data = await getMyNotifications()
-        if(!cancelled) setItems(data ?? [])
+        if(!cancelled) {
+          setItems(data ?? [])
+          onUnreadCountChange?.((data ?? []).filter((n:any)=>!n.read).length)
+        }
       } catch(err) {
         if(cancelled) return
         console.error('Failed to load notifications:', err)
@@ -1058,21 +1108,59 @@ function NotifView() {
     return () => { cancelled = true }
   }, [])
 
+  const markRead = async (id:string) => {
+    const target = items.find(n=>n.id===id)
+    if(!target || target.read) return
+    // Optimistic — this is a small, low-risk update local to one row.
+    setItems(list => list.map(n=>n.id===id?{...n,read:true}:n))
+    onUnreadCountChange?.(items.filter((n:any)=>!n.read && n.id!==id).length)
+    try {
+      await markNotificationRead(id)
+    } catch(err) {
+      console.error('Failed to mark notification as read:', err)
+      setItems(list => list.map(n=>n.id===id?{...n,read:false}:n))
+      onUnreadCountChange?.(items.filter((n:any)=>!n.read || n.id===id).length)
+    }
+  }
+
+  const markAllRead = async () => {
+    const unreadIds = items.filter(n=>!n.read).map(n=>n.id)
+    if(unreadIds.length===0) return
+    setMarkingAll(true)
+    const previous = items
+    setItems(list => list.map(n=>({...n,read:true})))
+    onUnreadCountChange?.(0)
+    try {
+      await markAllNotificationsRead()
+    } catch(err) {
+      console.error('Failed to mark all notifications as read:', err)
+      setItems(previous)
+      onUnreadCountChange?.(previous.filter((n:any)=>!n.read).length)
+    } finally {
+      setMarkingAll(false)
+    }
+  }
+
   if(loading) return <LoadingCard label="Loading your notifications…" />
   if(error) return <ErrorCard message={error} />
   if(items.length===0) return <EmptyCard emoji="🔔" title="No Notifications" desc="You're all caught up. Updates about your applications will appear here." />
 
+  const unreadCount = items.filter((n:any)=>!n.read).length
+
   return (
     <div style={{ padding:'28px 28px 60px', maxWidth:660, margin:'0 auto' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
-        <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
-        <Bdg label={`${items.filter((n:any)=>!n.read).length} new`} color={C.primary} dot />
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22, gap:10, flexWrap:'wrap' as const }}>
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+          <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
+          <Bdg label={`${unreadCount} new`} color={C.primary} dot />
+        </div>
+        {unreadCount>0&&<Btn label={markingAll?'Marking…':'Mark all as read'} variant="ghost" small disabled={markingAll} onClick={markAllRead} />}
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
         {items.map((n:any)=>{
           const meta = notifTypeMeta(n.type)
           return (
-            <Card key={n.id} style={{ padding:18, background:n.read?C.surface:`${meta.color}04`, border:`1px solid ${n.read?C.border:meta.color+'20'}` }}>
+            <Card key={n.id} onClick={n.read?undefined:()=>markRead(n.id)} style={{ padding:18, background:n.read?C.surface:`${meta.color}04`, border:`1px solid ${n.read?C.border:meta.color+'20'}`, cursor:n.read?'default':'pointer' }}>
               <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
                 <div style={{ width:42, height:42, borderRadius:12, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>{meta.icon}</div>
                 <div style={{ flex:1 }}>
@@ -1095,43 +1183,93 @@ function NotifView() {
 }
 
 // ─── Marketplace ──────────────────────────────────────────────────────────────
-type SortKey = 'recommended'|'highest_pay'|'newest'|'urgent'
-function Marketplace({ jobs, loading, error, saved, onSave, onView, onApply }:{
-  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
+type SortKey = 'recommended'|'highest_pay'|'newest'|'urgent'|'nearest'
+type TabKey = 'all'|'recommended'|'urgent'|'nearby'
+
+// Matches a job against one Schedule filter chip using real
+// scheduled_date/recurring fields — no fabricated date logic.
+function matchesScheduleLabel(job:Job, label:string): boolean {
+  if(label==='Recurring') return job.recurring
+  if(label==='One-Time') return !job.recurring
+  if(!job.scheduledDate) return false
+  const jobDate = new Date(job.scheduledDate)
+  if(Number.isNaN(jobDate.getTime())) return false
+  jobDate.setHours(0,0,0,0)
+  const today = new Date()
+  today.setHours(0,0,0,0)
+  if(label==="Today's Jobs") return jobDate.getTime()===today.getTime()
+  if(label==='Tomorrow') {
+    const tomorrow = new Date(today)
+    tomorrow.setDate(tomorrow.getDate()+1)
+    return jobDate.getTime()===tomorrow.getTime()
+  }
+  if(label==='This Week') {
+    const weekEnd = new Date(today)
+    weekEnd.setDate(weekEnd.getDate()+7)
+    return jobDate.getTime()>=today.getTime() && jobDate.getTime()<weekEnd.getTime()
+  }
+  return true
+}
+
+function Marketplace({ jobs, loading, error, saved, appliedJobIds, agentLat, agentLng, onSave, onView, onApply }:{
+  jobs:Job[]; loading:boolean; error:string; saved:Set<string>; appliedJobIds:Set<string>
+  agentLat:number|null; agentLng:number|null
+  onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
 }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('recommended')
   const [viewMode, setViewMode] = useState<'list'|'map'>('list')
   const [filterOpen, setFilterOpen] = useState(false)
-  // radius is preserved for a future Travel Radius / Maximum Travel Distance
-  // integration — it is not yet backed by real location/distance data, so
-  // it is not applied to `filtered` below and is excluded from activeFiltersCount.
   const [filters, setFilters] = useState<FilterState>({ services:[], districts:[], schedules:[], radius:50, minBudget:0, maxBudget:20000, urgent:false })
-  const [activeTab, setActiveTab] = useState<'all'|'recommended'|'urgent'>('all')
+  // Whether the agent has explicitly applied filters at least once — the
+  // Travel Radius default (50km) should never silently hide jobs before
+  // the agent has touched it.
+  const [filtersTouched, setFiltersTouched] = useState(false)
+  const [activeTab, setActiveTab] = useState<TabKey>('all')
   const [selectedJobId, setSelectedJobId] = useState<string|null>(null)
+
+  const agentHasCoords = agentLat!=null && agentLng!=null && Number.isFinite(agentLat) && Number.isFinite(agentLng)
+  const radiusApplied = filtersTouched && agentHasCoords
 
   const sortLabels: {k:SortKey;l:string}[] = [
     {k:'recommended',l:'Recommended'},{k:'highest_pay',l:'Highest Pay'},{k:'newest',l:'Newest'},{k:'urgent',l:'Urgent'},
+    ...(agentHasCoords ? [{k:'nearest' as const,l:'Nearest'}] : []),
   ]
   const filtered = jobs
-    .filter(j=>!query||(j.title.toLowerCase().includes(query.toLowerCase())||j.location.toLowerCase().includes(query.toLowerCase())||j.service.toLowerCase().includes(query.toLowerCase())))
+    .filter(j=>!query||([j.title,j.service,j.location,j.district].some(v=>v.toLowerCase().includes(query.toLowerCase()))))
     .filter(j=>!filters.urgent||j.urgent)
     .filter(j=>filters.districts.length===0||filters.districts.includes(j.district))
     .filter(j=>filters.services.length===0||filters.services.includes(j.service))
     .filter(j=>j.budget>=filters.minBudget&&j.budget<=filters.maxBudget)
-    .filter(j=>activeTab==='all'||
-      (activeTab==='recommended'&&j.featured)||
-      (activeTab==='urgent'&&j.urgent)
-    )
+    .filter(j=>filters.schedules.length===0||filters.schedules.some(label=>matchesScheduleLabel(j,label)))
+    .filter(j=>{
+      if(!radiusApplied) return true
+      const d = jobDistanceKm(j, agentLat, agentLng)
+      // Unknown distance (job has no coordinates) is never treated as "out of range".
+      return d==null || d<=filters.radius
+    })
+    .filter(j=>{
+      if(activeTab==='all') return true
+      if(activeTab==='recommended') return j.featured
+      if(activeTab==='urgent') return j.urgent
+      // nearby: requires a real, computable distance for both agent and job
+      const d = jobDistanceKm(j, agentLat, agentLng)
+      return d!=null && d<=filters.radius
+    })
     .sort((a,b)=>{
       if(sort==='highest_pay') return b.budget-a.budget
       if(sort==='newest') return new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime()
       if(sort==='urgent') return (b.urgent?1:0)-(a.urgent?1:0)
+      if(sort==='nearest') {
+        const da = jobDistanceKm(a, agentLat, agentLng) ?? Infinity
+        const db = jobDistanceKm(b, agentLat, agentLng) ?? Infinity
+        return da-db
+      }
       // recommended: featured first, otherwise keep the fetched (newest-first) order
       return (b.featured?1:0)-(a.featured?1:0)
     })
 
-  const activeFiltersCount = filters.services.length+filters.districts.length+filters.schedules.length+(filters.urgent?1:0)+(filters.maxBudget<20000?1:0)
+  const activeFiltersCount = filters.services.length+filters.districts.length+filters.schedules.length+(filters.urgent?1:0)+(filters.maxBudget<20000?1:0)+(radiusApplied?1:0)
 
   if(loading) return <LoadingCard label="Loading open jobs…" />
   if(error) return <ErrorCard message={error} />
@@ -1165,7 +1303,7 @@ function Marketplace({ jobs, loading, error, saved, onSave, onView, onApply }:{
 
         {/* Tabs */}
         <div style={{ display:'flex', gap:4 }}>
-          {(['all','recommended','urgent'] as const).map(tab=>(
+          {(['all','recommended','urgent', ...(agentHasCoords ? ['nearby'] as const : [])] as TabKey[]).map(tab=>(
             <button key={tab} onClick={()=>setActiveTab(tab)}
               style={{ padding:'6px 14px', borderRadius:99, border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:11, fontWeight:700, background:activeTab===tab?C.primary:`${C.bg}`, color:activeTab===tab?'#fff':C.sub, transition:'all 0.12s' }}>
               {tab.charAt(0).toUpperCase()+tab.slice(1)}
@@ -1236,13 +1374,14 @@ function Marketplace({ jobs, loading, error, saved, onSave, onView, onApply }:{
           ) : (
             <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))', gap:14 }} className="bjb-cards">
               {filtered.map(j=>(
-                <JobCard key={j.id} job={j} saved={saved.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} />
+                <JobCard key={j.id} job={j} saved={saved.has(j.id)} applied={appliedJobIds.has(j.id)} onSave={()=>onSave(j.id)} onView={()=>onView(j.id)} onApply={()=>onApply(j.id)} />
               ))}
             </div>
           )}
         </div>
       )}
-      <FilterPanel open={filterOpen} onClose={()=>setFilterOpen(false)} filters={filters} setFilters={setFilters} />
+      <FilterPanel open={filterOpen} onClose={()=>setFilterOpen(false)} filters={filters}
+        setFilters={f=>{ setFilters(f); setFiltersTouched(true) }} radiusAvailable={agentHasCoords} />
     </div>
   )
 }
@@ -1276,6 +1415,18 @@ export default function BrowseJobs() {
   const [savedLoading, setSavedLoading] = useState(true)
   const [savedError, setSavedError] = useState('')
   const [unreadNotifCount, setUnreadNotifCount] = useState(0)
+  // care_request_ids the agent already has an application for — best-effort,
+  // used only to disable "Apply" and avoid a round trip that will be
+  // rejected; the real duplicate check still happens in applyToCareRequest.
+  const [appliedJobIds, setAppliedJobIds] = useState<Set<string>>(new Set())
+  // The agent's own saved location (agent_details.lat/lng), for Travel
+  // Radius / Nearest / Nearby. Null whenever unset or not yet loaded —
+  // those features simply stay unavailable, never fabricated.
+  const [agentLat, setAgentLat] = useState<number|null>(null)
+  const [agentLng, setAgentLng] = useState<number|null>(null)
+  // Ids with an in-flight save/unsave request, to ignore a repeat click
+  // before the optimistic state has settled and avoid a duplicate insert.
+  const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
 
   const saved = new Set(savedJobs.map(j=>j.id))
 
@@ -1296,11 +1447,15 @@ export default function BrowseJobs() {
 
       // Independent requests: saved-jobs failing (e.g. a saved_items row
       // pointing at a since-deleted care_request) must not block the open
-      // jobs list from rendering, and vice versa.
-      const [profileResult, openResult, savedResult] = await Promise.allSettled([
+      // jobs list from rendering, and vice versa. Applications/agent-location
+      // are best-effort inputs to Apply-state and Travel Radius, so their
+      // failure must not surface as a Browse Jobs error either.
+      const [profileResult, openResult, savedResult, applicationsResult, agentDetailsResult] = await Promise.allSettled([
         getMyProfile(),
         getOpenCareRequests(),
         getMySavedCareRequests(),
+        getMyApplications(),
+        getMyAgentDetails(),
       ])
       if(cancelled) return
 
@@ -1321,6 +1476,20 @@ export default function BrowseJobs() {
         setSavedError("We couldn't load your saved jobs. Please try again.")
       }
       setSavedLoading(false)
+
+      if(applicationsResult.status==='fulfilled') {
+        setAppliedJobIds(new Set((applicationsResult.value ?? []).map((a:any)=>a.care_request_id)))
+      } else {
+        console.error('Failed to load applications:', applicationsResult.reason)
+      }
+
+      if(agentDetailsResult.status==='fulfilled') {
+        const details = agentDetailsResult.value as any
+        setAgentLat(details?.lat != null && Number.isFinite(Number(details.lat)) ? Number(details.lat) : null)
+        setAgentLng(details?.lng != null && Number.isFinite(Number(details.lng)) ? Number(details.lng) : null)
+      } else {
+        console.error('Failed to load agent location:', agentDetailsResult.reason)
+      }
     }
     load()
     return () => { cancelled = true }
@@ -1338,7 +1507,12 @@ export default function BrowseJobs() {
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
 
   const toggleSave = async (id:string) => {
+    // Ignore a repeat click while the previous save/unsave for this job is
+    // still in flight — avoids a duplicate saved_items insert from a
+    // double-click landing before the optimistic state re-renders.
+    if(savingIds.has(id)) return
     const isSaved = saved.has(id)
+    setSavingIds(set => new Set(set).add(id))
     // Optimistic update
     if(isSaved) {
       setSavedJobs(list => list.filter(j=>j.id!==id))
@@ -1359,28 +1533,34 @@ export default function BrowseJobs() {
       } catch(refetchErr) {
         console.error('Failed to refresh saved jobs:', refetchErr)
       }
+    } finally {
+      setSavingIds(set => { const next = new Set(set); next.delete(id); return next })
     }
   }
 
   const viewJob = jobs.find(j=>j.id===viewingId) ?? savedJobs.find(j=>j.id===viewingId)
   const applyJob = jobs.find(j=>j.id===applyId) ?? savedJobs.find(j=>j.id===applyId)
 
+  const goToApplications = () => { setViewingId(null); setApplyId(null); setSub('history') }
+
   const renderMain = () => {
     if(completedApplication?.jobId===applyId && applyJob) {
       return <div style={{flex:1,overflowY:'auto'}}><AppSuccess job={applyJob} applicationId={completedApplication.applicationId} onBack={()=>{ setApplyId(null); setCompletedApplication(null); setSub('marketplace') }} /></div>
     }
     if(applyJob) {
-      return <div style={{flex:1,overflowY:'auto'}}><AppWizard job={applyJob} onSuccess={(applicationId)=>{ setCompletedApplication({ jobId:applyJob.id, applicationId }); showToast('Application submitted! 🎉') }} onCancel={()=>setApplyId(null)} /></div>
+      return <div style={{flex:1,overflowY:'auto'}}><AppWizard job={applyJob}
+        onSuccess={(applicationId)=>{ setAppliedJobIds(ids=>new Set(ids).add(applyJob.id)); setCompletedApplication({ jobId:applyJob.id, applicationId }); showToast('Application submitted! 🎉') }}
+        onCancel={()=>setApplyId(null)} onGoToApplications={goToApplications} /></div>
     }
     if(viewJob) {
-      return <div style={{flex:1,overflowY:'auto'}}><JobDetails job={viewJob} saved={saved.has(viewJob.id)} onSave={()=>toggleSave(viewJob.id)} onApply={()=>setApplyId(viewJob.id)} onBack={()=>setViewingId(null)} /></div>
+      return <div style={{flex:1,overflowY:'auto'}}><JobDetails job={viewJob} saved={saved.has(viewJob.id)} applied={appliedJobIds.has(viewJob.id)} onSave={()=>toggleSave(viewJob.id)} onApply={()=>setApplyId(viewJob.id)} onGoToApplications={goToApplications} onBack={()=>setViewingId(null)} /></div>
     }
     switch(sub) {
-      case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
-      case 'saved':           return <div style={{flex:1,overflowY:'auto'}}><SavedJobs jobs={savedJobs} loading={savedLoading} error={savedError} saved={saved} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
+      case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} agentLat={agentLat} agentLng={agentLng} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
+      case 'saved':           return <div style={{flex:1,overflowY:'auto'}}><SavedJobs jobs={savedJobs} loading={savedLoading} error={savedError} saved={saved} appliedJobIds={appliedJobIds} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'history':         return <div style={{flex:1,overflowY:'auto'}}><AppHistory /></div>
-      case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
-      case 'notifications':   return <div style={{flex:1,overflowY:'auto'}}><NotifView /></div>
+      case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
+      case 'notifications':   return <div style={{flex:1,overflowY:'auto'}}><NotifView onUnreadCountChange={setUnreadNotifCount} /></div>
       default: return null
     }
   }
