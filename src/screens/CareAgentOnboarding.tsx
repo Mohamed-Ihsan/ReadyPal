@@ -1,5 +1,6 @@
 import { useState,useEffect, type ReactNode,useRef, type CSSProperties } from 'react'
-import { 
+import { useNavigate } from 'react-router-dom'
+import {
   updateMyProfile,
   uploadProfilePhoto,
   saveMyAgentDetails,
@@ -232,7 +233,7 @@ const APPLICATION_STATUS_COLOR:Record<string,string> = {
   rejected:C.error,
 }
 
-function OnboardingHome({ status, onPrimary }:{ status:HomeStatus; onPrimary:()=>void }) {
+function OnboardingHome({ status, onPrimary, onBrowseJobsTest }:{ status:HomeStatus; onPrimary:()=>void; onBrowseJobsTest:()=>void }) {
   const benefits = [
     { icon:'💰', title:'Earn LKR 800–2,500/hr',    desc:'Set your own rates and get paid weekly' },
     { icon:'🕐', title:'Flexible Schedule',          desc:'Choose when and where you work' },
@@ -306,7 +307,21 @@ function OnboardingHome({ status, onPrimary }:{ status:HomeStatus; onPrimary:()=
             {status.kind==='incomplete' && <p style={{ fontSize:13, color:C.muted }}>{status.percent}% complete</p>}
             {status.kind==='submitted' && formattedSubmittedDate && <p style={{ fontSize:13, color:C.muted }}>Submitted {formattedSubmittedDate}</p>}
           </div>
-          <Btn label={buttonLabel} onClick={onPrimary} />
+          <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' as const }}>
+            {/*
+              TEMPORARY TEST-ONLY ACCESS — DO NOT SHIP.
+              This lets a logged-in Care Agent jump straight into the real
+              Browse Jobs marketplace to validate it end-to-end, bypassing
+              the onboarding/application gate entirely.
+              In the final production flow, Browse Jobs must only become
+              reachable AFTER the Care Agent's onboarding/application has
+              been submitted and approved (see application_status handling
+              above) — remove this button once that gating is enforced by
+              routing/guards rather than by convenience access here.
+            */}
+            <Btn label="Browse Jobs (Test)" variant="secondary" onClick={onBrowseJobsTest} />
+            <Btn label={buttonLabel} onClick={onPrimary} />
+          </div>
         </div>
         {status.kind==='incomplete' && (
           <div style={{ height:8, borderRadius:99, background:C.bg, overflow:'hidden', marginTop:18 }}>
@@ -12059,6 +12074,7 @@ type SubView = 'home'|'wizard'|'status'
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareAgentOnboarding() {
+  const navigate = useNavigate()
   const [sub, setSub] = useState<SubView>('home')
   const [step, setStep] = useState(1)
   const [completed, setCompleted] = useState(new Set<number>())
@@ -12468,7 +12484,7 @@ export default function CareAgentOnboarding() {
 
       {/* Main content */}
       <div style={{ flex:1, overflowY:'auto' }}>
-        {sub==='home'   && <OnboardingHome status={homeStatus} onPrimary={handleHomePrimaryAction} />}
+        {sub==='home'   && <OnboardingHome status={homeStatus} onPrimary={handleHomePrimaryAction} onBrowseJobsTest={()=>navigate('/agent/jobs')} />}
         {sub==='wizard' && renderStep()}
         {sub==='status' && <ApplicationStatus onHome={()=>setSub('home')} />}
       </div>

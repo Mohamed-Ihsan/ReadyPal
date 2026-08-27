@@ -1114,28 +1114,11 @@ const CARE_REQUEST_SELECT =
   "*, client:profiles!client_id(id, full_name, avatar_url), beneficiary:beneficiaries!beneficiary_id(id, name, preferred_name, age)"
 
 export async function getOpenCareRequests() {
-  // ─── TEMP DEBUG — remove once the empty Browse Jobs issue is diagnosed ───
-  const debugUser = await getCurrentUser()
-  console.log("[DEBUG getOpenCareRequests] current user:", debugUser)
-
-  const withBeneficiary = await supabase
+  const { data, error } = await supabase
     .from("care_requests")
     .select(CARE_REQUEST_SELECT)
     .eq("status", "open")
     .order("created_at", { ascending: false })
-  console.log("[DEBUG getOpenCareRequests] WITH beneficiary embed -> data:", withBeneficiary.data)
-  console.log("[DEBUG getOpenCareRequests] WITH beneficiary embed -> error:", withBeneficiary.error)
-
-  const withoutBeneficiary = await supabase
-    .from("care_requests")
-    .select("*, client:profiles!client_id(id, full_name, avatar_url)")
-    .eq("status", "open")
-    .order("created_at", { ascending: false })
-  console.log("[DEBUG getOpenCareRequests] WITHOUT beneficiary embed -> data:", withoutBeneficiary.data)
-  console.log("[DEBUG getOpenCareRequests] WITHOUT beneficiary embed -> error:", withoutBeneficiary.error)
-  // ─── END TEMP DEBUG ───
-
-  const { data, error } = withBeneficiary
 
   if (error) {
     throw error
@@ -1207,18 +1190,46 @@ export async function getMySavedCareRequests() {
     throw new Error("No authenticated user found")
   }
 
-  const { data, error } = await supabase
+  // `saved_items.target_id` is polymorphic (no FK to care_requests), so
+  // PostgREST can't embed care_requests through it directly. Resolve in
+  // two steps instead: fetch the saved rows, then fetch the matching
+  // care_requests by id.
+  const { data: savedRows, error: savedError } = await supabase
     .from("saved_items")
-    .select(`id, target_id, created_at, care_request:care_requests(${CARE_REQUEST_SELECT})`)
+    .select("id, target_id, created_at")
     .eq("user_id", user.id)
     .eq("target_type", "care_request")
     .order("created_at", { ascending: false })
 
-  if (error) {
-    throw error
+  if (savedError) {
+    throw savedError
   }
 
-  return data
+  const targetIds = (savedRows ?? []).map((row) => row.target_id)
+
+  if (targetIds.length === 0) {
+    return []
+  }
+
+  const { data: careRequests, error: careRequestsError } = await supabase
+    .from("care_requests")
+    .select(CARE_REQUEST_SELECT)
+    .in("id", targetIds)
+
+  if (careRequestsError) {
+    throw careRequestsError
+  }
+
+  const careRequestById = new Map(
+    (careRequests ?? []).map((row: any) => [row.id, row])
+  )
+
+  return savedRows.map((row) => ({
+    id: row.id,
+    target_id: row.target_id,
+    created_at: row.created_at,
+    care_request: careRequestById.get(row.target_id) ?? null,
+  }))
 }
 
 export async function saveCareRequest(careRequestId: string) {

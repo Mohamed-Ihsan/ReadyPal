@@ -1,5 +1,9 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet'
+import 'leaflet/dist/leaflet.css'
 import {
+  getCurrentUser,
   getMyProfile,
   getOpenCareRequests,
   getMySavedCareRequests,
@@ -139,6 +143,7 @@ interface Job {
   date:string; duration:string; budget:number; budgetMin?:number; currency:string; negotiable?:boolean
   urgent:boolean; featured:boolean; status:string
   requirements:string[]; languages:string[]; tasks:string[]; notes:string; posted:string; createdAt:string; match?:number
+  lat?: number | null; lng?: number | null
 }
 
 function formatRelativeTime(iso:string|null|undefined):string {
@@ -199,6 +204,8 @@ function careRequestToJob(row:any): Job {
     notes: row.instructions ?? '',
     posted: formatRelativeTime(row.created_at),
     createdAt: row.created_at,
+    lat: row.lat != null ? Number(row.lat) : null,
+    lng: row.lng != null ? Number(row.lng) : null,
   }
 }
 
@@ -403,33 +410,63 @@ function FilterPanel({ open, onClose, filters, setFilters }:{
 }
 
 // ─── Map View ─────────────────────────────────────────────────────────────────
-// care_requests has no location coordinates yet, so individual job pins
-// can't be plotted truthfully. This keeps the map chrome/toggle in place
-// as a clearly-labelled placeholder rather than faking pin positions.
-function MapView({ jobs }:{ jobs:Job[] }) {
+const DEFAULT_MAP_CENTER: [number, number] = [6.9271, 79.8612] // Colombo, Sri Lanka
+const DEFAULT_MAP_ZOOM = 12
+
+function isMappable(job:Job): boolean {
+  return job.lat!=null && job.lng!=null && Number.isFinite(Number(job.lat)) && Number.isFinite(Number(job.lng))
+}
+
+// Flies the map to the selected job's coordinates. A no-op whenever the
+// selection has no valid lat/lng, so selecting an unlocated job never throws.
+function MapFocus({ job }:{ job:Job|null }) {
+  const map = useMap()
+  useEffect(() => {
+    if(job && isMappable(job)) {
+      map.flyTo([Number(job.lat), Number(job.lng)], 15, { duration: 0.8 })
+    }
+  }, [job, map])
+  return null
+}
+
+function MapView({ jobs, selectedJobId, onSelectJob }:{ jobs:Job[]; selectedJobId:string|null; onSelectJob:(id:string)=>void }) {
+  const mappableJobs = jobs.filter(isMappable)
+  const selectedJob = jobs.find(j=>j.id===selectedJobId) ?? null
+
   return (
-    <div style={{ position:'relative', width:'100%', height:'100%', background:`linear-gradient(135deg,${C.bg},#DCE8EA)`, borderRadius:0, overflow:'hidden' }}>
-      {/* Decorative grid */}
-      <svg style={{ position:'absolute', inset:0, width:'100%', height:'100%', opacity:0.08 }} preserveAspectRatio="none">
-        <defs><pattern id="mgrid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke={C.primary} strokeWidth="0.5"/></pattern></defs>
-        <rect width="100%" height="100%" fill="url(#mgrid)"/>
-      </svg>
-      {/* Coverage ring */}
-      <div style={{ position:'absolute', top:'50%', left:'50%', width:'60%', height:'60%', borderRadius:'50%', border:`2px dashed ${C.primary}30`, transform:'translate(-50%,-50%)', pointerEvents:'none' }} />
-      {/* Current location */}
-      <div style={{ position:'absolute', top:'48%', left:'45%', transform:'translate(-50%,-50%)', zIndex:5 }}>
-        <div style={{ width:16, height:16, borderRadius:'50%', background:C.primary, boxShadow:`0 0 0 6px ${C.primary}30` }} />
-      </div>
-      {/* Placeholder message */}
-      <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', padding:24, zIndex:6 }}>
-        <div style={{ textAlign:'center' as const, background:'rgba(255,255,255,0.92)', borderRadius:14, padding:'20px 24px', backdropFilter:'blur(8px)', border:`1px solid ${C.border}`, maxWidth:280 }}>
-          <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Map view coming soon</p>
-          <p style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>Location coordinates aren't part of the current job data yet, so pins can't be plotted. Use the list on the right to browse {jobs.length} job{jobs.length===1?'':'s'}.</p>
+    <div style={{ position:'relative', width:'100%', height:'100%' }}>
+      <MapContainer center={DEFAULT_MAP_CENTER} zoom={DEFAULT_MAP_ZOOM} scrollWheelZoom style={{ width:'100%', height:'100%' }}>
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        <MapFocus job={selectedJob} />
+        {mappableJobs.map(job=>(
+          <CircleMarker
+            key={job.id}
+            center={[Number(job.lat), Number(job.lng)]}
+            radius={selectedJobId===job.id ? 10 : 7}
+            pathOptions={{ color:C.primary, weight:2, fillColor:selectedJobId===job.id?C.accent:C.primary, fillOpacity:0.85 }}
+            eventHandlers={{ click: () => onSelectJob(job.id) }}
+          >
+            <Popup>
+              <div style={{ fontFamily:'Manrope,sans-serif', fontSize:12, minWidth:150 }}>
+                <p style={{ fontWeight:800, color:C.type, marginBottom:4 }}>{job.title}</p>
+                <p style={{ color:C.sub, marginBottom:4 }}>{job.location}</p>
+                <p style={{ fontWeight:800, color:C.success }}>{formatBudget(job)}</p>
+              </div>
+            </Popup>
+          </CircleMarker>
+        ))}
+      </MapContainer>
+      {jobs.length>0 && mappableJobs.length===0 && (
+        <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', padding:24, zIndex:1000, pointerEvents:'none' }}>
+          <div style={{ textAlign:'center' as const, background:'rgba(255,255,255,0.94)', borderRadius:14, padding:'20px 24px', backdropFilter:'blur(8px)', border:`1px solid ${C.border}`, maxWidth:280, pointerEvents:'auto' }}>
+            <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>No job locations are available on the map yet.</p>
+            <p style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>Use the list on the right to browse {jobs.length} job{jobs.length===1?'':'s'}.</p>
+          </div>
         </div>
-      </div>
-      <div style={{ position:'absolute', top:14, right:14, background:'rgba(255,255,255,0.92)', borderRadius:8, padding:'6px 12px', backdropFilter:'blur(8px)', border:`1px solid ${C.border}` }}>
-        <p style={{ fontSize:11, color:C.muted }}>Interactive map · Coming soon</p>
-      </div>
+      )}
     </div>
   )
 }
@@ -1071,6 +1108,7 @@ function Marketplace({ jobs, loading, error, saved, onSave, onView, onApply }:{
   // it is not applied to `filtered` below and is excluded from activeFiltersCount.
   const [filters, setFilters] = useState<FilterState>({ services:[], districts:[], schedules:[], radius:50, minBudget:0, maxBudget:20000, urgent:false })
   const [activeTab, setActiveTab] = useState<'all'|'recommended'|'urgent'>('all')
+  const [selectedJobId, setSelectedJobId] = useState<string|null>(null)
 
   const sortLabels: {k:SortKey;l:string}[] = [
     {k:'recommended',l:'Recommended'},{k:'highest_pay',l:'Highest Pay'},{k:'newest',l:'Newest'},{k:'urgent',l:'Urgent'},
@@ -1146,23 +1184,31 @@ function Marketplace({ jobs, loading, error, saved, onSave, onView, onApply }:{
       {viewMode==='map' ? (
         <div style={{ flex:1, display:'flex', position:'relative' as const, overflow:'hidden' }}>
           <div style={{ flex:1 }}>
-            <MapView jobs={filtered} />
+            <MapView jobs={filtered} selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} />
           </div>
-          {/* Map side panel — pin-based selection needs job coordinates,
-              which aren't in the current schema, so this always shows
-              the list of jobs in view. */}
+          {/* Map side panel — clicking a job selects it and (if it has
+              coordinates) flies the map to it; View still opens the full
+              job details page, unchanged from before. */}
           <div style={{ width:320, height:'100%', background:C.surface, borderLeft:`1px solid ${C.border}`, overflowY:'auto', flexShrink:0 }}>
             <div style={{ padding:18 }}>
               <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:12 }}>{filtered.length} jobs found</p>
-              {filtered.map(j=>(
-                <div key={j.id} onClick={()=>onView(j.id)} style={{ padding:'12px 0', borderBottom:`1px solid ${C.border}`, cursor:'pointer' }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{j.title}</p>
-                    <p style={{ fontSize:12, fontWeight:800, color:C.success }}>{formatBudget(j)}</p>
+              {filtered.map(j=>{
+                const hasCoords = isMappable(j)
+                const isSelected = selectedJobId===j.id
+                return (
+                  <div key={j.id} onClick={()=>hasCoords&&setSelectedJobId(j.id)}
+                    style={{ padding:'12px 10px', margin:'0 -10px', borderRadius:10, borderBottom:`1px solid ${C.border}`, cursor:hasCoords?'pointer':'default', background:isSelected?`${C.primary}08`:'transparent', transition:'background 0.12s' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8, marginBottom:3 }}>
+                      <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{j.title}</p>
+                      <p style={{ fontSize:12, fontWeight:800, color:C.success, whiteSpace:'nowrap' as const }}>{formatBudget(j)}</p>
+                    </div>
+                    <p style={{ fontSize:11, color:C.muted, marginBottom:8 }}>{j.date}{!hasCoords&&' · No map location'}</p>
+                    <div onClick={e=>e.stopPropagation()}>
+                      <Btn label="View" variant="secondary" small onClick={()=>onView(j.id)} />
+                    </div>
                   </div>
-                  <p style={{ fontSize:11, color:C.muted }}>{j.date}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
@@ -1214,6 +1260,7 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode }[] = [
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function BrowseJobs() {
+  const navigate = useNavigate()
   const [sub, setSub] = useState<SubView>('marketplace')
   const [viewingId, setViewingId] = useState<string|null>(null)
   const [applyId, setApplyId] = useState<string|null>(null)
@@ -1235,30 +1282,49 @@ export default function BrowseJobs() {
   useEffect(() => {
     let cancelled = false
     const load = async () => {
-      try {
-        setJobsLoading(true); setJobsError('')
-        setSavedLoading(true); setSavedError('')
-        const [profileData, openRows, savedRows] = await Promise.all([
-          getMyProfile().catch(()=>null),
-          getOpenCareRequests(),
-          getMySavedCareRequests(),
-        ])
-        if(cancelled) return
-        setProfile(profileData)
-        setJobs((openRows ?? []).map(careRequestToJob))
-        setSavedJobs((savedRows ?? []).map((r:any)=>r.care_request).filter(Boolean).map(careRequestToJob))
-      } catch(err) {
-        if(cancelled) return
-        console.error('Failed to load marketplace data:', err)
-        setJobsError("We couldn't load open jobs. Please try again.")
-        setSavedError("We couldn't load your saved jobs. Please try again.")
-      } finally {
-        if(!cancelled) { setJobsLoading(false); setSavedLoading(false) }
+      setJobsLoading(true); setJobsError('')
+      setSavedLoading(true); setSavedError('')
+
+      // Require a real authenticated Supabase session before touching any
+      // protected marketplace data. No session -> route to the existing
+      // sign-in flow instead of querying care_requests/profiles.
+      const user = await getCurrentUser().catch(()=>null)
+      if(!user) {
+        if(!cancelled) navigate('/auth', { replace:true })
+        return
       }
+
+      // Independent requests: saved-jobs failing (e.g. a saved_items row
+      // pointing at a since-deleted care_request) must not block the open
+      // jobs list from rendering, and vice versa.
+      const [profileResult, openResult, savedResult] = await Promise.allSettled([
+        getMyProfile(),
+        getOpenCareRequests(),
+        getMySavedCareRequests(),
+      ])
+      if(cancelled) return
+
+      setProfile(profileResult.status==='fulfilled' ? profileResult.value : null)
+
+      if(openResult.status==='fulfilled') {
+        setJobs((openResult.value ?? []).map(careRequestToJob))
+      } else {
+        console.error('Failed to load open jobs:', openResult.reason)
+        setJobsError("We couldn't load open jobs. Please try again.")
+      }
+      setJobsLoading(false)
+
+      if(savedResult.status==='fulfilled') {
+        setSavedJobs((savedResult.value ?? []).map((r:any)=>r.care_request).filter(Boolean).map(careRequestToJob))
+      } else {
+        console.error('Failed to load saved jobs:', savedResult.reason)
+        setSavedError("We couldn't load your saved jobs. Please try again.")
+      }
+      setSavedLoading(false)
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [navigate])
 
   // Best-effort, non-blocking: just for the sidebar unread badge.
   useEffect(() => {
