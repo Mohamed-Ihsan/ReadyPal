@@ -5614,6 +5614,9 @@ function Step7({
   const [maxHours, setMaxHours] =
     useState(40)
 
+  const [travelRadius, setTravelRadius] =
+    useState(25)
+
   const [loading, setLoading] =
     useState(true)
 
@@ -5638,7 +5641,8 @@ function Step7({
     selectedShift:ShiftType,
     emergencyAvailable:boolean,
     holidayAvailable:boolean,
-    weeklyHours:number
+    weeklyHours:number,
+    maxTravelDistance:number
   ) => {
 
     return JSON.stringify({
@@ -5656,7 +5660,10 @@ function Step7({
         holidayAvailable,
 
       maxHours:
-        weeklyHours
+        weeklyHours,
+
+      travelRadius:
+        maxTravelDistance
     })
   }
 
@@ -5666,7 +5673,8 @@ function Step7({
       shift,
       emergency,
       holiday,
-      maxHours
+      maxHours,
+      travelRadius
     )
 
   const hasChanges =
@@ -5723,13 +5731,18 @@ function Step7({
               40
             )
 
+            setTravelRadius(
+              25
+            )
+
             setInitialData(
               createSnapshot(
                 emptyDays,
                 'morning',
                 false,
                 false,
-                40
+                40,
+                25
               )
             )
 
@@ -5763,6 +5776,10 @@ function Step7({
             data.max_weekly_hours ??
             40
 
+          const loadedTravelRadius =
+            data.max_travel_distance_km ??
+            25
+
           setActiveDays(
             loadedDays
           )
@@ -5783,6 +5800,10 @@ function Step7({
             loadedMaxHours
           )
 
+          setTravelRadius(
+            loadedTravelRadius
+          )
+
           // Determine whether Step 7
           // has meaningful saved data
           const availabilityHasData =
@@ -5790,7 +5811,8 @@ function Step7({
             Boolean(
               data.preferred_shift
             ) ||
-            data.max_weekly_hours != null
+            data.max_weekly_hours != null ||
+            data.max_travel_distance_km != null
 
           setHasSavedData(
             availabilityHasData
@@ -5802,7 +5824,8 @@ function Step7({
               loadedShift,
               loadedEmergency,
               loadedHoliday,
-              loadedMaxHours
+              loadedMaxHours,
+              loadedTravelRadius
             )
           )
 
@@ -5931,6 +5954,15 @@ function Step7({
           )
         }
 
+        if (
+          !travelRadius ||
+          travelRadius < 5
+        ) {
+          throw new Error(
+            'Please select a maximum travel distance'
+          )
+        }
+
         setSaving(true)
 
         const savedDays =
@@ -5952,7 +5984,10 @@ function Step7({
             holiday,
 
           max_weekly_hours:
-            maxHours
+            maxHours,
+
+          max_travel_distance_km:
+            travelRadius
         })
 
         setHasSavedData(
@@ -5966,7 +6001,8 @@ function Step7({
             shift,
             emergency,
             holiday,
-            maxHours
+            maxHours,
+            travelRadius
           )
         )
 
@@ -6428,6 +6464,77 @@ function Step7({
 
             onChange={event => {
               setMaxHours(
+                +event.target.value
+              )
+
+              setSaveError('')
+            }}
+
+            style={{
+              width:'100%',
+              accentColor:C.primary,
+              cursor:'pointer'
+            }}
+          />
+        </div>
+
+        {/* Maximum Travel Distance */}
+        <div
+          style={{
+            padding:'16px 0 8px'
+          }}
+        >
+          <div
+            style={{
+              display:'flex',
+              justifyContent:
+                'space-between',
+              marginBottom:8
+            }}
+          >
+
+            <p
+              style={{
+                fontSize:12,
+                fontWeight:700,
+                color:C.muted
+              }}
+            >
+              Maximum Travel Distance{' '}
+              <span
+                style={{
+                  color:C.error
+                }}
+              >
+                *
+              </span>
+            </p>
+
+            <span
+              style={{
+                fontSize:13,
+                fontWeight:800,
+                color:C.primary,
+
+                fontFamily:
+                  'Manrope,sans-serif'
+              }}
+            >
+              {travelRadius} km
+            </span>
+
+          </div>
+
+          <input
+            type="range"
+            min={5}
+            max={100}
+            step={5}
+
+            value={travelRadius}
+
+            onChange={event => {
+              setTravelRadius(
                 +event.target.value
               )
 
@@ -10414,6 +10521,16 @@ function Step11({
           )
         }
 
+        if (
+          availability
+            ?.max_travel_distance_km == null ||
+          availability.max_travel_distance_km < 5
+        ) {
+          availabilityMissing.push(
+            'Maximum Travel Distance'
+          )
+        }
+
         // ════════════════════════════════════════
         // STEP 8 — EQUIPMENT & TRANSPORT
         // ════════════════════════════════════════
@@ -10862,6 +10979,11 @@ function Step11({
               availability
                 ?.max_weekly_hours
                 ? `${availability.max_weekly_hours} hrs/week max`
+                : '',
+
+              availability
+                ?.max_travel_distance_km
+                ? `${availability.max_travel_distance_km} km travel radius`
                 : '',
 
               availability
@@ -12378,7 +12500,10 @@ export default function CareAgentOnboarding() {
           ) &&
           availability
             ?.max_weekly_hours != null &&
-          availability.max_weekly_hours >= 10
+          availability.max_weekly_hours >= 10 &&
+          availability
+            ?.max_travel_distance_km != null &&
+          availability.max_travel_distance_km >= 5
 
         if (step7Complete) {
           restoredCompleted.add(7)

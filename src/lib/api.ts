@@ -717,6 +717,7 @@ export type AgentAvailabilityInput = {
   emergency_available: boolean
   holiday_available: boolean
   max_weekly_hours: number
+  max_travel_distance_km: number
 }
 
 export async function getMyAvailability() {
@@ -758,6 +759,7 @@ export async function saveMyAvailability(
         emergency_available: input.emergency_available,
         holiday_available: input.holiday_available,
         max_weekly_hours: input.max_weekly_hours,
+        max_travel_distance_km: input.max_travel_distance_km,
         updated_at: new Date().toISOString()
       },
       {

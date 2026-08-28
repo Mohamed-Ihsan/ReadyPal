@@ -6,6 +6,7 @@ import {
   getCurrentUser,
   getMyProfile,
   getMyAgentDetails,
+  getMyAvailability,
   getOpenCareRequests,
   getMySavedCareRequests,
   saveCareRequest,
@@ -328,6 +329,17 @@ function FilterPanel({ open, onClose, filters, setFilters, radiusAvailable }:{
   filters:FilterState; setFilters:(f:FilterState)=>void; radiusAvailable:boolean
 }) {
   const [local, setLocal] = useState<FilterState>(filters)
+  // `local` is only ever seeded once, at this component's first mount — and
+  // FilterPanel mounts immediately with Marketplace (it just returns null
+  // while closed), well before the agent's saved travel radius finishes
+  // loading. Without this, local.radius (what the slider actually shows)
+  // stays frozen at the initial default forever, even after filters.radius
+  // is correctly seeded from agent_availability.max_travel_distance_km.
+  // Re-sync only the radius field, and only when the drawer opens, so
+  // other in-progress local filter edits are never touched.
+  useEffect(() => {
+    if (open) setLocal(f => ({ ...f, radius: filters.radius }))
+  }, [open, filters.radius])
   if (!open) return null
 
   const serviceTypes = ['Hospital Companion','Home Care','Errand & Delivery','Night Care','Physiotherapy Support','Wellness Visit','Medical Escort']
@@ -1211,9 +1223,12 @@ function matchesScheduleLabel(job:Job, label:string): boolean {
   return true
 }
 
-function Marketplace({ jobs, loading, error, saved, appliedJobIds, agentLat, agentLng, onSave, onView, onApply }:{
+function Marketplace({ jobs, loading, error, saved, appliedJobIds, agentLat, agentLng, savedTravelRadiusKm, onSave, onView, onApply }:{
   jobs:Job[]; loading:boolean; error:string; saved:Set<string>; appliedJobIds:Set<string>
   agentLat:number|null; agentLng:number|null
+  // Agent's persisted onboarding preference (agent_availability.max_travel_distance_km),
+  // null until loaded or if never set. Used only to seed the initial slider value once.
+  savedTravelRadiusKm:number|null
   onSave:(id:string)=>void; onView:(id:string)=>void; onApply:(id:string)=>void
 }) {
   const [query, setQuery] = useState('')
@@ -1225,6 +1240,17 @@ function Marketplace({ jobs, loading, error, saved, appliedJobIds, agentLat, age
   // Travel Radius default (50km) should never silently hide jobs before
   // the agent has touched it.
   const [filtersTouched, setFiltersTouched] = useState(false)
+  // Seeds Travel Radius from the agent's saved onboarding preference the
+  // first time it becomes available, then never again — so it never fights
+  // with the agent's own in-session slider adjustments, and never gets
+  // silently overwritten back into agent_availability from Browse Jobs.
+  const [radiusSeededFromSaved, setRadiusSeededFromSaved] = useState(false)
+  useEffect(() => {
+    if(radiusSeededFromSaved) return
+    if(savedTravelRadiusKm==null || !Number.isFinite(savedTravelRadiusKm)) return
+    setFilters(f => ({ ...f, radius:savedTravelRadiusKm }))
+    setRadiusSeededFromSaved(true)
+  }, [savedTravelRadiusKm, radiusSeededFromSaved])
   const [activeTab, setActiveTab] = useState<TabKey>('all')
   const [selectedJobId, setSelectedJobId] = useState<string|null>(null)
 
@@ -1424,6 +1450,10 @@ export default function BrowseJobs() {
   // those features simply stay unavailable, never fabricated.
   const [agentLat, setAgentLat] = useState<number|null>(null)
   const [agentLng, setAgentLng] = useState<number|null>(null)
+  // The agent's saved onboarding preference (agent_availability.max_travel_distance_km),
+  // used only to seed the Travel Radius slider's initial value. Null whenever
+  // unset or not yet loaded — Marketplace then keeps its own safe default.
+  const [agentTravelRadiusKm, setAgentTravelRadiusKm] = useState<number|null>(null)
   // Ids with an in-flight save/unsave request, to ignore a repeat click
   // before the optimistic state has settled and avoid a duplicate insert.
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
@@ -1450,12 +1480,13 @@ export default function BrowseJobs() {
       // jobs list from rendering, and vice versa. Applications/agent-location
       // are best-effort inputs to Apply-state and Travel Radius, so their
       // failure must not surface as a Browse Jobs error either.
-      const [profileResult, openResult, savedResult, applicationsResult, agentDetailsResult] = await Promise.allSettled([
+      const [profileResult, openResult, savedResult, applicationsResult, agentDetailsResult, availabilityResult] = await Promise.allSettled([
         getMyProfile(),
         getOpenCareRequests(),
         getMySavedCareRequests(),
         getMyApplications(),
         getMyAgentDetails(),
+        getMyAvailability(),
       ])
       if(cancelled) return
 
@@ -1489,6 +1520,14 @@ export default function BrowseJobs() {
         setAgentLng(details?.lng != null && Number.isFinite(Number(details.lng)) ? Number(details.lng) : null)
       } else {
         console.error('Failed to load agent location:', agentDetailsResult.reason)
+      }
+
+      if(availabilityResult.status==='fulfilled') {
+        const availability = availabilityResult.value as any
+        const savedRadius = availability?.max_travel_distance_km
+        setAgentTravelRadiusKm(savedRadius != null && Number.isFinite(Number(savedRadius)) ? Number(savedRadius) : null)
+      } else {
+        console.error('Failed to load saved travel radius:', availabilityResult.reason)
       }
     }
     load()
@@ -1556,7 +1595,7 @@ export default function BrowseJobs() {
       return <div style={{flex:1,overflowY:'auto'}}><JobDetails job={viewJob} saved={saved.has(viewJob.id)} applied={appliedJobIds.has(viewJob.id)} onSave={()=>toggleSave(viewJob.id)} onApply={()=>setApplyId(viewJob.id)} onGoToApplications={goToApplications} onBack={()=>setViewingId(null)} /></div>
     }
     switch(sub) {
-      case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} agentLat={agentLat} agentLng={agentLng} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
+      case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} agentLat={agentLat} agentLng={agentLng} savedTravelRadiusKm={agentTravelRadiusKm} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'saved':           return <div style={{flex:1,overflowY:'auto'}}><SavedJobs jobs={savedJobs} loading={savedLoading} error={savedError} saved={saved} appliedJobIds={appliedJobIds} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'history':         return <div style={{flex:1,overflowY:'auto'}}><AppHistory /></div>
       case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
