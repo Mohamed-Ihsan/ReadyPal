@@ -192,6 +192,8 @@ export async function getAgentDetail(id: string) {
 
 export async function createCareRequestFromWizard(data: any, clientId: string) {
   const { data: row, error } = await supabase.from('care_requests').insert({
+    lat: data.lat,
+    lng: data.lng,
     client_id: clientId,
     beneficiary_id: data.beneficiaryId || null,
     title: data.beneficiaryName ? `Care for ${data.beneficiaryName}` : 'New Care Request',

@@ -3,6 +3,8 @@ import logoFull from '@/imports/20260723_170707.png'
 import { supabase } from '../lib/supabaseClient'
 import { createCareRequestFromWizard } from '../lib/api'
 import { getBeneficiaries, createBeneficiary } from '../lib/api'
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
+import '../lib/leafletSetup'
 
 // ─── Brand ───────────────────────────────────────────────────────────────────
 const C = {
@@ -188,6 +190,21 @@ function HelpCard({ q, a }: { q: string; a: string }) {
       {open && <div style={{ padding:'0 16px 14px', borderTop:`1px solid ${C.border}` }}><p style={{ fontSize:13, color:C.muted, lineHeight:1.6, paddingTop:10 }}>{a}</p></div>}
     </div>
   )
+}
+
+function LocationPicker({ onSelect }: { onSelect: (lat: number, lng: number) => void }) {
+  useMapEvents({ click(e) { onSelect(e.latlng.lat, e.latlng.lng) } })
+  return null
+}
+
+async function searchAddress(query: string) {
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&countrycodes=lk&q=${encodeURIComponent(query)}`)
+  return res.json()
+}
+
+async function reverseGeocode(lat: number, lng: number) {
+  const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`)
+  return res.json()
 }
 
 // ─── Wizard Steps Config ──────────────────────────────────────────────────────
@@ -599,15 +616,35 @@ function Step4({ data, setData, onNext, onBack, onClose }: { data: WizardData; s
 
   return (
     <StepShell title="Where will care happen?" sub="Provide the exact location so your care agent can find your loved one." step={4} total={7} onBack={onBack} onNext={onNext} onSaveDraft={() => {}} nextDisabled={!data.address1 || !data.city} onClose={onClose}>
-      {/* Map placeholder */}
-      <div style={{ borderRadius:16, overflow:'hidden', marginBottom:24, position:'relative', height:180, background:`linear-gradient(135deg,${C.primary}10,${C.accent}08)`, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:8 }}>
-        <div style={{ width:56, height:56, borderRadius:'50%', background:`${C.primary}14`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary }}>
-          {I.pin}
-        </div>
-        <p style={{ fontSize:14, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>Interactive Map</p>
-        <p style={{ fontSize:12, color:C.muted }}>Map preview available after entering address</p>
-        <button style={{ padding:'7px 16px', borderRadius:8, border:`1px solid ${C.primary}`, background:`${C.primary}10`, cursor:'pointer', fontSize:12, fontWeight:700, color:C.primary, fontFamily:'Manrope,sans-serif' }}>Use Current Location</button>
+      {/* Real map — search + click to drop pin */}
+      <div style={{ marginBottom:16 }}>
+        <input
+          placeholder="Search for an address in Sri Lanka…"
+          onKeyDown={async e => {
+            if (e.key === 'Enter') {
+              const results = await searchAddress((e.target as HTMLInputElement).value)
+              if (results[0]) {
+                const { lat, lon, display_name } = results[0]
+                setData(d => ({ ...d, lat: parseFloat(lat), lng: parseFloat(lon), address1: display_name }))
+              }
+            }
+          }}
+          style={{ width:'100%', padding:'11px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#FAFAFA', boxSizing:'border-box' }} />
       </div>
+      <div style={{ borderRadius:16, overflow:'hidden', marginBottom:24, height:260, border:`1px solid ${C.border}` }}>
+        <MapContainer center={[data.lat, data.lng]} zoom={13} style={{ height:'100%', width:'100%' }}>
+          <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <Marker position={[data.lat, data.lng]} />
+          <LocationPicker onSelect={async (lat, lng) => {
+            setData(d => ({ ...d, lat, lng }))
+            const result = await reverseGeocode(lat, lng)
+            if (result?.display_name) {
+              setData(d => ({ ...d, address1: result.display_name, city: result.address?.city || result.address?.town || d.city }))
+            }
+          }} />
+        </MapContainer>
+      </div>
+      <p style={{ fontSize:12, color:C.muted, marginTop:-16, marginBottom:20 }}>Search above, or click anywhere on the map to drop a pin — your address will fill in automatically.</p>
 
       {/* Saved addresses */}
       {savedAddresses.length > 0 && (
@@ -1028,6 +1065,7 @@ type WizardData = {
   services: string[]
   date: string; time: string; duration: string; flexible: boolean; recurring: boolean; frequency: string
   province: string; city: string; address1: string; address2: string; postalCode: string; landmarks: string; accessNotes: string
+  lat: number; lng: number
   budget: number; negotiable: boolean; currency: string
   instructions: string; medConditions: string; mobility: string; languages: string[]; agentGender: string
   requiredSkills: string[]; emergencyName: string; emergencyPhone: string
@@ -1039,6 +1077,7 @@ const defaultData: WizardData = {
   services:[],
   date:'', time:'09:00', duration:'2 hours', flexible:false, recurring:false, frequency:'Weekly',
   province:'Western', city:'', address1:'', address2:'', postalCode:'', landmarks:'', accessNotes:'',
+  lat: 6.9271, lng: 79.8612, // default: Colombo
   budget:4500, negotiable:false, currency:'LKR – Sri Lankan Rupee',
   instructions:'', medConditions:'', mobility:'', languages:[], agentGender:'No Preference',
   requiredSkills:[], emergencyName:'', emergencyPhone:'',
