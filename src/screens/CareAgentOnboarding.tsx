@@ -29,6 +29,7 @@ import {
   submitMyCareAgentApplication
 } from '../lib/api'
 import { geocodeAddress } from '../lib/geocode'
+import { computeOnboardingCompletion } from '../lib/onboardingCompletion'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -234,7 +235,7 @@ const APPLICATION_STATUS_COLOR:Record<string,string> = {
   rejected:C.error,
 }
 
-function OnboardingHome({ status, onPrimary, onBrowseJobsTest }:{ status:HomeStatus; onPrimary:()=>void; onBrowseJobsTest:()=>void }) {
+function OnboardingHome({ status, onPrimary, onBrowseJobsTest, onGoToDashboard }:{ status:HomeStatus; onPrimary:()=>void; onBrowseJobsTest:()=>void; onGoToDashboard:()=>void }) {
   const benefits = [
     { icon:'💰', title:'Earn LKR 800–2,500/hr',    desc:'Set your own rates and get paid weekly' },
     { icon:'🕐', title:'Flexible Schedule',          desc:'Choose when and where you work' },
@@ -273,6 +274,9 @@ function OnboardingHome({ status, onPrimary, onBrowseJobsTest }:{ status:HomeSta
     status.kind==='submitted' && status.submittedAt
       ? new Date(status.submittedAt).toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' })
       : null
+
+  const isApproved =
+    status.kind==='submitted' && status.applicationStatus==='approved'
 
   return (
     <PageContainer maxWidth={1080} style={{ padding:'40px 36px 80px' }}>
@@ -322,6 +326,7 @@ function OnboardingHome({ status, onPrimary, onBrowseJobsTest }:{ status:HomeSta
             */}
             <Btn label="Browse Jobs (Test)" variant="secondary" onClick={onBrowseJobsTest} />
             <Btn label={buttonLabel} onClick={onPrimary} />
+            {isApproved && <Btn label="Go to Dashboard" onClick={onGoToDashboard} />}
           </div>
         </div>
         {status.kind==='incomplete' && (
@@ -12083,7 +12088,7 @@ const APPLICATION_STATUS_META:Record<string,{ title:string; message:string; icon
   },
   approved: {
     title:'Application Approved',
-    message:'Your Care Agent application has been approved.',
+    message:'Congratulations! Your Care Agent application has been approved. You can now access your ReadyPal dashboard and start using the Care Agent features.',
     icon:'✅',
   },
   rejected: {
@@ -12163,7 +12168,7 @@ function TimelineStageIcon({ state }:{ state:TimelineStageState }) {
   )
 }
 
-function ApplicationStatus({ onHome }:{ onHome:()=>void }) {
+function ApplicationStatus({ onHome, onGoToDashboard }:{ onHome:()=>void; onGoToDashboard:()=>void }) {
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [agentDetails, setAgentDetails] = useState<any>(null)
@@ -12300,7 +12305,10 @@ function ApplicationStatus({ onHome }:{ onHome:()=>void }) {
         <p style={{ fontSize:12, color:C.sub, lineHeight:1.7 }}>{applicationNextSteps(status)}</p>
       </Card>
 
-      <Btn label="Back to Onboarding Home" variant="secondary" onClick={onHome} />
+      <div style={{ display:'flex', gap:10 }}>
+        <Btn label="Back to Onboarding Home" variant="secondary" onClick={onHome} />
+        {status === 'approved' && <Btn label="Go to Dashboard" onClick={onGoToDashboard} />}
+      </div>
     </PageContainer>
   )
 }
@@ -12364,219 +12372,24 @@ export default function CareAgentOnboarding() {
           agentDetails?.application_status === 'approved' ||
           agentDetails?.application_status === 'rejected'
 
+        // Step-by-step completion rules now live in one shared place
+        // (src/lib/onboardingCompletion.ts) so this restore effect and
+        // CareAgentDashboard's Profile Completion can never disagree.
+        const completion = computeOnboardingCompletion({
+          profile,
+          agentDetails,
+          skills,
+          certifications,
+          identityDocs,
+          bankAccount,
+          availability,
+          equipment,
+          references,
+          agreements
+        })
+
         const restoredCompleted =
-          new Set<number>()
-
-        // ─────────────────────────────
-        // STEP 1 — Personal Information
-        // ─────────────────────────────
-        const step1Complete =
-          Boolean(profile?.full_name?.trim()) &&
-          Boolean(profile?.nic?.trim()) &&
-          Boolean(profile?.date_of_birth) &&
-          Boolean(profile?.email?.trim()) &&
-          Boolean(profile?.phone?.trim()) &&
-          Boolean(profile?.address?.trim()) &&
-          Boolean(profile?.city?.trim())
-
-        if (step1Complete) {
-          restoredCompleted.add(1)
-        }
-
-        // ─────────────────────────────
-        // STEP 2 — Professional Profile
-        // ─────────────────────────────
-        const step2Complete =
-          Boolean(
-            agentDetails
-              ?.professional_headline
-              ?.trim()
-          ) &&
-          Boolean(
-            agentDetails
-              ?.bio
-              ?.trim()
-          ) &&
-          agentDetails
-            ?.experience_years != null &&
-          Array.isArray(
-            agentDetails?.languages
-          ) &&
-          agentDetails.languages.length > 0
-
-        if (step2Complete) {
-          restoredCompleted.add(2)
-        }
-
-        // ─────────────────────────────
-        // STEP 3 — Skills & Services
-        // ─────────────────────────────
-        const step3Complete =
-          Array.isArray(skills) &&
-          skills.length > 0
-
-        if (step3Complete) {
-          restoredCompleted.add(3)
-        }
-
-        // ─────────────────────────────
-        // STEP 4 — Certifications
-        // ─────────────────────────────
-        const step4Complete =
-          Array.isArray(certifications) &&
-          certifications.length > 0
-
-        if (step4Complete) {
-          restoredCompleted.add(4)
-        }
-
-        // ─────────────────────────────
-        // STEP 5 — Identity Verification
-        // ─────────────────────────────
-        const identityTypes =
-          Array.isArray(identityDocs)
-            ? identityDocs.map(
-                (doc:any) =>
-                  doc.doc_type
-              )
-            : []
-
-        const requiredIdentityTypes = [
-          'nic-front',
-          'nic-back',
-          'police-clearance-certificate',
-          'medical-fitness-certificate'
-        ]
-
-        const step5Complete =
-          requiredIdentityTypes.every(
-            type =>
-              identityTypes.includes(type)
-          )
-
-        if (step5Complete) {
-          restoredCompleted.add(5)
-        }
-
-        // ─────────────────────────────
-        // STEP 6 — Banking & Payouts
-        // ─────────────────────────────
-        const step6Complete =
-          Boolean(
-            bankAccount
-              ?.bank_name
-              ?.trim()
-          ) &&
-          Boolean(
-            bankAccount
-              ?.branch
-              ?.trim()
-          ) &&
-          Boolean(
-            bankAccount
-              ?.account_name
-              ?.trim()
-          ) &&
-          Boolean(
-            bankAccount
-              ?.account_number
-              ?.trim()
-          )
-
-        if (step6Complete) {
-          restoredCompleted.add(6)
-        }
-
-        // ─────────────────────────────
-        // STEP 7 — Availability
-        // ─────────────────────────────
-        const step7Complete =
-          Array.isArray(
-            availability?.working_days
-          ) &&
-          availability.working_days.length > 0 &&
-          Boolean(
-            availability?.preferred_shift
-          ) &&
-          availability
-            ?.max_weekly_hours != null &&
-          availability.max_weekly_hours >= 10 &&
-          availability
-            ?.max_travel_distance_km != null &&
-          availability.max_travel_distance_km >= 5
-
-        if (step7Complete) {
-          restoredCompleted.add(7)
-        }
-
-        // ─────────────────────────────
-        // STEP 8 — Equipment & Transport
-        // ─────────────────────────────
-        const step8Complete =
-          equipment?.has_smartphone === true &&
-          equipment?.has_internet_access === true
-
-        if (step8Complete) {
-          restoredCompleted.add(8)
-        }
-
-        // ─────────────────────────────
-        // STEP 9 — References
-        // ─────────────────────────────
-        const validReferences =
-          Array.isArray(references)
-            ? references.filter(
-                (reference:any) =>
-                  Boolean(
-                    reference
-                      ?.full_name
-                      ?.trim()
-                  ) &&
-                  Boolean(
-                    reference
-                      ?.organisation
-                      ?.trim()
-                  ) &&
-                  Boolean(
-                    reference
-                      ?.relationship
-                      ?.trim()
-                  ) &&
-                  (
-                    Boolean(
-                      reference
-                        ?.phone
-                        ?.trim()
-                    ) ||
-                    Boolean(
-                      reference
-                        ?.email
-                        ?.trim()
-                    )
-                  )
-              )
-            : []
-
-        const step9Complete =
-          validReferences.length >= 2
-
-        if (step9Complete) {
-          restoredCompleted.add(9)
-        }
-
-        // ─────────────────────────────
-        // STEP 10 — Agreements
-        // ─────────────────────────────
-        const step10Complete =
-          agreements?.terms_accepted === true &&
-          agreements?.privacy_accepted === true &&
-          agreements?.conduct_accepted === true &&
-          agreements?.care_standards_accepted === true &&
-          agreements?.background_check_accepted === true
-
-        if (step10Complete) {
-          restoredCompleted.add(10)
-        }
+          new Set<number>(completion.completedSteps)
 
         setCompleted(
           restoredCompleted
@@ -12723,9 +12536,9 @@ export default function CareAgentOnboarding() {
 
       {/* Main content */}
       <div style={{ flex:1, overflowY:'auto' }}>
-        {sub==='home'   && <OnboardingHome status={homeStatus} onPrimary={handleHomePrimaryAction} onBrowseJobsTest={()=>navigate('/agent/jobs')} />}
+        {sub==='home'   && <OnboardingHome status={homeStatus} onPrimary={handleHomePrimaryAction} onBrowseJobsTest={()=>navigate('/agent/jobs')} onGoToDashboard={()=>navigate('/agent/agentdashboard')} />}
         {sub==='wizard' && renderStep()}
-        {sub==='status' && <ApplicationStatus onHome={()=>setSub('home')} />}
+        {sub==='status' && <ApplicationStatus onHome={()=>setSub('home')} onGoToDashboard={()=>navigate('/agent/agentdashboard')} />}
       </div>
     </div>
   )

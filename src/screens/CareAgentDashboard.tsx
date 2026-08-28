@@ -1,4 +1,22 @@
-import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+﻿import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  getCurrentUser,
+  getMyProfile,
+  getMyAgentDetails,
+  getMyAgentSkills,
+  getMyCertifications,
+  getMyIdentityDocuments,
+  getMyBankAccount,
+  getMyAvailability,
+  getMyEquipmentTransport,
+  getMyReferences,
+  getMyAgreements,
+  getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+} from '../lib/api'
+import { computeOnboardingCompletion, type OnboardingStepStatus } from '../lib/onboardingCompletion'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -78,8 +96,51 @@ function Bdg({ label, color=C.primary, dot=false }:{ label:string; color?:string
   </span>
 }
 
-function Avatar({ initials='KP', color=C.primary, size=40 }:{ initials?:string; color?:string; size?:number }) {
+function Avatar({ initials='', color=C.primary, size=40 }:{ initials?:string; color?:string; size?:number }) {
   return <div style={{ width:size, height:size, borderRadius:'50%', background:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>{initials}</div>
+}
+
+// Derives display initials from a real full name — never a fabricated
+// placeholder. "Kavindu Kavishka" -> "KK"; single-word names use their
+// first two letters; empty/missing names return '' (safe neutral fallback,
+// Avatar just renders a blank circle).
+function getInitials(fullName?:string|null): string {
+  const trimmed = (fullName ?? '').trim()
+  if(!trimmed) return ''
+  const parts = trimmed.split(/\s+/).filter(Boolean)
+  if(parts.length === 1) return parts[0].slice(0,2).toUpperCase()
+  return (parts[0][0] + parts[parts.length-1][0]).toUpperCase()
+}
+
+// Relative time for real notification timestamps (created_at), mirroring
+// the same formatting already proven in BrowseJobs.tsx.
+function formatRelativeTime(iso:string|null|undefined):string {
+  if(!iso) return ''
+  const then = new Date(iso).getTime()
+  if(Number.isNaN(then)) return ''
+  const minutes = Math.round((Date.now()-then)/60000)
+  if(minutes<1) return 'Just now'
+  if(minutes<60) return `${minutes} min ago`
+  const hours = Math.round(minutes/60)
+  if(hours<24) return `${hours} hr${hours===1?'':'s'} ago`
+  const days = Math.round(hours/24)
+  if(days<7) return `${days} day${days===1?'':'s'} ago`
+  return new Date(iso).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' })
+}
+
+// Best-effort icon/color per notification `type` — the real enum isn't
+// confirmed against every possible value, so this stays a small map with a
+// safe generic fallback rather than assuming, matching BrowseJobs.tsx.
+const NOTIF_TYPE_META: Record<string,{ icon:string; color:string }> = {
+  new_job:            { icon:'💼', color:C.accent },
+  application_viewed: { icon:'👁', color:C.primary },
+  shortlisted:        { icon:'🏆', color:C.warning },
+  counter_offer:       { icon:'💰', color:C.info },
+  application_accepted:{ icon:'✅', color:C.success },
+  job_closed:          { icon:'❌', color:C.error },
+}
+function notifTypeMeta(type:string) {
+  return NOTIF_TYPE_META[type] ?? { icon:'🔔', color:C.primary }
 }
 
 function KPICard({ label, value, sub, trend, icon, color=C.primary, accent=false }:{ label:string; value:string; sub?:string; trend?:string; icon:ReactNode; color?:string; accent?:boolean }) {
@@ -160,17 +221,12 @@ const MESSAGES = [
   { name:'Arjuna Wijesinghe', initials:'AW', msg:"Job confirmed for 5:30 PM.",                           time:'Mon',       unread:0 },
 ]
 
-const NOTIFS = [
-  { icon:'💼', title:'New Job Invitation',    body:'Post-Surgery Care from Chamari Dissanayake',     time:'2 min ago',  color:C.accent,  read:false },
-  { icon:'💰', title:'Payment Received',      body:'LKR 3,750 for Hospital Appointment — Ihsan',    time:'1 hr ago',   color:C.success, read:false },
-  { icon:'⭐', title:'New Review',            body:'Mohamed Ihsan left you 5 stars',                 time:'3 hrs ago',  color:C.warning, read:false },
-  { icon:'✅', title:'Certificate Approved',  body:'Your First Aid certificate has been verified',  time:'Yesterday',  color:C.primary, read:true  },
-  { icon:'📋', title:'Task Reminder',         body:"Home Care for Rukmini at 2 PM today",            time:'9:00 AM',    color:C.info,    read:true  },
-  { icon:'📢', title:'Platform Update',       body:'ReadyPal v2.3 is now available',                 time:'Mon',        color:C.muted,   read:true  },
-]
-
 // ─── Dashboard Home ───────────────────────────────────────────────────────────
-function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; setStatus:(s:Status)=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInitials, agentSubtitle, notifications, notifLoading, notifError, onMarkNotifRead }:{
+  status:Status; setStatus:(s:Status)=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void
+  agentName:string; agentInitials:string; agentSubtitle:string
+  notifications:any[]; notifLoading:boolean; notifError:string; onMarkNotifRead:(id:string)=>void
+}) {
   const [online, setOnline] = useState(true)
   const kpis = [
     { label:"Today's Jobs",     value:'3',         sub:'2 upcoming, 1 active',  trend:'↑ 1 vs yesterday', icon:I.calendar, color:C.primary, accent:true },
@@ -194,15 +250,15 @@ function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; se
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:16 }}>
           <div style={{ display:'flex', gap:14, alignItems:'center' }}>
             <div style={{ position:'relative' as const }}>
-              <div style={{ width:52, height:52, borderRadius:'50%', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:20, color:'#fff', fontFamily:'Manrope,sans-serif' }}>KP</div>
+              <div style={{ width:52, height:52, borderRadius:'50%', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:20, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{agentInitials}</div>
               <div style={{ position:'absolute', bottom:1, right:1, width:13, height:13, borderRadius:'50%', background:online?C.success:C.muted, border:'2px solid #fff' }} />
             </div>
             <div>
               <p style={{ fontSize:13, color:'rgba(255,255,255,0.7)', marginBottom:2 }}>Good morning 👋</p>
-              <h2 style={{ fontSize:20, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Kasun Perera</h2>
+              <h2 style={{ fontSize:20, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{agentName}</h2>
               <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' as const }}>
                 <span style={{ padding:'3px 10px', borderRadius:99, background:'rgba(255,255,255,0.2)', fontSize:11, fontWeight:700, color:'#fff' }}>{STATUS_CONFIG[status].label}</span>
-                <span style={{ fontSize:11, color:'rgba(255,255,255,0.65)' }}>Hospital Companion · Colombo</span>
+                <span style={{ fontSize:11, color:'rgba(255,255,255,0.65)' }}>{agentSubtitle}</span>
               </div>
             </div>
           </div>
@@ -402,18 +458,27 @@ function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; se
 
         <Card style={{ padding:22 }}>
           <SectionTitle title="Notifications" action="View All" onAction={()=>onNav('notifications')} />
-          {NOTIFS.slice(0,4).map((n,i)=>(
-            <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'8px 0', borderBottom:i<3?`1px solid ${C.border}`:'none' }}>
-              <div style={{ width:32, height:32, borderRadius:10, background:`${n.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{n.title}</p>
-                  {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.color, marginTop:2, flexShrink:0 }} />}
+          {notifLoading ? (
+            <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>Loading notifications…</p>
+          ) : notifError ? (
+            <p style={{ fontSize:12, color:C.error, padding:'8px 0' }}>{notifError}</p>
+          ) : notifications.length===0 ? (
+            <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>You're all caught up — no notifications yet.</p>
+          ) : notifications.slice(0,4).map((n:any,i:number,arr:any[])=>{
+            const meta = notifTypeMeta(n.type)
+            return (
+              <div key={n.id} onClick={n.read?undefined:()=>onMarkNotifRead(n.id)} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'8px 0', borderBottom:i<arr.length-1?`1px solid ${C.border}`:'none', cursor:n.read?'default':'pointer' }}>
+                <div style={{ width:32, height:32, borderRadius:10, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, flexShrink:0 }}>{meta.icon}</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{n.title}</p>
+                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:meta.color, marginTop:2, flexShrink:0 }} />}
+                  </div>
+                  <p style={{ fontSize:11, color:C.muted }}>{n.body}</p>
                 </div>
-                <p style={{ fontSize:11, color:C.muted }}>{n.body}</p>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </Card>
       </div>
     </div>
@@ -776,35 +841,70 @@ function Earnings({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
-function NotificationCenter() {
+function NotificationCenter({ notifications, loading, error, onMarkRead, onMarkAllRead }:{
+  notifications:any[]; loading:boolean; error:string
+  onMarkRead:(id:string)=>void; onMarkAllRead:()=>void
+}) {
+  const unreadCount = notifications.filter((n:any)=>!n.read).length
+
+  if(loading) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your notifications…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24, gap:10, flexWrap:'wrap' as const }}>
         <div>
           <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Notification Center</h2>
-          <p style={{ fontSize:13, color:C.muted }}>{NOTIFS.filter(n=>!n.read).length} unread</p>
+          <p style={{ fontSize:13, color:C.muted }}>{unreadCount} unread</p>
         </div>
-        <Bdg label={`${NOTIFS.filter(n=>!n.read).length} new`} color={C.primary} dot />
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {unreadCount>0&&<Btn label="Mark all as read" variant="ghost" small onClick={onMarkAllRead} />}
+          <Bdg label={`${unreadCount} new`} color={C.primary} dot />
+        </div>
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {NOTIFS.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.color}04`, border:`1px solid ${n.read?C.border:n.color+'20'}` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${n.color}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
-                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.color }} />}
+      {notifications.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>🔔</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Notifications</p>
+          <p style={{ fontSize:12, color:C.muted }}>You're all caught up — no new notifications.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {notifications.map((n:any)=>{
+            const meta = notifTypeMeta(n.type)
+            return (
+              <Card key={n.id} onClick={n.read?undefined:()=>onMarkRead(n.id)} style={{ padding:18, background:n.read?C.surface:`${meta.color}04`, border:`1px solid ${n.read?C.border:meta.color+'20'}`, cursor:n.read?'default':'pointer' }}>
+                <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                  <div style={{ width:44, height:44, borderRadius:14, background:`${meta.color}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{meta.icon}</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                        <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
+                        {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:meta.color }} />}
+                      </div>
+                      <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{formatRelativeTime(n.created_at)}</p>
+                    </div>
+                    <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>{n.body}</p>
                   </div>
-                  <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{n.time}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>{n.body}</p>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -912,20 +1012,84 @@ function Goals({ onToast }:{ onToast:(m:string)=>void }) {
 
 // ─── Profile Completion ───────────────────────────────────────────────────────
 function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
-  const sections = [
-    { l:'Personal Information',  pct:100, done:true  },
-    { l:'Professional Profile',  pct:100, done:true  },
-    { l:'Skills & Services',     pct:100, done:true  },
-    { l:'Certifications',        pct:80,  done:false, missing:'Medical Training Certificate' },
-    { l:'Identity Verification', pct:75,  done:false, missing:'Medical Fitness Certificate' },
-    { l:'Banking & Payouts',     pct:100, done:true  },
-    { l:'Availability',          pct:100, done:true  },
-    { l:'References',            pct:100, done:true  },
-    { l:'Agreements',            pct:40,  done:false, missing:'Code of Conduct, Care Standards' },
-  ]
-  const overall = Math.round(sections.reduce((a,s)=>a+s.pct,0)/sections.length)
-  const strength = overall>=90?'Excellent':overall>=70?'Good':'Needs Work'
-  const strengthColor = overall>=90?C.success:overall>=70?C.warning:C.error
+  const [steps, setSteps] = useState<OnboardingStepStatus[]|null>(null)
+  const [percent, setPercent] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  // Uses the exact same step rules as CareAgentOnboarding's registration-
+  // progress restore effect, via the shared computeOnboardingCompletion
+  // helper (src/lib/onboardingCompletion.ts) — never a second, independent
+  // notion of "complete" that could drift from onboarding.
+  useEffect(() => {
+    let cancelled = false
+    const loadCompletion = async () => {
+      try {
+        setLoading(true)
+        setError('')
+
+        const [
+          profileResult, agentDetailsResult, skillsResult, certificationsResult,
+          identityDocsResult, bankAccountResult, availabilityResult,
+          equipmentResult, referencesResult, agreementsResult,
+        ] = await Promise.allSettled([
+          getMyProfile(), getMyAgentDetails(), getMyAgentSkills(), getMyCertifications(),
+          getMyIdentityDocuments(), getMyBankAccount(), getMyAvailability(),
+          getMyEquipmentTransport(), getMyReferences(), getMyAgreements(),
+        ])
+
+        if(cancelled) return
+
+        // Promise.allSettled: an individual fetch failing just makes that
+        // step read as "incomplete" below (safe default) instead of
+        // breaking the whole Profile Completion view.
+        const completion = computeOnboardingCompletion({
+          profile: profileResult.status==='fulfilled' ? profileResult.value : null,
+          agentDetails: agentDetailsResult.status==='fulfilled' ? agentDetailsResult.value : null,
+          skills: skillsResult.status==='fulfilled' ? skillsResult.value : null,
+          certifications: certificationsResult.status==='fulfilled' ? certificationsResult.value : null,
+          identityDocs: identityDocsResult.status==='fulfilled' ? identityDocsResult.value : null,
+          bankAccount: bankAccountResult.status==='fulfilled' ? bankAccountResult.value : null,
+          availability: availabilityResult.status==='fulfilled' ? availabilityResult.value : null,
+          equipment: equipmentResult.status==='fulfilled' ? equipmentResult.value : null,
+          references: referencesResult.status==='fulfilled' ? referencesResult.value : null,
+          agreements: agreementsResult.status==='fulfilled' ? agreementsResult.value : null,
+        })
+
+        setSteps(completion.steps)
+        setPercent(completion.percent)
+      } catch (err) {
+        if(cancelled) return
+        console.error('Failed to compute profile completion:', err)
+        setError("We couldn't load your profile completion status. Please try again.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    loadCompletion()
+    return () => { cancelled = true }
+  }, [])
+
+  if(loading) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Profile Completion</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your profile completion status…</p>
+      </div>
+    )
+  }
+
+  if(error || !steps) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Profile Completion</h2>
+        <p style={{ fontSize:13, color:C.error }}>{error || "We couldn't load your profile completion status."}</p>
+      </div>
+    )
+  }
+
+  const strength = percent>=90?'Excellent':percent>=70?'Good':'Needs Work'
+  const strengthColor = percent>=90?C.success:percent>=70?C.warning:C.error
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Profile Completion</h2>
@@ -935,31 +1099,30 @@ function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
             <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Profile Strength: <span style={{color:strengthColor}}>{strength}</span></p>
             <p style={{ fontSize:12, color:C.muted }}>A complete profile gets 3× more bookings</p>
           </div>
-          <p style={{ fontSize:40, fontWeight:900, color:strengthColor, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{overall}%</p>
+          <p style={{ fontSize:40, fontWeight:900, color:strengthColor, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{percent}%</p>
         </div>
         <div style={{ height:10, borderRadius:99, background:`${C.primary}12`, overflow:'hidden' }}>
-          <div style={{ width:`${overall}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.6s' }} />
+          <div style={{ width:`${percent}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.6s' }} />
         </div>
         <div style={{ display:'flex', gap:10, marginTop:14 }}>
           <Btn label="Complete Profile" icon={I.edit} onClick={()=>onToast('Opening registration…')} />
         </div>
       </Card>
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {sections.map((s,i)=>(
-          <Card key={i} style={{ padding:18 }}>
+        {steps.map((s)=>(
+          <Card key={s.step} style={{ padding:18 }}>
             <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-              <div style={{ width:32, height:32, borderRadius:10, background:s.done?`${C.success}10`:`${C.warning}10`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, color:s.done?C.success:C.warning }}>
-                {s.done?<span style={{display:'flex',transform:'scale(0.85)'}}>{I.check}</span>:<span style={{fontSize:12,fontWeight:900}}>!</span>}
+              <div style={{ width:32, height:32, borderRadius:10, background:s.complete?`${C.success}10`:`${C.warning}10`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, color:s.complete?C.success:C.warning }}>
+                {s.complete?<span style={{display:'flex',transform:'scale(0.85)'}}>{I.check}</span>:<span style={{fontSize:12,fontWeight:900}}>!</span>}
               </div>
               <div style={{ flex:1 }}>
                 <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.l}</p>
-                  <p style={{ fontSize:11, fontWeight:800, color:s.done?C.success:C.warning }}>{s.pct}%</p>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.label}</p>
+                  <p style={{ fontSize:11, fontWeight:800, color:s.complete?C.success:C.warning }}>{s.complete?100:0}%</p>
                 </div>
                 <div style={{ height:4, borderRadius:99, background:C.bg, overflow:'hidden' }}>
-                  <div style={{ width:`${s.pct}%`, height:'100%', background:s.done?C.success:C.warning, borderRadius:99 }} />
+                  <div style={{ width:s.complete?'100%':'0%', height:'100%', background:s.complete?C.success:C.warning, borderRadius:99 }} />
                 </div>
-                {s.missing&&<p style={{ fontSize:11, color:C.warning, marginTop:3 }}>Missing: {s.missing}</p>}
               </div>
             </div>
           </Card>
@@ -1131,119 +1294,8 @@ function EmergencyPanel({ onToast }:{ onToast:(m:string)=>void }) {
   )
 }
 
-// ─── Empty / Loading / Error / Success ────────────────────────────────────────
-function EmptyStates() {
-  const items = [
-    { emoji:'💼', title:'No Active Jobs',    desc:"You don't have any active jobs right now. Check your invitations to get started.",  cta:'Browse Invitations' },
-    { emoji:'📨', title:'No Invitations',    desc:'No new job invitations at the moment. Make sure your status is set to Online.',      cta:'Set Online' },
-    { emoji:'🔔', title:'No Notifications',  desc:"You're all caught up — no new notifications.",                                       cta:'View Settings' },
-    { emoji:'💬', title:'No Messages',       desc:'No messages yet. Once you accept a job, clients can message you here.',             cta:'View Schedule' },
-    { emoji:'💳', title:'No Earnings Yet',   desc:'Complete your first job to start earning. Your payouts will appear here.',          cta:'Find Jobs' },
-  ]
-  return (
-    <div style={{ padding:'28px 32px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }} className="cad-2col">
-        {items.map((s,i)=>(
-          <Card key={i} style={{ padding:'40px 24px', textAlign:'center' as const }}>
-            <div style={{ fontSize:44, marginBottom:14 }}>{s.emoji}</div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{s.title}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7, marginBottom:18 }}>{s.desc}</p>
-            <Btn label={s.cta} variant="secondary" small />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LoadingStates() {
-  function Shimmer({ style={} }:{ style?:CSSProperties }) {
-    return <div style={{ borderRadius:10, background:'linear-gradient(90deg,#E4E8EA 25%,#F2F4F5 50%,#E4E8EA 75%)', backgroundSize:'200% 100%', animation:'shimmer 1.6s ease-in-out infinite', ...style }} />
-  }
-  return (
-    <div style={{ padding:'28px 32px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-        {['Loading Dashboard','Loading Schedule','Loading Calendar','Loading Analytics'].map((l,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:14 }}>{l}</p>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:14 }}>
-              {[...Array(4)].map((_,j)=><Shimmer key={j} style={{ height:80, borderRadius:14 }} />)}
-            </div>
-            {[...Array(3)].map((_,j)=>(
-              <div key={j} style={{ display:'flex', gap:12, marginBottom:10 }}>
-                <Shimmer style={{ width:44, height:44, borderRadius:14, flexShrink:0 }} />
-                <div style={{ flex:1 }}>
-                  <Shimmer style={{ height:13, width:'60%', marginBottom:6 }} />
-                  <Shimmer style={{ height:10, width:'40%' }} />
-                </div>
-              </div>
-            ))}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  const errors = [
-    { icon:'📊', title:'Unable to Load Dashboard', desc:'We could not retrieve your dashboard data. Please try again.', color:C.error },
-    { icon:'📅', title:'Schedule Error',            desc:'Your schedule could not be loaded. Check your connection.',   color:C.warning },
-    { icon:'📶', title:'Network Error',             desc:'You appear to be offline. Progress has been saved.',          color:C.muted },
-  ]
-  return (
-    <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {errors.map((e,i)=>(
-          <Card key={i} style={{ padding:22, border:`1.5px solid ${e.color}30`, background:`${e.color}04` }}>
-            <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${e.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{e.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:800, color:e.color, marginBottom:4 }}>{e.title}</p>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:12 }}>{e.desc}</p>
-                <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={()=>onToast('Retrying…')} />
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
-  const items = [
-    { icon:'🟢', title:'Availability Updated',  desc:'Your status is now Online. Clients can send you job invitations.',                 color:C.success },
-    { icon:'✅', title:'Job Accepted',           desc:'Hospital Appointment accepted. Mohamed Ihsan has been notified.',                  color:C.success },
-    { icon:'👤', title:'Profile Updated',        desc:'Your professional headline has been updated successfully.',                        color:C.success },
-    { icon:'🏆', title:'Goal Achieved',          desc:"Congratulations! You've hit your weekly target of 8 jobs!",                       color:C.warning },
-  ]
-  return (
-    <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {items.map((s,i)=>(
-          <Card key={i} style={{ padding:20, border:`1.5px solid ${s.color}30`, background:`${s.color}04` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${s.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:s.color, marginBottom:3 }}>{s.title}</p>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{s.desc}</p>
-              </div>
-              <span style={{ color:s.color, display:'flex', transform:'scale(1.3)' }}>{I.check}</span>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'home'|'schedule'|'activeTask'|'invitations'|'calendar'|'performance'|'earnings'|'notifications'|'messages'|'goals'|'profile'|'serviceAreas'|'statusCenter'|'timeline'|'emergency'|'empty'|'loading'|'error'|'success'
+type SubView = 'home'|'schedule'|'activeTask'|'invitations'|'calendar'|'performance'|'earnings'|'notifications'|'messages'|'goals'|'profile'|'serviceAreas'|'statusCenter'|'timeline'|'emergency'
 
 const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'home',        l:'Dashboard',       icon:I.target,    group:'Overview' },
@@ -1261,18 +1313,119 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'statusCenter',l:'Status Center',   icon:I.shield,    group:'Settings' },
   { k:'timeline',    l:'Activity Log',    icon:I.clock,     group:'Settings' },
   { k:'emergency',   l:'Emergency Panel', icon:I.sos,       group:'Emergency' },
-  { k:'empty',       l:'Empty States',    icon:I.warning,   group:'Dev' },
-  { k:'loading',     l:'Loading States',  icon:I.refresh,   group:'Dev' },
-  { k:'error',       l:'Error States',    icon:I.warning,   group:'Dev' },
-  { k:'success',     l:'Success States',  icon:I.check,     group:'Dev' },
 ]
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareAgentDashboard() {
+  const navigate = useNavigate()
   const [sub, setSub] = useState<SubView>('home')
   const [status, setStatus] = useState<Status>('online')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // ─── Application-status guard ───────────────────────────────────────────
+  // Only an approved agent may stay on this dashboard. 'checking' renders a
+  // loading screen (never the real dashboard) until agent_details is known;
+  // 'denied' redirects away and also renders nothing, so an unapproved or
+  // signed-out visitor never sees a flash of dashboard content.
+  const [accessState, setAccessState] = useState<'checking'|'allowed'|'denied'>('checking')
+  const [profile, setProfile] = useState<any>(null)
+  const [agentDetails, setAgentDetails] = useState<any>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const checkAccess = async () => {
+      const user = await getCurrentUser().catch(() => null)
+      if(!user) {
+        if(!cancelled) { setAccessState('denied'); navigate('/auth', { replace:true }) }
+        return
+      }
+
+      const [profileResult, agentDetailsResult] = await Promise.allSettled([
+        getMyProfile(),
+        getMyAgentDetails(),
+      ])
+      if(cancelled) return
+
+      setProfile(profileResult.status==='fulfilled' ? profileResult.value : null)
+      const agentDetailsData = agentDetailsResult.status==='fulfilled' ? (agentDetailsResult.value as any) : null
+      setAgentDetails(agentDetailsData)
+
+      if(agentDetailsData?.application_status === 'approved') {
+        setAccessState('allowed')
+      } else {
+        // Fail closed: any uncertainty (fetch failure, missing record, any
+        // status other than 'approved') sends the agent back to onboarding
+        // rather than granting access.
+        setAccessState('denied')
+        navigate('/agent/onboarding', { replace:true })
+      }
+    }
+    checkAccess()
+    return () => { cancelled = true }
+  }, [navigate])
+
+  // ─── Real agent identity ────────────────────────────────────────────────
+  const agentName = profile?.full_name?.trim() || 'Care Agent'
+  const agentInitials = getInitials(profile?.full_name)
+  const agentSubtitle = [
+    agentDetails?.professional_headline?.trim(),
+    profile?.city?.trim() || profile?.district?.trim(),
+  ].filter(Boolean).join(' · ') || 'Care Agent'
+
+  // ─── Real notifications ─────────────────────────────────────────────────
+  const [notifications, setNotifications] = useState<any[]>([])
+  const [notifLoading, setNotifLoading] = useState(true)
+  const [notifError, setNotifError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadNotifications = async () => {
+      try {
+        setNotifLoading(true)
+        setNotifError('')
+        const data = await getMyNotifications()
+        if(!cancelled) setNotifications(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load notifications:', err)
+        setNotifError("We couldn't load your notifications. Please try again.")
+      } finally {
+        if(!cancelled) setNotifLoading(false)
+      }
+    }
+    loadNotifications()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  const unreadNotifCount = notifications.filter((n:any)=>!n.read).length
+
+  const markNotifRead = async (id:string) => {
+    const target = notifications.find(n=>n.id===id)
+    if(!target || target.read) return
+    // Optimistic — small, low-risk update local to one row.
+    setNotifications(list => list.map(n=>n.id===id?{...n,read:true}:n))
+    try {
+      await markNotificationRead(id)
+    } catch(err) {
+      console.error('Failed to mark notification as read:', err)
+      setNotifications(list => list.map(n=>n.id===id?{...n,read:false}:n))
+    }
+  }
+
+  const markAllNotifsRead = async () => {
+    const unreadIds = notifications.filter(n=>!n.read).map(n=>n.id)
+    if(unreadIds.length===0) return
+    const previous = notifications
+    setNotifications(list => list.map(n=>({...n,read:true})))
+    try {
+      await markAllNotificationsRead()
+    } catch(err) {
+      console.error('Failed to mark all notifications as read:', err)
+      setNotifications(previous)
+    }
+  }
 
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),2800) }
 
@@ -1280,14 +1433,16 @@ export default function CareAgentDashboard() {
 
   const renderSub = () => {
     switch(sub) {
-      case 'home':        return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast} />
+      case 'home':        return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
+                             agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
+                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead} />
       case 'schedule':    return <Schedule onToast={showToast} />
       case 'activeTask':  return <ActiveTask onToast={showToast} />
       case 'invitations': return <Invitations onToast={showToast} />
       case 'calendar':    return <CalendarView onToast={showToast} />
       case 'performance': return <Performance />
       case 'earnings':    return <Earnings onToast={showToast} />
-      case 'notifications':return <NotificationCenter />
+      case 'notifications':return <NotificationCenter notifications={notifications} loading={notifLoading} error={notifError} onMarkRead={markNotifRead} onMarkAllRead={markAllNotifsRead} />
       case 'messages':    return <MessagesPreview onToast={showToast} />
       case 'goals':       return <Goals onToast={showToast} />
       case 'profile':     return <ProfileCompletion onToast={showToast} />
@@ -1295,12 +1450,18 @@ export default function CareAgentDashboard() {
       case 'statusCenter':return <StatusCenter status={status} setStatus={setStatus} onToast={showToast} />
       case 'timeline':    return <ActivityTimeline />
       case 'emergency':   return <EmergencyPanel onToast={showToast} />
-      case 'empty':       return <EmptyStates />
-      case 'loading':     return <LoadingStates />
-      case 'error':       return <ErrorStates onToast={showToast} />
-      case 'success':     return <SuccessStates onToast={showToast} />
-      default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast} />
+      default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
+                             agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
+                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead} />
     }
+  }
+
+  if(accessState !== 'allowed') {
+    return (
+      <div style={{ display:'flex', minHeight:'100vh', alignItems:'center', justifyContent:'center', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
+        {accessState==='checking' && <p style={{ fontSize:13, color:C.muted }}>Loading your dashboard…</p>}
+      </div>
+    )
   }
 
   return (
@@ -1311,11 +1472,11 @@ export default function CareAgentDashboard() {
         <div style={{ padding:'18px 18px 12px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:8 }}>
             <div style={{ position:'relative' as const }}>
-              <Avatar initials="KP" size={36} />
+              <Avatar initials={agentInitials} size={36} />
               <div style={{ position:'absolute', bottom:0, right:0, width:10, height:10, borderRadius:'50%', background:STATUS_CONFIG[status].color, border:'2px solid #fff' }} />
             </div>
             <div>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
+              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{agentName}</p>
               <div style={{ display:'flex', gap:4, alignItems:'center' }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:STATUS_CONFIG[status].color }} />
                 <p style={{ fontSize:11, color:STATUS_CONFIG[status].color, fontWeight:700 }}>{STATUS_CONFIG[status].label}</p>
@@ -1327,7 +1488,7 @@ export default function CareAgentDashboard() {
             <div style={{ display:'flex', gap:8, alignItems:'center' }}>
               <button onClick={()=>setSub('notifications')} style={{ position:'relative' as const, background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>
                 {I.bell}
-                <div style={{ position:'absolute', top:-2, right:-2, width:8, height:8, borderRadius:'50%', background:C.error }} />
+                {unreadNotifCount>0&&<div style={{ position:'absolute', top:-2, right:-2, width:8, height:8, borderRadius:'50%', background:C.error }} />}
               </button>
               <button onClick={()=>setSub('messages')} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>{I.msg}</button>
             </div>
@@ -1345,8 +1506,7 @@ export default function CareAgentDashboard() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${isEmerg?C.error:C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?(isEmerg?C.error:C.primary):isEmerg?C.error:C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${isEmerg?C.error:C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?(isEmerg?C.error:C.primary):isEmerg?`${C.error}80`:C.muted, flexShrink:0 }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='invitations'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', padding:'0 5px' }}>2</div>}
-                  {n.k==='notifications'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', padding:'0 5px' }}>3</div>}
+                  {n.k==='notifications'&&unreadNotifCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', padding:'0 5px' }}>{unreadNotifCount}</div>}
                 </button>
               )
             })}
@@ -1359,9 +1519,9 @@ export default function CareAgentDashboard() {
         <div style={{ position:'fixed', inset:0, zIndex:50, background:'rgba(0,0,0,0.4)' }} onClick={()=>setSidebarOpen(false)}>
           <div onClick={e=>e.stopPropagation()} style={{ width:240, height:'100%', background:C.surface, overflowY:'auto' }}>
             <div style={{ padding:'16px 18px', borderBottom:`1px solid ${C.border}`, display:'flex', gap:10, alignItems:'center' }}>
-              <Avatar initials="KP" size={36} />
+              <Avatar initials={agentInitials} size={36} />
               <div>
-                <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
+                <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{agentName}</p>
                 <p style={{ fontSize:11, color:STATUS_CONFIG[status].color, fontWeight:700 }}>{STATUS_CONFIG[status].label}</p>
               </div>
             </div>
