@@ -1188,6 +1188,14 @@ export async function applyToCareRequest(input: {
   return data
 }
 
+// Embed used by getMyApplications for the joined care_request — broadened
+// beyond the original title/service_type/currency/client subset to also
+// carry scheduling/location fields, needed by CareAgentDashboard's
+// Schedule/Calendar views. Purely additive (existing callers that only read
+// title/service_type/client.full_name/duration are unaffected).
+const APPLICATION_CARE_REQUEST_SELECT =
+  "id, title, service_type, currency, status, scheduled_date, scheduled_time, duration, address1, address2, city, client:profiles!client_id(full_name), beneficiary:beneficiaries!beneficiary_id(id, name, preferred_name, age)"
+
 export async function getMyApplications() {
   const user = await getCurrentUser()
 
@@ -1197,7 +1205,7 @@ export async function getMyApplications() {
 
   const { data, error } = await supabase
     .from("applications")
-    .select("*, care_request:care_requests(id, title, service_type, currency, client:profiles!client_id(full_name))")
+    .select(`*, care_request:care_requests(${APPLICATION_CARE_REQUEST_SELECT})`)
     .eq("agent_id", user.id)
     .order("applied_at", { ascending: false })
 

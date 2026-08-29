@@ -9,12 +9,14 @@ import {
   getMyIdentityDocuments,
   getMyBankAccount,
   getMyAvailability,
+  saveMyAvailability,
   getMyEquipmentTransport,
   getMyReferences,
   getMyAgreements,
   getMyNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  getMyApplications,
 } from '../lib/api'
 import { computeOnboardingCompletion, type OnboardingStepStatus } from '../lib/onboardingCompletion'
 
@@ -203,12 +205,60 @@ const STATUS_CONFIG = {
 } as const
 type Status = keyof typeof STATUS_CONFIG
 
-// ─── JOBS DATA ────────────────────────────────────────────────────────────────
-const JOBS = [
-  { id:'J001', client:'Mohamed Ihsan',     beneficiary:'Nimal Perera',     service:'Hospital Appointment',  time:'9:00 AM', duration:'3 hrs', location:'Colombo National Hospital', status:'active',    amount:3750 },
-  { id:'J002', client:'Priya Fernando',    beneficiary:'Rukmini Fernando',  service:'Home Care',             time:'2:00 PM', duration:'4 hrs', location:'Dehiwela',                  status:'upcoming',  amount:4800 },
-  { id:'J003', client:'Arjuna Wijesinghe', beneficiary:'Lalitha Wijesinghe',service:'Medication Collection', time:'5:30 PM', duration:'1.5 hrs',location:'Liberty Plaza, Colombo 03',status:'upcoming',  amount:1500 },
-]
+// ─── Scheduled jobs (real data) ────────────────────────────────────────────────
+// A `ScheduledJob` is a UI-shaped projection of a real `applications` row
+// joined to its `care_requests` row (see getMyApplications in lib/api.ts).
+// There is no `active`/`upcoming` application-status distinction in the
+// database yet, so a job is only ever labelled by its scheduled date
+// (Today / Upcoming / Date to be confirmed) — never a fabricated progress
+// state.
+type ScheduledJob = {
+  id: string
+  title: string
+  service: string
+  client: string
+  beneficiary: string
+  time: string
+  duration: string
+  location: string
+  amount: number | null
+  currency: string
+  scheduledDate: string | null
+}
+
+function formatTimeLabel(time?: string | null): string {
+  if(!time) return ''
+  const [hStr, mStr] = time.split(':')
+  const h = Number(hStr)
+  if(Number.isNaN(h)) return time
+  const period = h>=12 ? 'PM' : 'AM'
+  const h12 = h%12===0 ? 12 : h%12
+  return `${h12}:${(mStr??'00').slice(0,2)} ${period}`
+}
+
+function scheduledJobFromApplication(a:any): ScheduledJob {
+  const cr = a.care_request ?? {}
+  const amount = a.price ?? a.original_price ?? null
+  return {
+    id: a.id,
+    title: cr.title ?? cr.service_type ?? 'Care job',
+    service: cr.service_type ?? cr.title ?? 'Care Service',
+    client: cr.client?.full_name ?? 'Client',
+    beneficiary: cr.beneficiary?.preferred_name ?? cr.beneficiary?.name ?? '',
+    time: formatTimeLabel(cr.scheduled_time),
+    duration: cr.duration ?? a.duration ?? '',
+    location: [cr.address1, cr.address2].filter(Boolean).join(', ') || cr.city || '',
+    amount,
+    currency: cr.currency ?? 'LKR',
+    scheduledDate: cr.scheduled_date ?? null,
+  }
+}
+
+function isSameDate(iso: string | null, date: Date): boolean {
+  if(!iso) return false
+  const d = new Date(iso)
+  return d.getFullYear()===date.getFullYear() && d.getMonth()===date.getMonth() && d.getDate()===date.getDate()
+}
 
 const INVITATIONS = [
   { id:'I001', client:'Chamari Dissanayake', beneficiary:'Siripala Dissanayake', service:'Post-Surgery Care', date:'Tomorrow, 9 AM', location:'Malay Street, Colombo 02', amount:5500, distance:'3.2 km', timer:'2h 14m remaining' },
@@ -222,17 +272,22 @@ const MESSAGES = [
 ]
 
 // ─── Dashboard Home ───────────────────────────────────────────────────────────
-function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInitials, agentSubtitle, notifications, notifLoading, notifError, onMarkNotifRead }:{
+function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInitials, agentSubtitle, notifications, notifLoading, notifError, onMarkNotifRead, todaysJobs, jobsLoading, jobsError }:{
   status:Status; setStatus:(s:Status)=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void
   agentName:string; agentInitials:string; agentSubtitle:string
   notifications:any[]; notifLoading:boolean; notifError:string; onMarkNotifRead:(id:string)=>void
+  todaysJobs:ScheduledJob[]; jobsLoading:boolean; jobsError:string
 }) {
   const [online, setOnline] = useState(true)
+  // Monthly Earnings, Average Rating, and Completion Rate have no backing
+  // Supabase table/status lifecycle yet (see Phase 1B audit) — rather than
+  // fabricate numbers, those three KPI cards show an honest "coming soon"
+  // placeholder. Today's Jobs is real, from getMyApplications().
   const kpis = [
-    { label:"Today's Jobs",     value:'3',         sub:'2 upcoming, 1 active',  trend:'↑ 1 vs yesterday', icon:I.calendar, color:C.primary, accent:true },
-    { label:'Monthly Earnings', value:'LKR 145K',  sub:'LKR 24,500 this week',  trend:'↑ 12% vs last month',icon:I.wallet,  color:C.success },
-    { label:'Average Rating',   value:'4.9★',      sub:'From 142 reviews',      trend:'↑ 0.1 this month', icon:I.star,     color:C.warning },
-    { label:'Completion Rate',  value:'98%',       sub:'2 cancellations',       trend:'Top 5% of agents', icon:I.target,   color:C.info },
+    { label:"Today's Jobs",     value:jobsLoading?'…':String(todaysJobs.length), sub:jobsLoading?'Loading…':jobsError?'Could not load':`${todaysJobs.length} job${todaysJobs.length===1?'':'s'} scheduled`, icon:I.calendar, color:C.primary, accent:true },
+    { label:'Monthly Earnings', value:'—', sub:'Earnings tracking coming soon', icon:I.wallet,  color:C.success },
+    { label:'Average Rating',   value:'—', sub:'Reviews coming soon',           icon:I.star,     color:C.warning },
+    { label:'Completion Rate',  value:'—', sub:'Coming soon',                   icon:I.target,   color:C.info },
   ]
   const quickActions = [
     { icon:I.calendar,label:'My Schedule',   k:'schedule'   as SubView },
@@ -287,81 +342,57 @@ function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInit
         <div>
           <Card style={{ padding:22, marginBottom:14 }}>
             <SectionTitle title="Today's Schedule" action="Full Calendar" onAction={()=>onNav('calendar')} />
-            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-              {JOBS.map((job,i)=>{
-                const col = job.status==='active'?C.primary:job.status==='upcoming'?C.info:C.success
-                return (
-                  <div key={job.id} style={{ display:'flex', gap:14, paddingBottom:i<JOBS.length-1?16:0 }}>
+            {jobsLoading ? (
+              <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>Loading today's schedule…</p>
+            ) : jobsError ? (
+              <p style={{ fontSize:12, color:C.error, padding:'8px 0' }}>{jobsError}</p>
+            ) : todaysJobs.length===0 ? (
+              <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>No jobs scheduled for today.</p>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+                {todaysJobs.map((job,i)=>(
+                  <div key={job.id} style={{ display:'flex', gap:14, paddingBottom:i<todaysJobs.length-1?16:0 }}>
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-                      <div style={{ width:10, height:10, borderRadius:'50%', background:col, border:`2px solid ${col}`, marginTop:4 }} />
-                      {i<JOBS.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
+                      <div style={{ width:10, height:10, borderRadius:'50%', background:C.info, border:`2px solid ${C.info}`, marginTop:4 }} />
+                      {i<todaysJobs.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
                     </div>
-                    <div style={{ flex:1, paddingBottom:i<JOBS.length-1?6:0 }}>
+                    <div style={{ flex:1, paddingBottom:i<todaysJobs.length-1?6:0 }}>
                       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4 }}>
                         <div>
                           <div style={{ display:'flex', gap:7, alignItems:'center', marginBottom:2 }}>
                             <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{job.service}</p>
-                            {job.status==='active'&&<Bdg label="Active" color={C.primary} dot />}
                           </div>
-                          <p style={{ fontSize:11, color:C.muted }}>{job.time} · {job.duration} · {job.client}</p>
-                          <div style={{ display:'flex', gap:4, alignItems:'center', marginTop:2 }}>
+                          <p style={{ fontSize:11, color:C.muted }}>{[job.time, job.duration, job.client].filter(Boolean).join(' · ')}</p>
+                          {job.location&&<div style={{ display:'flex', gap:4, alignItems:'center', marginTop:2 }}>
                             <span style={{color:C.muted,display:'flex',transform:'scale(0.85)'}}>{I.pin}</span>
                             <p style={{ fontSize:11, color:C.muted }}>{job.location}</p>
-                          </div>
+                          </div>}
                         </div>
                         <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-                          <p style={{ fontSize:12, fontWeight:800, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {job.amount.toLocaleString()}</p>
+                          {job.amount!=null&&<p style={{ fontSize:12, fontWeight:800, color:C.success, fontFamily:'Manrope,sans-serif' }}>{job.currency} {job.amount.toLocaleString()}</p>}
                         </div>
                       </div>
                       <div style={{ display:'flex', gap:8 }}>
-                        {job.status==='active'&&<Btn label="Continue Task" variant="primary" small icon={I.play} onClick={()=>onNav('activeTask')} />}
-                        {job.status==='upcoming'&&<Btn label="View Details" variant="secondary" small onClick={()=>onNav('schedule')} />}
+                        <Btn label="View Details" variant="secondary" small onClick={()=>onNav('schedule')} />
                         <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening maps…')} />
                       </div>
                     </div>
                   </div>
-                )
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </Card>
 
-          {/* Active task highlight */}
+          {/* Active task tracking depends on an application-status lifecycle
+              (accepted/in-progress/completed) that doesn't exist in the
+              database yet — see Phase 1B audit. Rather than fabricate a
+              live task/checklist, this stays an honest coming-soon note. */}
           <Card style={{ padding:22, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1.5px solid ${C.primary}20` }}>
-            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:14 }}>
-              <div style={{ width:8, height:8, borderRadius:'50%', background:C.primary, animation:'pulse-dot 1.5s ease-in-out infinite' }} />
+            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
+              <div style={{ width:8, height:8, borderRadius:'50%', background:C.muted }} />
               <p style={{ fontSize:12, fontWeight:800, color:C.primary, textTransform:'uppercase' as const, letterSpacing:'0.07em' }}>Active Task</p>
             </div>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
-              <div>
-                <h3 style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Hospital Appointment</h3>
-                <p style={{ fontSize:12, color:C.muted }}>Nimal Perera · Colombo National Hospital</p>
-              </div>
-              <div style={{ textAlign:'right' as const }}>
-                <p style={{ fontSize:11, color:C.muted }}>Time remaining</p>
-                <p style={{ fontSize:18, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>1h 42m</p>
-              </div>
-            </div>
-            {/* Checklist progress */}
-            <div style={{ display:'flex', flexDirection:'column', gap:7, marginBottom:14 }}>
-              {[{l:'Arrived at client location',done:true},{l:'Beneficiary collected',done:true},{l:'Arrived at hospital',done:true},{l:'Registration & waiting',done:false},{l:'Doctor consultation',done:false}].map((c,j)=>(
-                <div key={j} style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  <div style={{ width:18, height:18, borderRadius:'50%', background:c.done?C.success:`${C.primary}10`, border:`2px solid ${c.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                    {c.done&&<span style={{color:'#fff',display:'flex',transform:'scale(0.7)'}}>{I.check}</span>}
-                  </div>
-                  <p style={{ fontSize:12, color:c.done?C.type:C.muted, fontWeight:c.done?600:400, textDecoration:c.done?'line-through':undefined }}>{c.l}</p>
-                </div>
-              ))}
-            </div>
-            <div style={{ marginBottom:10 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                <p style={{ fontSize:11, color:C.muted }}>3 of 5 tasks complete</p>
-                <p style={{ fontSize:11, fontWeight:700, color:C.primary }}>60%</p>
-              </div>
-              <div style={{ height:6, borderRadius:99, background:`${C.primary}15`, overflow:'hidden' }}>
-                <div style={{ width:'60%', height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99 }} />
-              </div>
-            </div>
-            <Btn label="Open Task" onClick={()=>onNav('activeTask')} />
+            <p style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>Live task tracking (checklists, time remaining) will appear here once a job is in progress. This feature is coming soon.</p>
           </Card>
         </div>
 
@@ -486,52 +517,62 @@ function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInit
 }
 
 // ─── Today's Schedule ─────────────────────────────────────────────────────────
-function Schedule({ onToast }:{ onToast:(m:string)=>void }) {
+function Schedule({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; jobs:ScheduledJob[]; loading:boolean; error:string }) {
+  const todayLabel = new Date().toLocaleDateString('en-GB',{ weekday:'long', day:'numeric', month:'long', year:'numeric' })
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:800 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Today's Schedule</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Wednesday, 15 January 2025 · 3 jobs scheduled</p>
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {JOBS.map((job,i)=>(
-          <Card key={job.id} style={{ padding:24, border:`1.5px solid ${job.status==='active'?C.primary+'30':C.border}`, background:job.status==='active'?`${C.primary}04`:C.surface }}>
-            <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
-              <div style={{ flexShrink:0, textAlign:'center' as const, width:52 }}>
-                <p style={{ fontSize:14, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.time.split(' ')[0]}</p>
-                <p style={{ fontSize:10, color:C.muted }}>{job.time.split(' ')[1]}</p>
-              </div>
-              <div style={{ width:1, alignSelf:'stretch', background:job.status==='active'?C.primary:C.border, flexShrink:0 }} />
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
-                  <div>
-                    <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
-                      <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.service}</h3>
-                      <Bdg label={job.status==='active'?'In Progress':job.status==='upcoming'?'Upcoming':'Completed'} color={job.status==='active'?C.primary:job.status==='upcoming'?C.info:C.success} dot />
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{todayLabel} · {loading?'Loading…':`${jobs.length} job${jobs.length===1?'':'s'} scheduled`}</p>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your schedule…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : jobs.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>📅</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Jobs Today</p>
+          <p style={{ fontSize:12, color:C.muted }}>You have no jobs scheduled for today.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {jobs.map((job)=>(
+            <Card key={job.id} style={{ padding:24 }}>
+              <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
+                <div style={{ flexShrink:0, textAlign:'center' as const, width:52 }}>
+                  <p style={{ fontSize:14, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.time ? job.time.split(' ')[0] : '—'}</p>
+                  <p style={{ fontSize:10, color:C.muted }}>{job.time.split(' ')[1] ?? ''}</p>
+                </div>
+                <div style={{ width:1, alignSelf:'stretch', background:C.border, flexShrink:0 }} />
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
+                    <div>
+                      <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
+                        <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.service}</h3>
+                      </div>
+                      <p style={{ fontSize:12, color:C.muted }}>{[job.duration, job.client, job.beneficiary].filter(Boolean).join(' · ')}</p>
                     </div>
-                    <p style={{ fontSize:12, color:C.muted }}>{job.duration} · {job.client} → {job.beneficiary}</p>
+                    {job.amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{job.currency} {job.amount.toLocaleString()}</p>}
                   </div>
-                  <p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {job.amount.toLocaleString()}</p>
-                </div>
-                <div style={{ display:'flex', gap:14, marginBottom:14, flexWrap:'wrap' as const }}>
-                  <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                    <span style={{color:C.muted,display:'flex',transform:'scale(0.85)'}}>{I.pin}</span>
-                    <p style={{ fontSize:12, color:C.sub }}>{job.location}</p>
+                  <div style={{ display:'flex', gap:14, marginBottom:14, flexWrap:'wrap' as const }}>
+                    {job.location&&<div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                      <span style={{color:C.muted,display:'flex',transform:'scale(0.85)'}}>{I.pin}</span>
+                      <p style={{ fontSize:12, color:C.sub }}>{job.location}</p>
+                    </div>}
+                    {job.time&&<div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                      <span style={{color:C.muted,display:'flex'}}>{I.clock}</span>
+                      <p style={{ fontSize:12, color:C.sub }}>{job.time}</p>
+                    </div>}
                   </div>
-                  <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                    <span style={{color:C.muted,display:'flex'}}>{I.clock}</span>
-                    <p style={{ fontSize:12, color:C.sub }}>{job.time}</p>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening navigation…')} />
+                    <Btn label="Call Client" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling client…')} />
                   </div>
-                </div>
-                <div style={{ display:'flex', gap:8 }}>
-                  {job.status==='active'&&<Btn label="Continue Task" variant="primary" small icon={I.play} onClick={()=>onToast('Opening task…')} />}
-                  {job.status==='upcoming'&&<Btn label="View Details" variant="secondary" small />}
-                  <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening navigation…')} />
-                  <Btn label="Call Client" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling client…')} />
                 </div>
               </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -664,35 +705,56 @@ function Invitations({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Calendar ─────────────────────────────────────────────────────────────────
-function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
-  const [selectedDay, setSelectedDay] = useState(15)
-  const [blocked, setBlocked] = useState(new Set([20,21]))
+function CalendarView({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; jobs:ScheduledJob[]; loading:boolean; error:string }) {
+  const now = new Date()
+  const year = now.getFullYear()
+  const monthIndex = now.getMonth()
+  const today = now.getDate()
+  const monthLabel = now.toLocaleDateString('en-GB',{ month:'long', year:'numeric' })
+  const monthAbbr = now.toLocaleDateString('en-GB',{ month:'short' })
+
+  const [selectedDay, setSelectedDay] = useState(today)
+  const [blocked, setBlocked] = useState(new Set<number>())
   const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
-  const month = Array.from({length:31},(_,i)=>i+1)
-  const jobDays = new Set([13,14,15,16,17,18,22,23])
+  const daysInMonth = new Date(year, monthIndex+1, 0).getDate()
+  const month = Array.from({length:daysInMonth},(_,i)=>i+1)
+  // Monday-first offset for the 1st of the month (JS getDay(): 0=Sun..6=Sat)
+  const leadingBlanks = (new Date(year, monthIndex, 1).getDay() + 6) % 7
+
+  // Real job dates for this month, derived from getMyApplications() —
+  // Block a Date has no backing table yet, so it stays local-only (not
+  // persisted) rather than a fabricated Supabase write.
+  const jobDays = new Set<number>()
+  jobs.forEach(job => {
+    if(!job.scheduledDate) return
+    const d = new Date(job.scheduledDate)
+    if(d.getFullYear()===year && d.getMonth()===monthIndex) jobDays.add(d.getDate())
+  })
+  const daySchedule = jobs.filter(job => {
+    if(!job.scheduledDate) return false
+    const d = new Date(job.scheduledDate)
+    return d.getFullYear()===year && d.getMonth()===monthIndex && d.getDate()===selectedDay
+  })
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:800 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Calendar & Availability</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>January 2025 · Manage your schedule and availability</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{monthLabel} · Manage your schedule and availability</p>
       <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:20 }} className="cad-2col">
         <Card style={{ padding:24 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
-            <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>January 2025</h3>
-            <div style={{ display:'flex', gap:4 }}>
-              <button style={{ width:28, height:28, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg></button>
-              <button style={{ width:28, height:28, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg></button>
-            </div>
+            <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{monthLabel}</h3>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:2, marginBottom:4 }}>
             {days.map(d=><p key={d} style={{ fontSize:10, fontWeight:800, color:C.muted, textAlign:'center' as const, padding:'4px 0' }}>{d}</p>)}
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:3 }}>
-            {[...Array(2)].map((_,i)=><div key={`e${i}`} />)}
+            {[...Array(leadingBlanks)].map((_,i)=><div key={`e${i}`} />)}
             {month.map(d=>{
               const isSelected = d===selectedDay
               const hasJob = jobDays.has(d)
               const isBlocked = blocked.has(d)
-              const isToday = d===15
+              const isToday = d===today
               return (
                 <button key={d} onClick={()=>setSelectedDay(d)}
                   style={{ aspectRatio:'1', borderRadius:8, border:`1.5px solid ${isSelected?C.primary:isToday?`${C.primary}30`:'transparent'}`, background:isSelected?C.primary:isBlocked?`${C.error}10`:isToday?`${C.primary}08`:'transparent', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2, position:'relative' as const }}>
@@ -715,15 +777,19 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
 
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           <Card style={{ padding:20 }}>
-            <SectionTitle title={`Jan ${selectedDay} — Schedule`} />
-            {selectedDay===15
-              ? JOBS.map((job,i)=>(
-                <div key={i} style={{ padding:'10px 0', borderBottom:i<JOBS.length-1?`1px solid ${C.border}`:'none' }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{job.time} · {job.service}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{job.client} · {job.duration}</p>
+            <SectionTitle title={`${monthAbbr} ${selectedDay} — Schedule`} />
+            {loading ? (
+              <p style={{ fontSize:13, color:C.muted }}>Loading…</p>
+            ) : error ? (
+              <p style={{ fontSize:13, color:C.error }}>{error}</p>
+            ) : daySchedule.length===0 ? (
+              <p style={{ fontSize:13, color:C.muted }}>No jobs scheduled for this day.</p>
+            ) : daySchedule.map((job,i)=>(
+                <div key={job.id} style={{ padding:'10px 0', borderBottom:i<daySchedule.length-1?`1px solid ${C.border}`:'none' }}>
+                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{[job.time, job.service].filter(Boolean).join(' · ')}</p>
+                  <p style={{ fontSize:11, color:C.muted }}>{[job.client, job.duration].filter(Boolean).join(' · ')}</p>
                 </div>
               ))
-              : <p style={{ fontSize:13, color:C.muted }}>No jobs scheduled for this day.</p>
             }
           </Card>
           <Card style={{ padding:20 }}>
@@ -732,12 +798,12 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
             <div style={{ display:'flex', gap:8, flexWrap:'wrap' as const, marginBottom:12 }}>
               {[...blocked].map(d=>(
                 <div key={d} style={{ display:'flex', gap:4, alignItems:'center', padding:'4px 10px', borderRadius:99, background:`${C.error}10`, border:`1px solid ${C.error}30` }}>
-                  <p style={{ fontSize:11, fontWeight:700, color:C.error }}>Jan {d}</p>
+                  <p style={{ fontSize:11, fontWeight:700, color:C.error }}>{monthAbbr} {d}</p>
                   <button onClick={()=>setBlocked(p=>{ const n=new Set(p); n.delete(d); return n })} style={{ background:'none', border:'none', cursor:'pointer', color:C.error, display:'flex', padding:0 }}><span style={{display:'flex',transform:'scale(0.75)'}}>{I.close}</span></button>
                 </div>
               ))}
             </div>
-            <Btn label={`Block Jan ${selectedDay}`} variant="secondary" small onClick={()=>{ setBlocked(p=>new Set([...p,selectedDay])); onToast(`Jan ${selectedDay} blocked`) }} />
+            <Btn label={`Block ${monthAbbr} ${selectedDay}`} variant="secondary" small onClick={()=>{ setBlocked(p=>new Set([...p,selectedDay])); onToast(`${monthAbbr} ${selectedDay} blocked (not saved — coming soon)`) }} />
           </Card>
         </div>
       </div>
@@ -1133,42 +1199,112 @@ function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Service Areas ────────────────────────────────────────────────────────────
+// Service Areas reuses the same agent_availability.max_travel_distance_km
+// / agent_details.service_areas columns the onboarding travel-radius step
+// already persists (see Phase 1A) — this view was previously a disconnected
+// local useState that never read or wrote that data.
 function ServiceAreas({ onToast }:{ onToast:(m:string)=>void }) {
-  const [radius, setRadius] = useState(25)
+  const [availability, setAvailability] = useState<any>(null)
+  const [serviceAreaCities, setServiceAreaCities] = useState<string[]>([])
+  const [radius, setRadius] = useState<number|null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError('')
+        const [availabilityResult, agentDetailsResult] = await Promise.allSettled([
+          getMyAvailability(),
+          getMyAgentDetails(),
+        ])
+        if(cancelled) return
+        const availabilityData = availabilityResult.status==='fulfilled' ? (availabilityResult.value as any) : null
+        setAvailability(availabilityData)
+        setRadius(availabilityData?.max_travel_distance_km ?? 25)
+        const agentDetailsData = agentDetailsResult.status==='fulfilled' ? (agentDetailsResult.value as any) : null
+        setServiceAreaCities(agentDetailsData?.service_areas ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load service area settings:', err)
+        setError("We couldn't load your service area settings.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  const handleSave = async () => {
+    if(radius==null) return
+    setSaving(true)
+    try {
+      const saved = await saveMyAvailability({
+        working_days: availability?.working_days ?? [],
+        preferred_shift: availability?.preferred_shift ?? 'morning',
+        emergency_available: availability?.emergency_available ?? false,
+        holiday_available: availability?.holiday_available ?? false,
+        max_weekly_hours: availability?.max_weekly_hours ?? 40,
+        max_travel_distance_km: radius,
+      })
+      setAvailability(saved)
+      onToast('Service area updated')
+    } catch(err) {
+      console.error('Failed to save service area:', err)
+      onToast("Couldn't save — please try again")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:700 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Service Areas</h2>
-      {/* Map placeholder */}
-      <Card style={{ overflow:'hidden', marginBottom:20 }}>
-        <div style={{ height:280, background:`linear-gradient(135deg,${C.bg},#E4EEF0)`, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:10, position:'relative' as const }}>
-          <div style={{ position:'absolute', inset:0, backgroundImage:`radial-gradient(circle at 40% 50%, ${C.primary}15 0%, transparent 70%)` }} />
-          {/* Coverage rings */}
-          {[100,70,42].map((s,i)=>(
-            <div key={i} style={{ position:'absolute', width:`${s}%`, height:`${s*0.7}%`, borderRadius:'50%', border:`2px dashed ${C.primary}${i===2?'40':'20'}`, top:'50%', left:'50%', transform:'translate(-50%,-50%)' }} />
-          ))}
-          <div style={{ width:16, height:16, borderRadius:'50%', background:C.primary, boxShadow:`0 0 0 6px ${C.primary}30`, zIndex:1 }} />
-          <p style={{ fontSize:13, fontWeight:700, color:C.sub, zIndex:1, background:C.surface, padding:'4px 12px', borderRadius:8 }}>Colombo · Coverage: {radius} km</p>
-          <p style={{ fontSize:11, color:C.muted }}>Interactive map — coming soon</p>
-        </div>
-        <div style={{ padding:20 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Travel Radius</p>
-            <p style={{ fontSize:13, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{radius} km</p>
-          </div>
-          <input type="range" min={5} max={100} step={5} value={radius} onChange={e=>setRadius(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer', marginBottom:14 }} />
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-            {['Colombo','Dehiwela','Moratuwa','Mount Lavinia','Nugegoda','Maharagama'].map((city,i)=>(
-              <div key={i} style={{ padding:'8px 10px', borderRadius:8, background:C.bg, display:'flex', gap:5, alignItems:'center' }}>
-                <span style={{color:C.primary,display:'flex',transform:'scale(0.8)'}}>{I.pin}</span>
-                <p style={{ fontSize:11, fontWeight:600, color:C.type }}>{city}</p>
-              </div>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your service area…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : (
+        <Card style={{ overflow:'hidden', marginBottom:20 }}>
+          {/* Map placeholder */}
+          <div style={{ height:280, background:`linear-gradient(135deg,${C.bg},#E4EEF0)`, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:10, position:'relative' as const }}>
+            <div style={{ position:'absolute', inset:0, backgroundImage:`radial-gradient(circle at 40% 50%, ${C.primary}15 0%, transparent 70%)` }} />
+            {/* Coverage rings */}
+            {[100,70,42].map((s,i)=>(
+              <div key={i} style={{ position:'absolute', width:`${s}%`, height:`${s*0.7}%`, borderRadius:'50%', border:`2px dashed ${C.primary}${i===2?'40':'20'}`, top:'50%', left:'50%', transform:'translate(-50%,-50%)' }} />
             ))}
+            <div style={{ width:16, height:16, borderRadius:'50%', background:C.primary, boxShadow:`0 0 0 6px ${C.primary}30`, zIndex:1 }} />
+            <p style={{ fontSize:13, fontWeight:700, color:C.sub, zIndex:1, background:C.surface, padding:'4px 12px', borderRadius:8 }}>Coverage: {radius} km</p>
+            <p style={{ fontSize:11, color:C.muted }}>Interactive map — coming soon</p>
           </div>
-          <div style={{ marginTop:14 }}>
-            <Btn label="Save Coverage Area" variant="primary" small onClick={()=>onToast('Service area updated')} />
+          <div style={{ padding:20 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
+              <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Travel Radius</p>
+              <p style={{ fontSize:13, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{radius} km</p>
+            </div>
+            <input type="range" min={5} max={100} step={5} value={radius??25} onChange={e=>setRadius(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer', marginBottom:14 }} />
+            {serviceAreaCities.length>0 ? (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+                {serviceAreaCities.map((city,i)=>(
+                  <div key={i} style={{ padding:'8px 10px', borderRadius:8, background:C.bg, display:'flex', gap:5, alignItems:'center' }}>
+                    <span style={{color:C.primary,display:'flex',transform:'scale(0.8)'}}>{I.pin}</span>
+                    <p style={{ fontSize:11, fontWeight:600, color:C.type }}>{city}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize:12, color:C.muted }}>No service areas set yet — add cities during profile setup.</p>
+            )}
+            <div style={{ marginTop:14 }}>
+              <Btn label={saving?'Saving…':'Save Coverage Area'} variant="primary" small disabled={saving} onClick={handleSave} />
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      )}
     </div>
   )
 }
@@ -1208,35 +1344,44 @@ function StatusCenter({ status, setStatus, onToast }:{ status:Status; setStatus:
 }
 
 // ─── Activity Timeline ────────────────────────────────────────────────────────
-function ActivityTimeline() {
-  const events = [
-    { icon:'💼', l:'Job Accepted',         d:'Post-Surgery Care · Chamari Dissanayake',          t:'Today, 2 min ago',    color:C.accent  },
-    { icon:'💰', l:'Payment Received',     d:'LKR 3,750 for Hospital Appointment · Ihsan',       t:'Today, 1 hr ago',     color:C.success },
-    { icon:'⭐', l:'Review Received',      d:'5 stars from Mohamed Ihsan',                       t:'Today, 1.5 hrs ago',  color:C.warning },
-    { icon:'▶️', l:'Task Started',         d:'Hospital Appointment · Nimal Perera',              t:'Today, 9:00 AM',      color:C.primary },
-    { icon:'✅', l:'Certificate Approved', d:'First Aid Certificate verified by ReadyPal',       t:'Yesterday, 3:00 PM',  color:C.success },
-    { icon:'👤', l:'Profile Updated',      d:'Professional headline updated',                    t:'2 days ago',          color:C.primary },
-    { icon:'💼', l:'Job Accepted',         d:'Home Care · Priya Fernando',                       t:'14 Jan, 8:00 AM',     color:C.accent  },
-    { icon:'🔐', l:'Login',               d:'Chrome · MacBook · Colombo',                       t:'14 Jan, 7:55 AM',     color:C.muted   },
-  ]
+// Built from real notifications (getMyNotifications) — there is no separate
+// activity_log table yet, so richer entries (payments, reviews, logins,
+// task-in-progress events) aren't fabricated; they'll appear here once
+// those subsystems exist and start writing notifications.
+function ActivityTimeline({ notifications, loading, error }:{ notifications:any[]; loading:boolean; error:string }) {
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Activity Timeline</h2>
-      <div style={{ display:'flex', flexDirection:'column' }}>
-        {events.map((e,i,arr)=>(
-          <div key={i} style={{ display:'flex', gap:14 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:40, height:40, borderRadius:12, background:`${e.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{e.icon}</div>
-              {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
-            </div>
-            <div style={{ paddingBottom:i<arr.length-1?18:0, paddingTop:4 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{e.l}</p>
-              <p style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{e.d}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{e.t}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your activity…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : notifications.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>🕒</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Activity Yet</p>
+          <p style={{ fontSize:12, color:C.muted }}>Your activity will show up here as things happen.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column' }}>
+          {notifications.map((n:any,i:number,arr:any[])=>{
+            const meta = notifTypeMeta(n.type)
+            return (
+              <div key={n.id} style={{ display:'flex', gap:14 }}>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+                  <div style={{ width:40, height:40, borderRadius:12, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{meta.icon}</div>
+                  {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
+                </div>
+                <div style={{ paddingBottom:i<arr.length-1?18:0, paddingTop:4 }}>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{n.title}</p>
+                  <p style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{n.body}</p>
+                  <p style={{ fontSize:11, color:C.muted }}>{formatRelativeTime(n.created_at)}</p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -1401,6 +1546,42 @@ export default function CareAgentDashboard() {
 
   const unreadNotifCount = notifications.filter((n:any)=>!n.read).length
 
+  // ─── Real applications / scheduled jobs ─────────────────────────────────
+  const [applications, setApplications] = useState<any[]>([])
+  const [jobsLoading, setJobsLoading] = useState(true)
+  const [jobsError, setJobsError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadApplications = async () => {
+      try {
+        setJobsLoading(true)
+        setJobsError('')
+        const data = await getMyApplications()
+        if(!cancelled) setApplications(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load applications:', err)
+        setJobsError("We couldn't load your schedule. Please try again.")
+      } finally {
+        if(!cancelled) setJobsLoading(false)
+      }
+    }
+    loadApplications()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  const scheduledJobs = applications
+    .map(scheduledJobFromApplication)
+    .sort((a,b) => {
+      if(!a.scheduledDate && !b.scheduledDate) return 0
+      if(!a.scheduledDate) return 1
+      if(!b.scheduledDate) return -1
+      return a.scheduledDate.localeCompare(b.scheduledDate)
+    })
+  const todaysJobs = scheduledJobs.filter(j => isSameDate(j.scheduledDate, new Date()))
+
   const markNotifRead = async (id:string) => {
     const target = notifications.find(n=>n.id===id)
     if(!target || target.read) return
@@ -1435,11 +1616,12 @@ export default function CareAgentDashboard() {
     switch(sub) {
       case 'home':        return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
                              agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
-                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead} />
-      case 'schedule':    return <Schedule onToast={showToast} />
+                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead}
+                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError} />
+      case 'schedule':    return <Schedule onToast={showToast} jobs={todaysJobs} loading={jobsLoading} error={jobsError} />
       case 'activeTask':  return <ActiveTask onToast={showToast} />
       case 'invitations': return <Invitations onToast={showToast} />
-      case 'calendar':    return <CalendarView onToast={showToast} />
+      case 'calendar':    return <CalendarView onToast={showToast} jobs={scheduledJobs} loading={jobsLoading} error={jobsError} />
       case 'performance': return <Performance />
       case 'earnings':    return <Earnings onToast={showToast} />
       case 'notifications':return <NotificationCenter notifications={notifications} loading={notifLoading} error={notifError} onMarkRead={markNotifRead} onMarkAllRead={markAllNotifsRead} />
@@ -1448,11 +1630,12 @@ export default function CareAgentDashboard() {
       case 'profile':     return <ProfileCompletion onToast={showToast} />
       case 'serviceAreas':return <ServiceAreas onToast={showToast} />
       case 'statusCenter':return <StatusCenter status={status} setStatus={setStatus} onToast={showToast} />
-      case 'timeline':    return <ActivityTimeline />
+      case 'timeline':    return <ActivityTimeline notifications={notifications} loading={notifLoading} error={notifError} />
       case 'emergency':   return <EmergencyPanel onToast={showToast} />
       default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
                              agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
-                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead} />
+                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead}
+                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError} />
     }
   }
 
