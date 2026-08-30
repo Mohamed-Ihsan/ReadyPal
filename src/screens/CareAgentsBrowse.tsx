@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { getAgentsForBrowse } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -916,11 +917,17 @@ export default function CareAgentsBrowse() {
   const [quickViewId, setQuickViewId] = useState<string|null>(null)
   const [showSortMenu, setShowSortMenu] = useState(false)
 
+  const [agents, setAgents] = useState<Agent[]>([])
+
+useEffect(() => {
+  getAgentsForBrowse().then(setAgents).catch(console.error)
+}, [])
+
   const sortOptions = ['Recommended','Highest Rated','Most Experienced','Nearest','Lowest Price','Highest Price','Fastest Response','Recently Active']
 
-  const quickViewAgent = AGENTS.find(a=>a.id===quickViewId)
+  const quickViewAgent = agents.find(a=>a.id===quickViewId)
 
-  const filtered = AGENTS.filter(a=>{
+  const filtered = agents.filter(a=>{
     const q = search.toLowerCase()
     const matchSearch = !q || a.name.toLowerCase().includes(q) || a.skills.join(' ').toLowerCase().includes(q) || a.city.toLowerCase().includes(q) || a.languages.join(' ').toLowerCase().includes(q)
     const matchAvail = !filters.availability.length || filters.availability.includes(a.availability)
@@ -1037,7 +1044,7 @@ export default function CareAgentsBrowse() {
       {/* Content */}
       <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column' }}>
         {subView==='compare' && (
-          <CompareTable agents={AGENTS.filter(a=>compareIds.has(a.id))} onRemove={id=>setCompareIds(p=>{const n=new Set(p);n.delete(id);return n})} onClose={()=>setSubView('browse')} />
+          <CompareTable agents={agents.filter(a=>compareIds.has(a.id))} onRemove={id=>setCompareIds(p=>{const n=new Set(p);n.delete(id);return n})} onClose={()=>setSubView('browse')} />
         )}
         {subView==='recommended' && (
           <div style={{ padding:'28px 28px 0' }}>
@@ -1045,22 +1052,22 @@ export default function CareAgentsBrowse() {
             <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>AI-matched agents based on your beneficiaries' needs and location</p>
           </div>
         )}
-        {subView==='recommended' && <RecommendedSection agents={AGENTS} favs={favs} onFav={toggleFav} onQuickView={id=>setQuickViewId(id)} />}
+        {subView==='recommended' && <RecommendedSection agents={agents} favs={favs} onFav={toggleFav} onQuickView={id=>setQuickViewId(id)} />}
         {subView==='featured' && (
           <div style={{ padding:'28px 28px 0' }}>
             <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Featured Agents</h2>
             <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Hand-picked top performers in their specialities</p>
           </div>
         )}
-        {subView==='featured' && <FeaturedSection agents={AGENTS} favs={favs} onFav={toggleFav} onQuickView={id=>setQuickViewId(id)} />}
-        {subView==='favorites' && <FavoritesView agents={AGENTS} favs={favs} onFav={toggleFav} compareIds={compareIds} onCompare={toggleCompare} onQuickView={id=>setQuickViewId(id)} />}
+        {subView==='featured' && <FeaturedSection agents={agents} favs={favs} onFav={toggleFav} onQuickView={id=>setQuickViewId(id)} />}
+        {subView==='favorites' && <FavoritesView agents={agents} favs={favs} onFav={toggleFav} compareIds={compareIds} onCompare={toggleCompare} onQuickView={id=>setQuickViewId(id)} />}
         {subView==='recent' && (
           <>
             <div style={{ padding:'24px 28px 0' }}>
               <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Recently Viewed</h2>
               <p style={{ fontSize:13, color:C.muted, marginBottom:20 }}>Agents you've looked at recently</p>
             </div>
-            <RecentlyViewed agents={AGENTS} favs={favs} onFav={toggleFav} onQuickView={id=>setQuickViewId(id)} />
+            <RecentlyViewed agents={agents} favs={favs} onFav={toggleFav} onQuickView={id=>setQuickViewId(id)} />
           </>
         )}
 

@@ -1,3 +1,6 @@
+import { supabase } from '../lib/supabaseClient'
+
+
 import {
   useState, useRef, useEffect, useCallback,
   type ReactNode, type CSSProperties, type KeyboardEvent,
@@ -5,6 +8,7 @@ import {
 import logoFull from '@/imports/20260723_170707.png'
 import logoWhite from '@/imports/20260723_165045.png'
 import logoIcon from '@/imports/20260723_164632.png'
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type AuthScreen =
@@ -501,11 +505,32 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const submit = () => {
-    if (!email || !pass) { setError('Please fill in all fields.'); return }
-    setError(''); setLoading(true)
-    setTimeout(() => { setLoading(false); go('client-1') }, 1200)
+  const submit = async () => {
+  if (!email || !pass) { setError('Please fill in all fields.'); return }
+  setError(''); setLoading(true)
+
+  const { data, error: authError } = await supabase.auth.signInWithPassword({
+    email,
+    password: pass,
+  })
+
+  setLoading(false)
+
+  if (authError) {
+    setError(authError.message)
+    return
   }
+
+  // Check the user's role to route them correctly
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', data.user.id)
+    .single()
+
+  go(profile?.role === 'agent' ? 'agent-1' : 'client-1')
+  }
+
 
   return (
     <AuthShell left={
@@ -643,8 +668,36 @@ function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
 function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
   const [f, setF] = useState({ firstName:'', lastName:'', email:'', phone:'', country:'', password:'', confirm:'' })
   const [showP, setShowP] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const up = (k: keyof typeof f) => (v: string) => setF(prev => ({ ...prev, [k]: v }))
   const countries = ['Australia','United Kingdom','Canada','United States','New Zealand','Germany','France','UAE','Singapore','Malaysia']
+
+  const submit = async () => {
+    if (f.password !== f.confirm) { setError('Passwords do not match.'); return }
+    if (!f.email || !f.password) { setError('Please fill in all required fields.'); return }
+    setError(''); setLoading(true)
+
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: f.email,
+      password: f.password,
+      options: { data: { full_name: `${f.firstName} ${f.lastName}` } },
+    })
+
+    if (signUpError) {
+      setLoading(false)
+      setError(signUpError.message)
+      return
+    }
+
+    if (data.user) {
+      await supabase.from('profiles').update({ phone: f.phone, role: 'client' }).eq('id', data.user.id)
+    }
+
+    setLoading(false)
+    go('client-2')
+  }
+
   return (
     <AuthShell left={<LeftPanel icon={Ico.user} title="Tell us about yourself." desc="Your details help us personalise your experience and keep your account secure." facts={['Secure & encrypted','Never shared with third parties','GDPR compliant']} />}>
       <button onClick={() => go('role-select')} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.sub, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:600, marginBottom:24, padding:0 }}>{Ico.arrowL} Back</button>
@@ -663,7 +716,8 @@ function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
         <FloatInput label="Confirm Password" type={showP ? 'text' : 'password'} value={f.confirm} onChange={up('confirm')}
           icon={Ico.lock}
           error={f.confirm && f.confirm !== f.password ? 'Passwords do not match.' : undefined} />
-        <Btn variant="primary" size="lg" fullWidth onClick={() => go('client-2')}>Continue {Ico.arrowR}</Btn>
+        {error && <InlineAlert type="error" message={error} />}
+        <Btn variant="primary" size="lg" fullWidth onClick={submit} loading={loading}>Continue {Ico.arrowR}</Btn>
       </div>
     </AuthShell>
   )
