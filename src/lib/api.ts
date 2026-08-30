@@ -1897,3 +1897,368 @@ export async function createSupportTicket(subject: string) {
 
   return data
 }
+
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Messaging Hub: conversations, participants, messages.
+//
+// conversations.type / .category and messages.type / .status are
+// constrained to the values below — only these are ever written.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type ConversationType = "direct" | "group" | "support"
+export type ConversationCategory = "care" | "task" | "completed" | "support"
+export type MessageType = "text" | "image" | "document" | "voice" | "location" | "task_update" | "system" | "checklist"
+export type MessageStatus = "sending" | "sent" | "delivered" | "read" | "failed"
+
+const CONVERSATION_SELECT = `
+  id, booking_id, name, type, category, is_emergency, created_at,
+  booking:bookings(
+    id, status, scheduled_date, scheduled_time, duration, location, priority,
+    care_request:care_requests(title, service_type),
+    beneficiary:beneficiaries!beneficiary_id(name, preferred_name)
+  )
+`
+
+const MESSAGE_SELECT = `
+  id, conversation_id, sender_id, type, text, attachment, status, starred, pinned, edited, deleted, created_at,
+  sender:profiles!sender_id(id, full_name, preferred_name, avatar_url)
+`
+
+// Lists every conversation the authenticated user participates in, with
+// enough context to render the inbox: the caller's own pinned/muted
+// participant settings, the other participant(s)' real profiles (resolved
+// separately since "who else is in this conversation" isn't a simple FK
+// embed), any linked booking/care_request/beneficiary context, and the
+// most recent real message — there is no last_message_at column, so it is
+// derived from messages directly rather than faked.
+export async function getMyConversations() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data: myRows, error: myError } = await supabase
+    .from("conversation_participants")
+    .select("conversation_id, pinned, muted")
+    .eq("user_id", user.id)
+
+  if (myError) {
+    throw myError
+  }
+
+  if (!myRows || myRows.length === 0) {
+    return []
+  }
+
+  const conversationIds = myRows.map((r) => r.conversation_id)
+
+  const { data: conversations, error: convError } = await supabase
+    .from("conversations")
+    .select(CONVERSATION_SELECT)
+    .in("id", conversationIds)
+
+  if (convError) {
+    throw convError
+  }
+
+  const { data: allParticipants, error: partError } = await supabase
+    .from("conversation_participants")
+    .select("conversation_id, user_id")
+    .in("conversation_id", conversationIds)
+
+  if (partError) {
+    throw partError
+  }
+
+  const otherUserIds = Array.from(
+    new Set((allParticipants ?? []).filter((p) => p.user_id !== user.id).map((p) => p.user_id))
+  )
+
+  let profilesById = new Map<string, any>()
+  if (otherUserIds.length > 0) {
+    const { data: profiles, error: profError } = await supabase
+      .from("profiles")
+      .select("id, full_name, preferred_name, avatar_url, phone, role")
+      .in("id", otherUserIds)
+
+    if (profError) {
+      throw profError
+    }
+
+    profilesById = new Map((profiles ?? []).map((p) => [p.id, p]))
+  }
+
+  const { data: recentMessages, error: msgError } = await supabase
+    .from("messages")
+    .select("id, conversation_id, sender_id, type, text, deleted, created_at")
+    .in("conversation_id", conversationIds)
+    .order("created_at", { ascending: false })
+    .limit(500)
+
+  if (msgError) {
+    throw msgError
+  }
+
+  const lastMessageByConversation = new Map<string, any>()
+  for (const m of recentMessages ?? []) {
+    if (!lastMessageByConversation.has(m.conversation_id)) {
+      lastMessageByConversation.set(m.conversation_id, m)
+    }
+  }
+
+  const otherParticipantsByConversation = new Map<string, any[]>()
+  for (const p of allParticipants ?? []) {
+    if (p.user_id === user.id) continue
+    const arr = otherParticipantsByConversation.get(p.conversation_id) ?? []
+    const profile = profilesById.get(p.user_id)
+    if (profile) arr.push(profile)
+    otherParticipantsByConversation.set(p.conversation_id, arr)
+  }
+
+  const myRowByConversation = new Map(myRows.map((r) => [r.conversation_id, r]))
+
+  const result = (conversations ?? []).map((c: any) => {
+    const mine = myRowByConversation.get(c.id)
+    return {
+      ...c,
+      pinned: mine?.pinned ?? false,
+      muted: mine?.muted ?? false,
+      otherParticipants: otherParticipantsByConversation.get(c.id) ?? [],
+      lastMessage: lastMessageByConversation.get(c.id) ?? null,
+    }
+  })
+
+  result.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    const aTime = a.lastMessage?.created_at ?? a.created_at
+    const bTime = b.lastMessage?.created_at ?? b.created_at
+    return new Date(bTime).getTime() - new Date(aTime).getTime()
+  })
+
+  return result
+}
+
+// RLS already restricts this to conversations the caller participates in.
+export async function getConversationMessages(conversationId: string) {
+  const { data, error } = await supabase
+    .from("messages")
+    .select(MESSAGE_SELECT)
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true })
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
+
+export async function sendMessage(conversationId: string, text: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const trimmed = text.trim()
+  if (!trimmed) {
+    throw new Error("Message cannot be empty")
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversationId,
+      sender_id: user.id,
+      type: "text" satisfies MessageType,
+      text: trimmed,
+      status: "sent" satisfies MessageStatus,
+    })
+    .select(MESSAGE_SELECT)
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Only the sender's own, not-yet-deleted message may be edited — scoped
+// explicitly to sender_id in addition to RLS.
+export async function editMessage(messageId: string, text: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const trimmed = text.trim()
+  if (!trimmed) {
+    throw new Error("Message cannot be empty")
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .update({ text: trimmed, edited: true })
+    .eq("id", messageId)
+    .eq("sender_id", user.id)
+    .eq("deleted", false)
+    .select(MESSAGE_SELECT)
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Soft delete only, per the confirmed schema — the row is kept but its
+// content is cleared so the UI can show an honest "message deleted" state.
+export async function deleteMessage(messageId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .update({ deleted: true, text: null, attachment: null })
+    .eq("id", messageId)
+    .eq("sender_id", user.id)
+    .select(MESSAGE_SELECT)
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// RLS only allows updating one's own messages, so starring/pinning a
+// received message is not possible at the database level — this is scoped
+// to sender_id accordingly rather than pretending otherwise.
+export async function toggleMessageStar(messageId: string, starred: boolean) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .update({ starred })
+    .eq("id", messageId)
+    .eq("sender_id", user.id)
+    .select(MESSAGE_SELECT)
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function toggleMessagePin(messageId: string, pinned: boolean) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .update({ pinned })
+    .eq("id", messageId)
+    .eq("sender_id", user.id)
+    .select(MESSAGE_SELECT)
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// conversation_participants holds one row per (conversation, user) — this
+// only ever touches the caller's own row, never another participant's.
+export async function updateConversationPreferences(
+  conversationId: string,
+  updates: { pinned?: boolean; muted?: boolean }
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("conversation_participants")
+    .update(updates)
+    .eq("conversation_id", conversationId)
+    .eq("user_id", user.id)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Finds or creates the direct conversation for a booking.
+//
+// This used to do a client-side check-then-insert (select existing ->
+// insert conversation -> insert participants). That insert reliably hit a
+// 403 (Postgres 42501 "new row violates row-level security policy for
+// table conversations"): the INSERT policy requires the caller to already
+// be a conversation_participants row for the conversation being created,
+// which is impossible for a brand-new row since participants are only
+// added *after* the conversation exists — a circular bootstrap dependency
+// no client-side ordering of statements can satisfy.
+//
+// The fix is a SECURITY DEFINER RPC (see
+// supabase/migrations/20260830000000_create_booking_conversation_rpc.sql)
+// that performs its own authorization check (auth.uid() must be the
+// booking's agent or client) instead of relying on RLS for the write, and
+// atomically creates the conversation plus both participant rows in one
+// transaction, guarded by a unique index on (booking_id) for type='direct'
+// so concurrent/retried calls can't create duplicates. The RPC only takes
+// booking_uuid — participant ids are resolved server-side from the
+// booking, never accepted from the frontend.
+export async function getOrCreateBookingConversation(bookingId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase.rpc("create_booking_conversation", {
+    booking_uuid: bookingId,
+  })
+
+  if (error) {
+    console.error("create_booking_conversation failed:", error)
+    if (error.message?.includes("Not authorized")) {
+      throw new Error("You are not part of this booking")
+    }
+    if (error.message?.includes("no one to message")) {
+      throw new Error("This booking has no one to message yet")
+    }
+    if (error.message?.includes("Booking not found")) {
+      throw new Error("Booking not found")
+    }
+    throw new Error("Failed to start conversation")
+  }
+
+  return data as string
+}

@@ -11,6 +11,7 @@ import TaskManagement from './screens/TaskManagement'
 import CareExecution from './screens/CareExecution'
 import AgentEarnings from './screens/AgentEarnings'
 import JobManagement from './screens/JobManagement'
+import MessagingHub from './screens/MessagingHub'
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
         <Route path="/agent/careexecution" element={<CareExecution />} />
         <Route path="/agent/agentearnings" element={<AgentEarnings />} />
         <Route path="/agent/jobmanagement" element={<JobManagement />} />
+        <Route path="/agent/messaginghub" element={<MessagingHub />} />
       </Routes>
     </BrowserRouter>
   )
