@@ -1499,6 +1499,39 @@ export async function updateBookingStatus(bookingId: string, status: BookingStat
   return data
 }
 
+// Job Management's agent-facing "Confirm Assignment" action. Kept separate
+// from updateBookingStatus() — which CareExecution reuses for other valid
+// status transitions that must never also flip `confirmed` — because this
+// is the one workflow where status and the confirmed flag change together.
+// Scoped to the authenticated agent's own booking, and only while it's
+// still "assigned", so it can't be used to confirm someone else's booking
+// or re-confirm one that's already moved on.
+export async function confirmBooking(bookingId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("bookings")
+    .update({
+      status: "confirmed" satisfies BookingStatus,
+      confirmed: true,
+    })
+    .eq("id", bookingId)
+    .eq("agent_id", user.id)
+    .eq("status", "assigned")
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
 export async function getVisitLog(bookingId: string) {
   const { data, error } = await supabase
     .from("visit_logs")
@@ -1763,4 +1796,104 @@ export async function getMyPayouts() {
   }
 
   return data ?? []
+}
+
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Job Management: all of an agent's bookings (any status), beneficiary
+// documents, and a minimal support-ticket helper.
+// ─────────────────────────────────────────────────────────────────────────
+
+const AGENT_BOOKING_SELECT = `
+  id,
+  care_request_id,
+  application_id,
+  client_id,
+  beneficiary_id,
+  status,
+  scheduled_date,
+  scheduled_time,
+  duration,
+  payment_amount,
+  priority,
+  recurring,
+  confirmed,
+  location,
+  created_at,
+  care_request:care_requests(id, title, service_type, tasks, instructions, access_notes, household_notes, parking_notes, urgent, address1, address2, city, province, lat, lng),
+  client:profiles!client_id(id, full_name, avatar_url, phone),
+  beneficiary:beneficiaries!beneficiary_id(id, name, preferred_name, dob, age, gender, relationship, address, blood_group, allergies, conditions, medications, doctor, hospital, mobility, vision, hearing, memory, med_notes, emergency_contacts, pref_languages, dietary, special_req)
+`
+
+// All bookings for the agent, any status — Job Management needs upcoming,
+// active, completed, cancelled and rescheduled jobs, not just the single
+// active one CareExecution cares about.
+export async function getMyBookings() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("bookings")
+    .select(AGENT_BOOKING_SELECT)
+    .eq("agent_id", user.id)
+    .order("scheduled_date", { ascending: true })
+    .order("scheduled_time", { ascending: true })
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
+
+// RLS already scopes this to documents belonging to a beneficiary of one of
+// the caller's own bookings — no extra client-side filtering needed.
+export async function getBeneficiaryDocuments(beneficiaryId: string) {
+  const { data, error } = await supabase
+    .from("beneficiary_documents")
+    .select("*")
+    .eq("beneficiary_id", beneficiaryId)
+    .order("uploaded_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
+
+// support_tickets has no booking_id column, so job context is folded into
+// the subject text by the caller rather than a real relation. category is
+// NOT NULL with no confirmed CHECK constraint, so a stable, truthful,
+// general category is used rather than guessing an enum. priority/status
+// use the confirmed-valid values ("medium"/"open") since neither column
+// has a known usable default.
+export async function createSupportTicket(subject: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("support_tickets")
+    .insert({
+      user_id: user.id,
+      subject,
+      category: "Job Issue",
+      priority: "medium",
+      status: "open",
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
 }

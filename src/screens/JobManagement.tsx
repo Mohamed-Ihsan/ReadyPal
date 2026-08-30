@@ -1,4 +1,15 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  getMyProfile,
+  getMyBookings,
+  getBeneficiaryDocuments,
+  getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  createSupportTicket,
+  confirmBooking,
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -87,68 +98,198 @@ function SectionTitle({ title, action, onAction }:{ title:string; action?:string
   )
 }
 
-function Toast({ msg }:{ msg:string }) {
+// kind defaults to 'success' so every existing call site keeps its current
+// look; only call sites that pass 'error' get the distinct red/× styling.
+function Toast({ msg, kind='success' }:{ msg:string; kind?:'success'|'error' }) {
+  const isError = kind==='error'
   return (
-    <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:999, display:'flex', alignItems:'center', gap:10, padding:'12px 22px', borderRadius:14, background:C.type, color:'#fff', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, boxShadow:'0 8px 28px rgba(0,0,0,0.22)', pointerEvents:'none', whiteSpace:'nowrap' as const }}>
-      <span style={{display:'flex',color:C.success}}>{I.check}</span>{msg}
+    <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:999, display:'flex', alignItems:'center', gap:10, padding:'12px 22px', borderRadius:14, background:isError?C.error:C.type, color:'#fff', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, boxShadow:isError?`0 8px 28px ${C.error}55`:'0 8px 28px rgba(0,0,0,0.22)', pointerEvents:'none', whiteSpace:'nowrap' as const }}>
+      <span style={{display:'flex',color:isError?'#fff':C.success}}>{isError?I.close:I.check}</span>{msg}
+    </div>
+  )
+}
+
+function EmptyPage({ title, message }:{ title:string; message:string }) {
+  return (
+    <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>{title}</h2>
+      <Card style={{ padding:40, textAlign:'center' as const }}>
+        <p style={{ fontSize:13, color:C.muted }}>{message}</p>
+      </Card>
     </div>
   )
 }
 
 // ─── Status config ────────────────────────────────────────────────────────────
+// Mirrors bookings.status exactly — that column only accepts these six
+// values, so no other status is ever shown as selectable or written back.
 const STATUS: Record<string,{color:string;label:string}> = {
   assigned:    { color:C.info,    label:'Assigned'    },
   confirmed:   { color:C.primary, label:'Confirmed'   },
-  preparing:   { color:C.accent,  label:'Preparing'   },
-  ready:       { color:'#8B5CF6', label:'Ready'       },
-  travelling:  { color:C.warning, label:'Travelling'  },
-  arrived:     { color:C.success, label:'Arrived'     },
+  in_progress: { color:C.success, label:'In Progress' },
+  completed:   { color:C.success, label:'Completed'   },
   cancelled:   { color:C.error,   label:'Cancelled'   },
   rescheduled: { color:C.muted,   label:'Rescheduled' },
 }
-
-// ─── Assignment data ──────────────────────────────────────────────────────────
-interface Assignment {
-  id:string; service:string; client:string; beneficiary:string; beneficiaryAge:number
-  date:string; time:string; duration:string; location:string; distance:string
-  payment:number; status:keyof typeof STATUS; priority:'high'|'medium'|'low'
-  recurring:boolean; confirmed:boolean
+function statusMeta(status?:string|null):{color:string;label:string} {
+  if(!status) return { color:C.muted, label:'Unknown' }
+  return STATUS[status] ?? { color:C.muted, label: status.charAt(0).toUpperCase()+status.slice(1).replace(/_/g,' ') }
 }
 
-const ASSIGNMENTS: Assignment[] = [
-  { id:'ASN-001', service:'Hospital Appointment Assistance', client:'Mohamed Ihsan',      beneficiary:'Nimal Perera',        beneficiaryAge:74, date:'Mon 20 Jan', time:'9:30 AM',  duration:'3 hrs',   location:'National Hospital, Colombo', distance:'3.2 km', payment:6000,  status:'confirmed',  priority:'high',   recurring:false, confirmed:true  },
-  { id:'ASN-002', service:'Home Wellness Visit',             client:'Priya Fernando',     beneficiary:'Rukmini Fernando',    beneficiaryAge:68, date:'Tue 21 Jan', time:'10:00 AM', duration:'4 hrs',   location:'Dehiwela',                  distance:'8.9 km', payment:7000,  status:'assigned',   priority:'medium', recurring:true,  confirmed:false },
-  { id:'ASN-003', service:'Medication Collection',           client:'Arjuna Wijesinghe',  beneficiary:'Lalitha Wijesinghe',  beneficiaryAge:71, date:'Tue 21 Jan', time:'3:00 PM',  duration:'1.5 hrs', location:'Liberty Plaza, Col 03',     distance:'4.8 km', payment:3500,  status:'assigned',   priority:'low',    recurring:false, confirmed:false },
-  { id:'ASN-004', service:'Post-Surgery Care',               client:'Chamari Dissanayake',beneficiary:'Siripala Dissanayake',beneficiaryAge:79, date:'Wed 22 Jan', time:'9:00 AM',  duration:'6 hrs',   location:'Malay Street, Col 02',      distance:'6.1 km', payment:9500,  status:'confirmed',  priority:'high',   recurring:false, confirmed:true  },
-  { id:'ASN-005', service:'Physiotherapy Support',           client:'Nirosha Jayawardena',beneficiary:'Dayaratne Jayawardena',beneficiaryAge:77,date:'Sun 26 Jan', time:'11:00 AM', duration:'2 hrs',   location:'Galle Face Area, Galle',    distance:'120 km', payment:4500,  status:'rescheduled',priority:'medium', recurring:true,  confirmed:false },
-  { id:'ASN-006', service:'Night Care Assistance',           client:'Suresh Perera',      beneficiary:'Indrani Perera',      beneficiaryAge:85, date:'Sat 18 Jan', time:'8:00 PM',  duration:'10 hrs',  location:'Borella, Col 08',           distance:'5.5 km', payment:12000, status:'cancelled',  priority:'high',   recurring:false, confirmed:false },
-]
+// ─── Real data shapes ─────────────────────────────────────────────────────────
+// These mirror the confirmed Supabase schema. jsonb/array fields on
+// beneficiaries (allergies, conditions, medications, pref_languages,
+// emergency_contacts) have no guaranteed shape, so they're read as
+// `unknown` and rendered defensively via toStringList()/toContactList().
+type CareRequestInfo = {
+  id:string; title:string|null; service_type:string|null; tasks:string[]|null
+  instructions:string|null; access_notes:string|null; household_notes:string|null; parking_notes:string|null
+  urgent:boolean|null; address1:string|null; address2:string|null; city:string|null; province:string|null
+  lat:number|null; lng:number|null
+} | null
 
-// ─── Assignment Card ──────────────────────────────────────────────────────────
-function AssignmentCard({ a, onView, compact=false }:{ a:Assignment; onView:()=>void; compact?:boolean }) {
-  const st = STATUS[a.status]
-  const priColor = a.priority==='high'?C.error:a.priority==='medium'?C.warning:C.muted
+type ClientInfo = { id:string; full_name:string|null; avatar_url:string|null; phone:string|null } | null
+
+type BeneficiaryInfo = {
+  id:string; name:string|null; preferred_name:string|null; dob:string|null; age:number|null
+  gender:string|null; relationship:string|null; address:string|null
+  blood_group:string|null; allergies:unknown; conditions:unknown; medications:unknown
+  doctor:string|null; hospital:string|null; mobility:string|null; vision:string|null; hearing:string|null; memory:string|null
+  med_notes:string|null; emergency_contacts:unknown; pref_languages:unknown; dietary:string|null; special_req:string|null
+} | null
+
+type Booking = {
+  id:string; care_request_id:string|null; application_id:string|null; client_id:string|null; beneficiary_id:string|null
+  status:string; scheduled_date:string|null; scheduled_time:string|null; duration:string|null
+  payment_amount:number|null; priority:string|null; recurring:boolean|null; confirmed:boolean|null
+  location:string|null; created_at:string
+  care_request:CareRequestInfo; client:ClientInfo; beneficiary:BeneficiaryInfo
+}
+
+type NotificationRow = { id:string; type:string|null; title:string|null; body:string|null; read:boolean; action_url:string|null; created_at:string }
+type BeneficiaryDocument = { id:string; beneficiary_id:string; name:string|null; type:string|null; file_url:string|null; uploaded_at:string|null; expiry_date:string|null }
+
+// ─── Formatting / defensive-rendering helpers ──────────────────────────────────
+function initials(name?:string|null):string {
+  if(!name) return '—'
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if(!parts.length) return '—'
+  return (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase()
+}
+function serviceLabel(cr:CareRequestInfo):string { return cr?.title || cr?.service_type || 'Care Visit' }
+function clientName(c:ClientInfo):string { return c?.full_name || 'Client not provided' }
+function beneficiaryName(b:BeneficiaryInfo):string { return b?.preferred_name || b?.name || 'Beneficiary not provided' }
+function locationLabel(b:Booking):string {
+  if(b.location) return b.location
+  const cr = b.care_request
+  const parts = [cr?.address1, cr?.address2, cr?.city, cr?.province].filter(Boolean)
+  return parts.length ? parts.join(', ') : 'Location not provided'
+}
+function formatDateLabel(dateStr?:string|null):string {
+  if(!dateStr) return 'Not scheduled'
+  const d = new Date(`${dateStr.slice(0,10)}T00:00:00`)
+  if(Number.isNaN(d.getTime())) return 'Not scheduled'
+  return d.toLocaleDateString('en-GB',{ weekday:'short', day:'numeric', month:'short' })
+}
+function formatTimeLabel(timeStr?:string|null):string {
+  if(!timeStr) return ''
+  const [hStr,mStr] = timeStr.split(':')
+  const h = Number(hStr)
+  if(Number.isNaN(h)) return timeStr
+  const period = h>=12?'PM':'AM'
+  const h12 = h%12===0?12:h%12
+  return `${h12}:${(mStr??'00').slice(0,2)} ${period}`
+}
+function fmt(n?:number|null):string { return typeof n==='number' ? `LKR ${n.toLocaleString()}` : 'Not available' }
+function computeAgeFromDob(dob:string):number|null {
+  const d = new Date(dob)
+  if(Number.isNaN(d.getTime())) return null
+  return Math.floor((Date.now()-d.getTime())/(365.25*24*3600*1000))
+}
+// Renders an unknown array/JSON-string/object/scalar field as a clean list
+// of strings — never crashes regardless of the actual stored shape.
+function toStringList(value:unknown):string[] {
+  if(value==null) return []
+  if(Array.isArray(value)) return value.map(v=>typeof v==='string'?v:JSON.stringify(v)).filter(Boolean)
+  if(typeof value==='string') {
+    const trimmed = value.trim()
+    if(!trimmed) return []
+    try {
+      const parsed = JSON.parse(trimmed)
+      if(Array.isArray(parsed)) return parsed.map(v=>typeof v==='string'?v:JSON.stringify(v)).filter(Boolean)
+    } catch { /* not JSON — treat as plain text below */ }
+    return trimmed.split(',').map(s=>s.trim()).filter(Boolean)
+  }
+  if(typeof value==='object') return Object.values(value as Record<string,unknown>).map(v=>typeof v==='string'?v:JSON.stringify(v))
+  return [String(value)]
+}
+type EmergencyContact = { name?:string; relationship?:string; phone?:string }
+function toContactList(value:unknown):EmergencyContact[] {
+  let arr:unknown[] = []
+  if(Array.isArray(value)) arr = value
+  else if(typeof value==='string') {
+    try { const p = JSON.parse(value); if(Array.isArray(p)) arr = p } catch { /* not JSON */ }
+  } else if(value && typeof value==='object') arr = [value]
+  return arr.filter(x=>x && typeof x==='object').map(x=>x as EmergencyContact)
+}
+function todayISO():string { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` }
+function isoDate(d:Date):string { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` }
+function startOfWeek(d:Date):Date {
+  const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const day = copy.getDay()
+  copy.setDate(copy.getDate() + (day===0?-6:1-day))
+  return copy
+}
+function bookingSortKey(b:Booking):string { return `${b.scheduled_date??''}T${b.scheduled_time??''}` }
+// Picks the single most relevant booking to default to when nothing has
+// been explicitly selected yet: an in-progress visit first, otherwise the
+// nearest upcoming assigned/confirmed booking, mirroring the same
+// real-data-only pattern used elsewhere in this app.
+function pickRelevantBooking(bookings:Booking[]):Booking|null {
+  if(!bookings.length) return null
+  const active = bookings.find(b=>b.status==='in_progress')
+  if(active) return active
+  const today = todayISO()
+  const upcoming = bookings
+    .filter(b=>(b.status==='assigned'||b.status==='confirmed')&&b.scheduled_date&&b.scheduled_date>=today)
+    .sort((a,b)=>bookingSortKey(a).localeCompare(bookingSortKey(b)))
+  if(upcoming.length) return upcoming[0]
+  const anyOpen = bookings
+    .filter(b=>b.status==='assigned'||b.status==='confirmed')
+    .sort((a,b)=>bookingSortKey(a).localeCompare(bookingSortKey(b)))
+  if(anyOpen.length) return anyOpen[0]
+  return bookings[0]
+}
+
+// ─── Booking Card ─────────────────────────────────────────────────────────────
+function BookingCard({ b, onView, compact=false }:{ b:Booking; onView:()=>void; compact?:boolean }) {
+  const st = statusMeta(b.status)
+  const priColor = b.priority==='high'?C.error:b.priority==='medium'?C.warning:C.muted
   return (
     <Card hover style={{ overflow:'hidden', position:'relative' as const }} onClick={onView}>
-      {a.recurring&&<div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:`linear-gradient(90deg,${C.primary},${C.accent})` }}/>}
+      {b.recurring&&<div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:`linear-gradient(90deg,${C.primary},${C.accent})` }}/>}
       <div style={{ padding:compact?'16px':'20px' }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
           <div style={{ flex:1, marginRight:10 }}>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const, marginBottom:6 }}>
               <Bdg label={st.label} color={st.color} dot />
-              {a.priority==='high'&&<Bdg label="Priority" color={priColor} />}
-              {a.recurring&&<Bdg label="Recurring" color={C.primary} />}
+              {b.priority==='high'&&<Bdg label="Priority" color={priColor} />}
+              {b.recurring&&<Bdg label="Recurring" color={C.primary} />}
+              {b.care_request?.urgent&&<Bdg label="Urgent" color={C.error} />}
             </div>
-            <h3 style={{ fontSize:compact?12:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:3, lineHeight:1.3 }}>{a.service}</h3>
-            <p style={{ fontSize:11, color:C.muted }}>{a.beneficiary}, {a.beneficiaryAge}yr · {a.client}</p>
+            <h3 style={{ fontSize:compact?12:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:3, lineHeight:1.3 }}>{serviceLabel(b.care_request)}</h3>
+            <p style={{ fontSize:11, color:C.muted }}>{beneficiaryName(b.beneficiary)} · {clientName(b.client)}</p>
           </div>
           <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-            <p style={{ fontSize:15, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1.1 }}>LKR {a.payment.toLocaleString()}</p>
-            <p style={{ fontSize:10, color:C.muted }}>{a.distance}</p>
+            <p style={{ fontSize:15, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1.1 }}>{fmt(b.payment_amount)}</p>
           </div>
         </div>
         <div style={{ display:'flex', gap:14, flexWrap:'wrap' as const, marginBottom:compact?0:10 }}>
-          {[{i:I.calendar,v:`${a.date} · ${a.time}`},{i:I.clock,v:a.duration},{i:I.pin,v:a.location.split(',')[0]}].map((m,i)=>(
+          {[
+            {i:I.calendar, v:`${formatDateLabel(b.scheduled_date)}${b.scheduled_time?` · ${formatTimeLabel(b.scheduled_time)}`:''}`},
+            {i:I.clock,    v:b.duration||'Duration not set'},
+            {i:I.pin,      v:locationLabel(b).split(',')[0]},
+          ].map((m,i)=>(
             <div key={i} style={{ display:'flex', gap:4, alignItems:'center' }}>
               <span style={{color:C.muted,display:'flex',transform:'scale(0.9)'}}>{m.i}</span>
               <p style={{ fontSize:11, color:C.sub }}>{m.v}</p>
@@ -157,8 +298,7 @@ function AssignmentCard({ a, onView, compact=false }:{ a:Assignment; onView:()=>
         </div>
         {!compact&&(
           <div style={{ display:'flex', gap:8, paddingTop:10, borderTop:`1px solid ${C.border}` }}>
-            <Btn label="View Details" variant="secondary" small onClick={()=>onView()} />
-            <Btn label="Navigate" variant="ghost" small icon={I.nav} />
+            <Btn label="View Details" variant="secondary" small onClick={onView} />
           </div>
         )}
       </div>
@@ -166,21 +306,34 @@ function AssignmentCard({ a, onView, compact=false }:{ a:Assignment; onView:()=>
   )
 }
 
-// ─── Assignment Dashboard ─────────────────────────────────────────────────────
-function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:(id:string)=>void; onToast:(m:string)=>void }) {
-  const today = ASSIGNMENTS.filter(a=>a.date.includes('20 Jan')&&a.status!=='cancelled')
-  const upcoming = ASSIGNMENTS.filter(a=>!a.date.includes('20 Jan')&&a.status!=='cancelled'&&a.status!=='rescheduled')
-  const pending = ASSIGNMENTS.filter(a=>!a.confirmed&&a.status!=='cancelled')
-  const cancelled = ASSIGNMENTS.filter(a=>a.status==='cancelled'||a.status==='rescheduled')
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function Dashboard({ profile, bookings, unreadCount, onNav, onView, onToast, onConfirm }:{
+  profile:{ full_name:string|null; preferred_name?:string|null }|null
+  bookings:Booking[]; unreadCount:number
+  onNav:(s:SubView)=>void; onView:(id:string)=>void; onToast:(m:string)=>void
+  onConfirm:(id:string)=>void
+}) {
+  const today = todayISO()
+  const todayJobs = bookings.filter(b=>b.scheduled_date===today && b.status!=='cancelled')
+  const upcomingJobs = bookings.filter(b=>(b.status==='assigned'||b.status==='confirmed') && b.scheduled_date && b.scheduled_date>today)
+  const activeJobs = bookings.filter(b=>b.status==='in_progress')
+  const completedJobs = bookings.filter(b=>b.status==='completed')
+  const cancelledJobs = bookings.filter(b=>b.status==='cancelled')
+  const rescheduledJobs = bookings.filter(b=>b.status==='rescheduled')
+  const pendingConfirmation = bookings.filter(b=>b.status==='assigned')
+  const relevant = pickRelevantBooking(bookings)
 
   const quickActions = [
-    {icon:I.nav,  label:'Navigate',       cb:()=>onNav('route')},
-    {icon:I.msg,  label:'Message Client',  cb:()=>onToast('Opening messages…')},
-    {icon:I.phone,label:'Call Client',     cb:()=>onToast('Calling Mohamed Ihsan…')},
-    {icon:I.user, label:'Beneficiary',     cb:()=>onNav('beneficiary')},
-    {icon:I.doc,  label:'Documents',       cb:()=>onNav('documents')},
-    {icon:I.alert,label:'Report Issue',    cb:()=>onToast('Opening report…')},
+    {icon:I.nav,  label:'Navigate',       cb: relevant ? ()=>{ onView(relevant.id); onNav('route') } : ()=>onToast('No job selected yet') },
+    {icon:I.phone,label:'Call Client',    cb: relevant?.client?.phone ? ()=>{ window.location.href = `tel:${relevant.client!.phone}` } : ()=>onToast('Client phone number not provided') },
+    {icon:I.msg,  label:'Message Client', cb:()=>onToast('Messaging is not available yet')},
+    {icon:I.user, label:'Beneficiary',    cb:()=>onNav('beneficiary')},
+    {icon:I.doc,  label:'Documents',      cb:()=>onNav('documents')},
+    {icon:I.alert,label:'Report Issue',   cb:()=>onNav('reportIssue')},
   ]
+
+  const dateLabel = new Date().toLocaleDateString('en-US',{ weekday:'long', day:'numeric', month:'long', year:'numeric' })
+  const greetName = profile?.preferred_name || profile?.full_name || 'Agent'
 
   return (
     <div style={{ padding:'24px 28px 60px' }}>
@@ -188,10 +341,10 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
       <Card style={{ padding:'20px 24px', marginBottom:20, background:`linear-gradient(135deg,${C.primary},#00959E)`, border:'none', boxShadow:`0 8px 28px ${C.primary}30` }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:14 }}>
           <div>
-            <p style={{ fontSize:12, color:'rgba(255,255,255,0.7)', marginBottom:4 }}>Monday, 20 January 2025</p>
-            <h2 style={{ fontSize:22, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Good morning, Kasun 👋</h2>
+            <p style={{ fontSize:12, color:'rgba(255,255,255,0.7)', marginBottom:4 }}>{dateLabel}</p>
+            <h2 style={{ fontSize:22, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Good day, {greetName}</h2>
             <div style={{ display:'flex', gap:14, flexWrap:'wrap' as const }}>
-              {[{v:today.length,l:'Today'},{v:upcoming.length,l:'Upcoming'},{v:pending.length,l:'Pending'}].map((s,i)=>(
+              {[{v:todayJobs.length,l:'Today'},{v:upcomingJobs.length,l:'Upcoming'},{v:activeJobs.length,l:'Active'}].map((s,i)=>(
                 <div key={i} style={{ textAlign:'center' as const }}>
                   <p style={{ fontSize:22, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{s.v}</p>
                   <p style={{ fontSize:10, color:'rgba(255,255,255,0.65)' }}>{s.l}</p>
@@ -208,15 +361,14 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
       {/* KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20 }} className="jm-4col">
         {[
-          {label:"Today's Jobs",    value:today.length.toString(),              sub:'1 confirmed, 0 pending', color:C.primary},
-          {label:'This Week',       value:'6',                                   sub:'4 confirmed',            color:C.info},
-          {label:'Weekly Earnings', value:'LKR 42,500',                          sub:'Projected',              color:C.success},
-          {label:'Completion Rate', value:'98%',                                 sub:'All time',               color:C.warning},
+          {label:"Today's Jobs",  value:todayJobs.length,     color:C.primary},
+          {label:'Upcoming Jobs', value:upcomingJobs.length,  color:C.info},
+          {label:'Active Jobs',   value:activeJobs.length,    color:C.success},
+          {label:'Completed Jobs',value:completedJobs.length, color:C.warning},
         ].map((k,i)=>(
           <Card key={i} style={{ padding:18 }}>
             <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8 }}>{k.label}</p>
             <p style={{ fontSize:22, fontWeight:900, color:k.color, fontFamily:'Manrope,sans-serif', marginBottom:3, lineHeight:1 }}>{k.value}</p>
-            <p style={{ fontSize:11, color:C.muted }}>{k.sub}</p>
           </Card>
         ))}
       </div>
@@ -226,11 +378,11 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
           {/* Today */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Today's Assignments" action="See All" onAction={()=>onNav('calendar')} />
-            {today.length===0
+            {todayJobs.length===0
               ? <p style={{ fontSize:13, color:C.muted }}>No assignments today.</p>
-              : today.map(a=>(
-                <div key={a.id} style={{ marginBottom:14 }}>
-                  <AssignmentCard a={a} onView={()=>onView(a.id)} />
+              : todayJobs.map(b=>(
+                <div key={b.id} style={{ marginBottom:14 }}>
+                  <BookingCard b={b} onView={()=>onView(b.id)} />
                 </div>
               ))
             }
@@ -238,10 +390,15 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
 
           {/* Upcoming */}
           <Card style={{ padding:22 }}>
-            <SectionTitle title="Upcoming Visits" action={`View All (${upcoming.length})`} onAction={()=>onNav('calendar')} />
-            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-              {upcoming.slice(0,3).map(a=><AssignmentCard key={a.id} a={a} onView={()=>onView(a.id)} compact />)}
-            </div>
+            <SectionTitle title="Upcoming Visits" action={`View All (${upcomingJobs.length})`} onAction={()=>onNav('calendar')} />
+            {upcomingJobs.length===0
+              ? <p style={{ fontSize:13, color:C.muted }}>No upcoming visits scheduled.</p>
+              : (
+                <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                  {upcomingJobs.slice(0,3).map(b=><BookingCard key={b.id} b={b} onView={()=>onView(b.id)} compact />)}
+                </div>
+              )
+            }
           </Card>
         </div>
 
@@ -268,15 +425,15 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
           {/* Pending confirmations */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Pending Confirmations" />
-            {pending.length===0
+            {pendingConfirmation.length===0
               ? <p style={{ fontSize:12, color:C.muted }}>All assignments confirmed.</p>
-              : pending.slice(0,3).map(a=>(
-                <div key={a.id} style={{ padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type, marginBottom:3 }}>{a.service}</p>
-                  <p style={{ fontSize:11, color:C.muted, marginBottom:6 }}>{a.date} · {a.time}</p>
+              : pendingConfirmation.slice(0,3).map(b=>(
+                <div key={b.id} style={{ padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
+                  <p style={{ fontSize:12, fontWeight:700, color:C.type, marginBottom:3 }}>{serviceLabel(b.care_request)}</p>
+                  <p style={{ fontSize:11, color:C.muted, marginBottom:6 }}>{formatDateLabel(b.scheduled_date)}{b.scheduled_time?` · ${formatTimeLabel(b.scheduled_time)}`:''}</p>
                   <div style={{ display:'flex', gap:6 }}>
-                    <Btn label="Confirm" variant="success" small onClick={()=>onToast('Assignment confirmed!')} />
-                    <Btn label="Reschedule" variant="ghost" small onClick={()=>onNav('schedule')} />
+                    <Btn label="Confirm" variant="success" small onClick={()=>onConfirm(b.id)} />
+                    <Btn label="Reschedule" variant="ghost" small onClick={()=>{ onView(b.id); onNav('schedule') }} />
                   </div>
                 </div>
               ))
@@ -286,38 +443,35 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
           {/* Cancelled / rescheduled */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Recent Updates" />
-            {cancelled.map(a=>(
-              <div key={a.id} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
-                <div style={{ width:8, height:8, borderRadius:'50%', background:STATUS[a.status].color, flexShrink:0 }} />
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{a.service}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{STATUS[a.status].label} · {a.date}</p>
+            {[...cancelledJobs, ...rescheduledJobs].length===0
+              ? <p style={{ fontSize:12, color:C.muted }}>No recent changes.</p>
+              : [...cancelledJobs, ...rescheduledJobs].slice(0,5).map(b=>(
+                <div key={b.id} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
+                  <div style={{ width:8, height:8, borderRadius:'50%', background:statusMeta(b.status).color, flexShrink:0 }} />
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{serviceLabel(b.care_request)}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>{statusMeta(b.status).label} · {formatDateLabel(b.scheduled_date)}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            }
           </Card>
         </div>
       </div>
 
-      {/* Activity feed preview */}
+      {/* Activity summary */}
       <Card style={{ padding:22 }}>
-        <SectionTitle title="Recent Activity" action="Full Feed" onAction={()=>onNav('activity')} />
-        <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+        <SectionTitle title="Activity Summary" action="Full Summary" onAction={()=>onNav('activity')} />
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }} className="jm-4col">
           {[
-            {icon:'✅',txt:'Hospital Appointment confirmed by Mohamed Ihsan',time:'2 hrs ago',col:C.success},
-            {icon:'📅',txt:'Home Wellness Visit rescheduled to Tue 21 Jan',time:'4 hrs ago',col:C.warning},
-            {icon:'📄',txt:'Medical report uploaded for Nimal Perera',time:'Yesterday',col:C.primary},
-            {icon:'💬',txt:'Message from Mohamed Ihsan: "Please be on time"',time:'Yesterday',col:C.info},
-          ].map((ev,i,arr)=>(
-            <div key={i} style={{ display:'flex', gap:12, paddingBottom:i<arr.length-1?12:0 }}>
-              <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
-                <div style={{ width:32, height:32, borderRadius:10, background:`${ev.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15 }}>{ev.icon}</div>
-                {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
-              </div>
-              <div style={{ paddingTop:4 }}>
-                <p style={{ fontSize:12, color:C.type, marginBottom:2 }}>{ev.txt}</p>
-                <p style={{ fontSize:11, color:C.muted }}>{ev.time}</p>
-              </div>
+            {l:'Completed',   v:completedJobs.length},
+            {l:'Cancelled',   v:cancelledJobs.length},
+            {l:'Rescheduled', v:rescheduledJobs.length},
+            {l:'Unread Notifications', v:unreadCount},
+          ].map((s,i)=>(
+            <div key={i} style={{ textAlign:'center' as const, padding:'10px', borderRadius:10, background:C.bg }}>
+              <p style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{s.v}</p>
+              <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
             </div>
           ))}
         </div>
@@ -327,19 +481,25 @@ function Dashboard({ onNav, onView, onToast }:{ onNav:(s:SubView)=>void; onView:
 }
 
 // ─── Job Details ──────────────────────────────────────────────────────────────
-function JobDetails({ a, onBack, onNav, onToast }:{ a:Assignment; onBack:()=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
-  const [docOpen, setDocOpen] = useState(false)
-  const st = STATUS[a.status]
-  const timeline = [
-    {l:'Assignment Confirmed',  done:true,  t:'18 Jan, 11:00 AM'},
-    {l:'Agent Accepted',        done:true,  t:'18 Jan, 11:15 AM'},
-    {l:'Visit Scheduled',       done:true,  t:'20 Jan, 9:30 AM'},
-    {l:'Reminder Sent',         done:true,  t:'19 Jan, 8:00 PM'},
-    {l:'Agent Ready',           done:false, t:'Today, 9:00 AM'},
-    {l:'Travel Starts',         done:false, t:'Today, 9:00 AM'},
-    {l:'Arrival',               done:false, t:'Today, ~9:30 AM'},
-    {l:'Care Starts',           done:false, t:'Today, 9:30 AM'},
-  ]
+function JobDetails({ b, documents, documentsLoading, onBack, onNav, onToast, onOpenCareExecution }:{
+  b:Booking; documents:BeneficiaryDocument[]; documentsLoading:boolean
+  onBack:()=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void; onOpenCareExecution:()=>void
+}) {
+  const st = statusMeta(b.status)
+  const ben = b.beneficiary
+  const canExecute = b.status==='assigned'||b.status==='confirmed'||b.status==='in_progress'
+  const executeLabel = b.status==='in_progress' ? 'Continue Visit' : 'Start Visit'
+  // Preparation is only meaningful before the visit starts — not once it's
+  // in progress (Care Execution owns that), and not once it's finished or
+  // cancelled. Rescheduled bookings are read-only until the new schedule
+  // is confirmed, matching Schedule Management's own treatment.
+  const canPrepare = b.status==='assigned'||b.status==='confirmed'
+  const conditions = toStringList(ben?.conditions)
+  const mobility = ben?.mobility
+  const allergies = toStringList(ben?.allergies)
+  const languages = toStringList(ben?.pref_languages)
+  const contacts = toContactList(ben?.emergency_contacts)
+
   return (
     <div style={{ maxWidth:820, margin:'0 auto', padding:'24px 28px 80px' }}>
       <button onClick={onBack} style={{ display:'flex', gap:6, alignItems:'center', background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, marginBottom:18, padding:0 }}>
@@ -353,13 +513,17 @@ function JobDetails({ a, onBack, onNav, onToast }:{ a:Assignment; onBack:()=>voi
           <div>
             <div style={{ display:'flex', gap:6, marginBottom:8, flexWrap:'wrap' as const }}>
               <Bdg label={st.label} color={st.color} dot />
-              {a.priority==='high'&&<Bdg label="High Priority" color={C.error} />}
-              {a.recurring&&<Bdg label="Recurring" color={C.primary} />}
+              {b.priority==='high'&&<Bdg label="High Priority" color={C.error} />}
+              {b.recurring&&<Bdg label="Recurring" color={C.primary} />}
+              {b.care_request?.urgent&&<Bdg label="Urgent" color={C.error} />}
             </div>
-            <h1 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:5, lineHeight:1.2 }}>{a.service}</h1>
-            <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>Ref: {a.id} · Assigned to Kasun Perera</p>
+            <h1 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:5, lineHeight:1.2 }}>{serviceLabel(b.care_request)}</h1>
             <div style={{ display:'flex', gap:16, flexWrap:'wrap' as const }}>
-              {[{i:I.calendar,v:`${a.date}, ${a.time}`},{i:I.clock,v:a.duration},{i:I.pin,v:a.location}].map((m,i)=>(
+              {[
+                {i:I.calendar, v:`${formatDateLabel(b.scheduled_date)}${b.scheduled_time?`, ${formatTimeLabel(b.scheduled_time)}`:''}`},
+                {i:I.clock,    v:b.duration || 'Duration not set'},
+                {i:I.pin,      v:locationLabel(b)},
+              ].map((m,i)=>(
                 <div key={i} style={{ display:'flex', gap:5, alignItems:'center' }}>
                   <span style={{color:C.muted,display:'flex'}}>{m.i}</span>
                   <p style={{ fontSize:12, color:C.sub }}>{m.v}</p>
@@ -368,15 +532,15 @@ function JobDetails({ a, onBack, onNav, onToast }:{ a:Assignment; onBack:()=>voi
             </div>
           </div>
           <div style={{ textAlign:'right' as const }}>
-            <p style={{ fontSize:26, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>LKR {a.payment.toLocaleString()}</p>
-            <p style={{ fontSize:11, color:C.muted, marginBottom:12 }}>{a.distance} from you</p>
+            <p style={{ fontSize:26, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{fmt(b.payment_amount)}</p>
+            <p style={{ fontSize:11, color:C.muted, marginBottom:12 }}>Gross Job Amount</p>
           </div>
         </div>
         <div style={{ display:'flex', gap:8, marginTop:16, paddingTop:16, borderTop:`1px solid ${C.border}`, flexWrap:'wrap' as const }}>
-          <Btn label="Open Navigation" icon={I.nav} onClick={()=>onNav('route')} />
-          <Btn label="Visit Preparation" variant="secondary" icon={I.check} onClick={()=>onNav('preparation')} />
-          <Btn label="Message Client" variant="ghost" small icon={I.msg} onClick={()=>onToast('Opening messages…')} />
-          <Btn label="Call" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling…')} />
+          {canExecute&&<Btn label={executeLabel} icon={I.nav} onClick={onOpenCareExecution} />}
+          {canPrepare&&<Btn label="Visit Preparation" variant="secondary" icon={I.check} onClick={()=>onNav('preparation')} />}
+          <Btn label="Open Route" variant="ghost" small icon={I.map} onClick={()=>onNav('route')} />
+          <Btn label="Message Client" variant="ghost" small icon={I.msg} onClick={()=>onToast('Messaging is not available yet')} />
         </div>
       </Card>
 
@@ -387,112 +551,119 @@ function JobDetails({ a, onBack, onNav, onToast }:{ a:Assignment; onBack:()=>voi
           <Card style={{ padding:22 }}>
             <SectionTitle title="Beneficiary Information" action="Full Profile" onAction={()=>onNav('beneficiary')} />
             <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:14 }}>
-              <div style={{ width:48, height:48, borderRadius:'50%', background:`${C.accent}15`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22 }}>👴</div>
+              <div style={{ width:48, height:48, borderRadius:'50%', background:`${C.accent}15`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22 }}>👤</div>
               <div>
-                <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{a.beneficiary}</p>
-                <p style={{ fontSize:12, color:C.muted }}>Age {a.beneficiaryAge} · Male · Sinhala</p>
-                <Bdg label="Mobility Aid Required" color={C.warning} />
+                <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{beneficiaryName(ben)}</p>
+                <p style={{ fontSize:12, color:C.muted }}>
+                  {ben?.age!=null ? `Age ${ben.age}` : ben?.dob ? `Age ${computeAgeFromDob(ben.dob) ?? 'Not provided'}` : 'Age not provided'} · {ben?.gender || 'Gender not provided'}
+                </p>
+                {mobility&&<Bdg label={mobility} color={C.warning} />}
               </div>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
-              {[{l:'Medical Condition',v:'Type 2 Diabetes'},{l:'Mobility',v:'Walking Aid'},{l:'Allergies',v:'Penicillin'},{l:'Language',v:'Sinhala / English'}].map((r,i)=>(
+              {[
+                {l:'Medical Conditions', v: conditions.length ? conditions.join(', ') : 'Not provided'},
+                {l:'Mobility',           v: mobility || 'Not provided'},
+                {l:'Allergies',          v: allergies.length ? allergies.join(', ') : 'Not provided'},
+                {l:'Preferred Languages',v: languages.length ? languages.join(', ') : 'Not provided'},
+              ].map((r,i)=>(
                 <div key={i} style={{ padding:'10px 12px', borderRadius:10, background:C.bg }}>
                   <p style={{ fontSize:10, fontWeight:700, color:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.06em', marginBottom:3 }}>{r.l}</p>
                   <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{r.v}</p>
                 </div>
               ))}
             </div>
-            <div style={{ padding:'12px', borderRadius:12, background:`${C.warning}08`, border:`1.5px solid ${C.warning}20` }}>
-              <p style={{ fontSize:11, fontWeight:800, color:C.warning, marginBottom:4 }}>Special Instructions</p>
-              <p style={{ fontSize:12, color:C.type, lineHeight:1.7 }}>Moves slowly — allow extra time. Prefers window seat at hospital. Bring biscuits for blood sugar.</p>
-            </div>
+            {(ben?.special_req||ben?.med_notes)&&(
+              <div style={{ padding:'12px', borderRadius:12, background:`${C.warning}08`, border:`1.5px solid ${C.warning}20` }}>
+                <p style={{ fontSize:11, fontWeight:800, color:C.warning, marginBottom:4 }}>Special Instructions</p>
+                <p style={{ fontSize:12, color:C.type, lineHeight:1.7 }}>{ben?.special_req || ben?.med_notes}</p>
+              </div>
+            )}
           </Card>
 
           {/* Client */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Client Information" />
             <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:14 }}>
-              <Avatar initials="MI" size={44} />
+              <Avatar initials={initials(b.client?.full_name)} size={44} />
               <div>
-                <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:2 }}>
-                  <p style={{ fontSize:14, fontWeight:700, color:C.type }}>{a.client}</p>
-                  <span style={{ color:C.primary, display:'flex', transform:'scale(0.9)' }}>{I.shield}</span>
-                </div>
-                <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-                  <span style={{ color:C.warning, display:'flex' }}>{I.star}</span>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>4.8</p>
-                  <p style={{ fontSize:11, color:C.muted }}>· 12 jobs · Verified</p>
-                </div>
+                <p style={{ fontSize:14, fontWeight:700, color:C.type }}>{clientName(b.client)}</p>
+                <p style={{ fontSize:11, color:C.muted }}>{b.client?.phone || 'Phone not provided'}</p>
               </div>
             </div>
             <div style={{ display:'flex', gap:8 }}>
-              <Btn label="Message" variant="secondary" small icon={I.msg} full onClick={()=>onToast('Opening messages…')} />
-              <Btn label="Call" variant="ghost" small icon={I.phone} full onClick={()=>onToast('Calling…')} />
+              <Btn label="Message" variant="secondary" small icon={I.msg} full onClick={()=>onToast('Messaging is not available yet')} />
+              {b.client?.phone
+                ? <a href={`tel:${b.client.phone}`} style={{ flex:1, textDecoration:'none' }}><Btn label="Call" variant="ghost" small icon={I.phone} full /></a>
+                : <Btn label="Call" variant="ghost" small icon={I.phone} full disabled />
+              }
             </div>
           </Card>
 
           {/* Emergency contacts */}
           <Card style={{ padding:22, border:`1.5px solid ${C.error}20`, background:`${C.error}04` }}>
             <SectionTitle title="Emergency Contacts" />
-            {[{name:'Kumari Perera',rel:'Daughter',phone:'+94 77 345 6789'},{name:'Saman Perera',rel:'Son',phone:'+94 71 234 5678'}].map((ec,i)=>(
-              <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:i===0?`1px solid ${C.border}`:'none' }}>
-                <Avatar initials={ec.name.split(' ').map(x=>x[0]).join('')} color={C.error} size={36} />
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{ec.name}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{ec.rel} · {ec.phone}</p>
+            {contacts.length===0
+              ? <p style={{ fontSize:12, color:C.muted }}>No emergency contacts on file.</p>
+              : contacts.map((ec,i)=>(
+                <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:i<contacts.length-1?`1px solid ${C.border}`:'none' }}>
+                  <Avatar initials={initials(ec.name)} color={C.error} size={36} />
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{ec.name || 'Not provided'}{ec.relationship?` · ${ec.relationship}`:''}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>{ec.phone || 'Phone not provided'}</p>
+                  </div>
+                  {ec.phone&&<a href={`tel:${ec.phone}`} style={{ width:30, height:30, borderRadius:9, background:`${C.error}10`, color:C.error, display:'flex', alignItems:'center', justifyContent:'center' }}><span style={{display:'flex'}}>{I.phone}</span></a>}
                 </div>
-                <button onClick={()=>onToast(`Calling ${ec.name}…`)} style={{ width:30, height:30, borderRadius:9, background:`${C.error}10`, border:'none', cursor:'pointer', color:C.error, display:'flex', alignItems:'center', justifyContent:'center' }}><span style={{display:'flex'}}>{I.phone}</span></button>
-              </div>
-            ))}
+              ))
+            }
           </Card>
         </div>
 
         {/* Right */}
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          {/* Visit timeline */}
+          {/* Schedule details */}
           <Card style={{ padding:22 }}>
-            <SectionTitle title="Visit Timeline" />
-            <div style={{ display:'flex', flexDirection:'column' }}>
-              {timeline.map((t,i)=>(
-                <div key={i} style={{ display:'flex', gap:12 }}>
-                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-                    <div style={{ width:22, height:22, borderRadius:'50%', background:t.done?C.success:`${C.primary}10`, border:`2px solid ${t.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                      {t.done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.65)'}}>{I.check}</span>}
-                    </div>
-                    {i<timeline.length-1&&<div style={{ width:2, flex:1, background:t.done?`${C.success}40`:C.border, margin:'3px 0' }} />}
-                  </div>
-                  <div style={{ paddingBottom:i<timeline.length-1?10:0 }}>
-                    <p style={{ fontSize:12, fontWeight:t.done?700:500, color:t.done?C.type:C.muted }}>{t.l}</p>
-                    <p style={{ fontSize:10, color:C.muted }}>{t.t}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <SectionTitle title="Schedule Details" />
+            {[
+              {l:'Date', v:formatDateLabel(b.scheduled_date)},
+              {l:'Time', v:b.scheduled_time?formatTimeLabel(b.scheduled_time):'Not provided'},
+              {l:'Duration', v:b.duration||'Not provided'},
+              {l:'Recurring', v:b.recurring?'Yes':'No'},
+              {l:'Confirmed', v:b.confirmed?'Yes':'No'},
+            ].map((r,i)=>(
+              <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0', borderBottom:i<4?`1px solid ${C.border}`:'none' }}>
+                <p style={{ fontSize:12, color:C.muted }}>{r.l}</p>
+                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{r.v}</p>
+              </div>
+            ))}
           </Card>
 
           {/* Documents */}
           <Card style={{ padding:22 }}>
-            <SectionTitle title="Documents" action="View All" onAction={()=>setDocOpen(v=>!v)} />
-            {['Care Instructions.pdf','Prescription — Dr. Silva.pdf','Hospital Letter.pdf'].map((doc,i)=>(
-              <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:i<2?`1px solid ${C.border}`:'none' }}>
-                <div style={{ width:32, height:32, borderRadius:9, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary }}>
-                  <span style={{display:'flex'}}>{I.doc}</span>
-                </div>
-                <p style={{ flex:1, fontSize:12, color:C.type }}>{doc}</p>
-                <button onClick={()=>onToast('Downloading…')} style={{ color:C.muted, background:'none', border:'none', cursor:'pointer', display:'flex' }}><span style={{display:'flex'}}>{I.download}</span></button>
-              </div>
-            ))}
+            <SectionTitle title="Documents" action="View All" onAction={()=>onNav('documents')} />
+            {documentsLoading
+              ? <p style={{ fontSize:12, color:C.muted }}>Loading documents…</p>
+              : documents.length===0
+                ? <p style={{ fontSize:12, color:C.muted }}>No documents available.</p>
+                : documents.slice(0,3).map(doc=>(
+                  <div key={doc.id} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
+                    <div style={{ width:32, height:32, borderRadius:9, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary }}>
+                      <span style={{display:'flex'}}>{I.doc}</span>
+                    </div>
+                    <p style={{ flex:1, fontSize:12, color:C.type }}>{doc.name || doc.type || 'Untitled document'}</p>
+                    {doc.file_url&&<a href={doc.file_url} target="_blank" rel="noreferrer" style={{ color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.download}</span></a>}
+                  </div>
+                ))
+            }
           </Card>
 
-          {/* Budget */}
+          {/* Payment */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Payment" />
-            {[{l:'Agreed service fee',v:`LKR ${Math.round(a.payment*.92).toLocaleString()}`},{l:'Platform fee (8%)',v:`LKR ${Math.round(a.payment*.08).toLocaleString()}`},{l:'Your net pay',v:`LKR ${Math.round(a.payment*.92).toLocaleString()}`,bold:true}].map((r,i)=>(
-              <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:i<2?`1px solid ${C.border}`:'none' }}>
-                <p style={{ fontSize:12, color:C.sub }}>{r.l}</p>
-                <p style={{ fontSize:12, fontWeight:(r as any).bold?900:700, color:(r as any).bold?C.success:C.type, fontFamily:(r as any).bold?'Manrope,sans-serif':undefined }}>{r.v}</p>
-              </div>
-            ))}
+            <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0' }}>
+              <p style={{ fontSize:12, color:C.sub }}>Gross Job Amount</p>
+              <p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{fmt(b.payment_amount)}</p>
+            </div>
           </Card>
         </div>
       </div>
@@ -500,30 +671,56 @@ function JobDetails({ a, onBack, onNav, onToast }:{ a:Assignment; onBack:()=>voi
   )
 }
 
-// ─── Visit Preparation ────────────────────────────────────────────────────────
-function Preparation({ a, onToast }:{ a:Assignment; onToast:(m:string)=>void }) {
+// ─── Visit Preparation (local-only, not persisted) ─────────────────────────────
+// Guarded by real booking status, independent of whether the "Visit
+// Preparation" button was ever shown — reachable directly via the sidebar
+// regardless of which job is currently selected.
+function Preparation({ b, onOpenCareExecution }:{ b:Booking|null; onOpenCareExecution:()=>void }) {
+  if(!b) return <EmptyPage title="Visit Preparation" message="Select a job from the Dashboard or Calendar to prepare for it." />
+
+  if(b.status==='completed') {
+    return <EmptyPage title="Visit Preparation" message="This visit has already been completed. Visit preparation is no longer available." />
+  }
+  if(b.status==='cancelled') {
+    return <EmptyPage title="Visit Preparation" message="This booking was cancelled. Visit preparation is not available." />
+  }
+  if(b.status==='rescheduled') {
+    return <EmptyPage title="Visit Preparation" message="This booking has been rescheduled. Review the updated schedule before preparing for the visit." />
+  }
+  if(b.status==='in_progress') {
+    return (
+      <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Visit Preparation</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted, marginBottom:16 }}>This visit is already in progress. Continue the visit in Care Execution.</p>
+          <Btn label="Continue Visit" onClick={onOpenCareExecution} />
+        </Card>
+      </div>
+    )
+  }
+
+  // Only assigned/confirmed bookings reach the editable checklist below.
+  const loc = locationLabel(b)
   const items = [
-    {l:'Review beneficiary care notes',         cat:'planning'},
-    {l:'Confirm route to National Hospital',     cat:'travel'},
-    {l:'Charge phone to 100%',                   cat:'equipment'},
-    {l:'Bring walking aid support equipment',    cat:'equipment'},
-    {l:'Confirm appointment time with client',   cat:'communication'},
-    {l:'Review medication list for Nimal',       cat:'medical'},
-    {l:'Prepare consent and ID documents',       cat:'documentation'},
-    {l:'Set navigation to National Hospital',    cat:'travel'},
-    {l:'Check weather and traffic',              cat:'travel'},
-    {l:'Prepare snacks for blood sugar support', cat:'medical'},
+    {l:'Review beneficiary care notes',              cat:'planning'},
+    {l:`Confirm route to ${loc}`,                     cat:'travel'},
+    {l:'Charge phone to 100%',                        cat:'equipment'},
+    {l:'Bring required care equipment',               cat:'equipment'},
+    {l:'Confirm appointment time with client',        cat:'communication'},
+    {l:'Review medication list for the beneficiary',  cat:'medical'},
+    {l:'Prepare consent and ID documents',            cat:'documentation'},
+    {l:'Set navigation to destination',               cat:'travel'},
   ]
-  const [checked, setChecked] = useState<Set<number>>(new Set([0,1,2]))
+  const [checked, setChecked] = useState<Set<number>>(new Set())
   const pct = Math.round((checked.size/items.length)*100)
   const catColors: Record<string,string> = { planning:C.info, travel:C.primary, equipment:C.accent, communication:C.success, medical:C.error, documentation:C.warning }
 
   return (
     <div style={{ maxWidth:680, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Visit Preparation</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>{a.service} · {a.date}, {a.time}</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:6 }}>{serviceLabel(b.care_request)} · {formatDateLabel(b.scheduled_date)}{b.scheduled_time?`, ${formatTimeLabel(b.scheduled_time)}`:''}</p>
+      <p style={{ fontSize:11, color:C.muted, marginBottom:22 }}>This checklist is local to your device for this session only — it isn't saved.</p>
 
-      {/* Progress */}
       <Card style={{ padding:22, marginBottom:18, background:`linear-gradient(135deg,${C.primary}06,${C.surface})`, border:`1.5px solid ${C.primary}20` }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
           <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Preparation Progress</p>
@@ -533,16 +730,10 @@ function Preparation({ a, onToast }:{ a:Assignment; onToast:(m:string)=>void }) 
           <div style={{ width:`${pct}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.4s' }} />
         </div>
         <p style={{ fontSize:11, color:C.muted }}>{checked.size} of {items.length} tasks complete</p>
-        {pct===100&&(
-          <div style={{ marginTop:12, display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ fontSize:20 }}>🎉</span>
-            <p style={{ fontSize:13, fontWeight:700, color:C.success }}>All done! You are ready for today's visit.</p>
-          </div>
-        )}
       </Card>
 
       <Card style={{ padding:22 }}>
-        <SectionTitle title="Checklist" action="Mark All Done" onAction={()=>{ setChecked(new Set(items.map((_,i)=>i))); onToast('All tasks marked complete!') }} />
+        <SectionTitle title="Checklist" />
         <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
           {items.map((item,i)=>{
             const done = checked.has(i)
@@ -567,21 +758,38 @@ function Preparation({ a, onToast }:{ a:Assignment; onToast:(m:string)=>void }) 
 }
 
 // ─── Calendar ─────────────────────────────────────────────────────────────────
-function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
+function CalendarView({ bookings, onView }:{ bookings:Booking[]; onView:(id:string)=>void }) {
   const [view, setView] = useState<'daily'|'weekly'|'monthly'>('weekly')
-  const [selected, setSelected] = useState(20)
-  const days = ['Mon 20','Tue 21','Wed 22','Thu 23','Fri 24','Sat 25','Sun 26']
-  const jobDays: Record<number,Assignment[]> = {
-    20:[ASSIGNMENTS[0]], 21:[ASSIGNMENTS[1],ASSIGNMENTS[2]], 22:[ASSIGNMENTS[3]], 26:[ASSIGNMENTS[4]]
-  }
-  const month = Array.from({length:31},(_,i)=>i+1)
+  const now = new Date()
+  const [selectedDate, setSelectedDate] = useState(todayISO())
+
+  const byDate = useMemo(()=>{
+    const map = new Map<string,Booking[]>()
+    bookings.forEach(b=>{
+      if(!b.scheduled_date) return
+      const arr = map.get(b.scheduled_date) ?? []
+      arr.push(b)
+      map.set(b.scheduled_date, arr)
+    })
+    return map
+  }, [bookings])
+
+  const weekStart = startOfWeek(now)
+  const weekDays = Array.from({length:7},(_,i)=>{ const d = new Date(weekStart); d.setDate(d.getDate()+i); return d })
+
+  const monthYear = now.getFullYear(), monthIdx = now.getMonth()
+  const firstOfMonth = new Date(monthYear, monthIdx, 1)
+  const daysInMonth = new Date(monthYear, monthIdx+1, 0).getDate()
+  const leadingBlanks = (firstOfMonth.getDay()+6)%7
+  const monthLabel = now.toLocaleDateString('en-US',{ month:'long', year:'numeric' })
+  const selectedJobs = (byDate.get(selectedDate) ?? []).filter(b=>b.status!=='cancelled')
 
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:900 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <div>
           <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Schedule</h2>
-          <p style={{ fontSize:13, color:C.muted }}>January 2025 · {ASSIGNMENTS.filter(a=>a.status!=='cancelled').length} assignments</p>
+          <p style={{ fontSize:13, color:C.muted }}>{monthLabel} · {bookings.filter(b=>b.status!=='cancelled').length} bookings</p>
         </div>
         <div style={{ display:'flex', gap:4, borderRadius:12, border:`1.5px solid ${C.border}`, overflow:'hidden' }}>
           {(['daily','weekly','monthly'] as const).map(v=>(
@@ -594,17 +802,17 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
 
       {view==='weekly'&&(
         <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:10 }}>
-          {days.map((d,i)=>{
-            const dayNum = 20+i
-            const jobs = jobDays[dayNum]||[]
-            const isSel = dayNum===selected
+          {weekDays.map(d=>{
+            const ds = isoDate(d)
+            const jobs = (byDate.get(ds)??[]).filter(b=>b.status!=='cancelled')
+            const isSel = ds===selectedDate
             return (
-              <div key={d} onClick={()=>setSelected(dayNum)} style={{ cursor:'pointer', borderRadius:14, border:`2px solid ${isSel?C.primary:C.border}`, background:isSel?`${C.primary}06`:C.surface, padding:12, minHeight:120, transition:'all 0.15s' }}>
-                <p style={{ fontSize:10, fontWeight:800, color:isSel?C.primary:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.06em', marginBottom:4 }}>{d.split(' ')[0]}</p>
-                <p style={{ fontSize:18, fontWeight:900, color:isSel?C.primary:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{d.split(' ')[1]}</p>
-                {jobs.map((j,ji)=>(
-                  <div key={ji} style={{ padding:'4px 7px', borderRadius:6, background:`${STATUS[j.status].color}15`, marginBottom:4 }}>
-                    <p style={{ fontSize:9, fontWeight:700, color:STATUS[j.status].color, lineHeight:1.3 }}>{j.time} {j.service.split(' ')[0]}</p>
+              <div key={ds} onClick={()=>setSelectedDate(ds)} style={{ cursor:'pointer', borderRadius:14, border:`2px solid ${isSel?C.primary:C.border}`, background:isSel?`${C.primary}06`:C.surface, padding:12, minHeight:120, transition:'all 0.15s' }}>
+                <p style={{ fontSize:10, fontWeight:800, color:isSel?C.primary:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.06em', marginBottom:4 }}>{d.toLocaleDateString('en-US',{weekday:'short'})}</p>
+                <p style={{ fontSize:18, fontWeight:900, color:isSel?C.primary:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{d.getDate()}</p>
+                {jobs.map(j=>(
+                  <div key={j.id} onClick={e=>{ e.stopPropagation(); onView(j.id) }} style={{ padding:'4px 7px', borderRadius:6, background:`${statusMeta(j.status).color}15`, marginBottom:4, cursor:'pointer' }}>
+                    <p style={{ fontSize:9, fontWeight:700, color:statusMeta(j.status).color, lineHeight:1.3 }}>{formatTimeLabel(j.scheduled_time)} {serviceLabel(j.care_request).split(' ')[0]}</p>
                   </div>
                 ))}
                 {jobs.length===0&&<p style={{ fontSize:10, color:C.muted }}>Free</p>}
@@ -620,13 +828,14 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
             {['M','T','W','T','F','S','S'].map((d,i)=><p key={i} style={{ fontSize:10, fontWeight:800, color:C.muted, textAlign:'center' as const, padding:'4px 0' }}>{d}</p>)}
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4 }}>
-            {[...Array(2)].map((_,i)=><div key={`e${i}`}/>)}
-            {month.map(d=>{
-              const hasJob = d in jobDays
-              const isSel = d===selected
+            {Array.from({length:leadingBlanks}).map((_,i)=><div key={`e${i}`}/>)}
+            {Array.from({length:daysInMonth},(_,i)=>i+1).map(dNum=>{
+              const ds = `${monthYear}-${String(monthIdx+1).padStart(2,'0')}-${String(dNum).padStart(2,'0')}`
+              const hasJob = byDate.has(ds)
+              const isSel = ds===selectedDate
               return (
-                <button key={d} onClick={()=>setSelected(d)} style={{ aspectRatio:'1', borderRadius:10, border:`1.5px solid ${isSel?C.primary:hasJob?`${C.primary}20`:'transparent'}`, background:isSel?C.primary:hasJob?`${C.primary}06`:'transparent', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
-                  <p style={{ fontSize:12, fontWeight:isSel||hasJob?800:400, color:isSel?'#fff':hasJob?C.primary:C.type }}>{d}</p>
+                <button key={ds} onClick={()=>setSelectedDate(ds)} style={{ aspectRatio:'1', borderRadius:10, border:`1.5px solid ${isSel?C.primary:hasJob?`${C.primary}20`:'transparent'}`, background:isSel?C.primary:hasJob?`${C.primary}06`:'transparent', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2 }}>
+                  <p style={{ fontSize:12, fontWeight:isSel||hasJob?800:400, color:isSel?'#fff':hasJob?C.primary:C.type }}>{dNum}</p>
                   {hasJob&&<div style={{ width:4, height:4, borderRadius:'50%', background:isSel?'rgba(255,255,255,0.8)':C.primary }}/>}
                 </button>
               )
@@ -637,24 +846,29 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
 
       {view==='daily'&&(
         <Card style={{ padding:22 }}>
-          <SectionTitle title={`Mon 20 Jan — Day View`} />
-          {[{time:'9:00 AM',label:'Preparation'},{time:'9:30 AM',label:'Hospital Appointment — Nimal Perera'},{time:'12:30 PM',label:'Task Complete / Return'},{time:'2:00 PM',label:'Free'}].map((s,i)=>(
-            <div key={i} style={{ display:'flex', gap:14, paddingBottom:14 }}>
-              <p style={{ fontSize:11, fontWeight:700, color:C.muted, width:60, flexShrink:0 }}>{s.time}</p>
-              <div style={{ flex:1, padding:'10px 14px', borderRadius:10, background:s.label.includes('Appointment')?`${C.primary}08`:C.bg, border:`1px solid ${s.label.includes('Appointment')?`${C.primary}20`:C.border}` }}>
-                <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{s.label}</p>
+          <SectionTitle title={`${formatDateLabel(selectedDate)} — Day View`} />
+          {selectedJobs.length===0
+            ? <p style={{ fontSize:13, color:C.muted }}>No jobs scheduled for this day.</p>
+            : [...selectedJobs].sort((a,b)=>(a.scheduled_time??'').localeCompare(b.scheduled_time??'')).map(j=>(
+              <div key={j.id} onClick={()=>onView(j.id)} style={{ display:'flex', gap:14, paddingBottom:14, cursor:'pointer' }}>
+                <p style={{ fontSize:11, fontWeight:700, color:C.muted, width:70, flexShrink:0 }}>{formatTimeLabel(j.scheduled_time)||'Time TBD'}</p>
+                <div style={{ flex:1, padding:'10px 14px', borderRadius:10, background:`${C.primary}08`, border:`1px solid ${C.primary}20` }}>
+                  <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{serviceLabel(j.care_request)} — {beneficiaryName(j.beneficiary)}</p>
+                </div>
               </div>
-            </div>
-          ))}
+            ))
+          }
         </Card>
       )}
 
-      {/* Selected day detail */}
-      {selected in jobDays&&(
+      {(view==='weekly'||view==='monthly')&&(
         <div style={{ marginTop:18 }}>
-          <p style={{ fontSize:13, fontWeight:700, color:C.muted, marginBottom:10 }}>Jan {selected} — {(jobDays[selected]||[]).length} assignment(s)</p>
+          <p style={{ fontSize:13, fontWeight:700, color:C.muted, marginBottom:10 }}>{formatDateLabel(selectedDate)} — {selectedJobs.length} assignment(s)</p>
           <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-            {(jobDays[selected]||[]).map(a=><AssignmentCard key={a.id} a={a} onView={()=>{}} compact />)}
+            {selectedJobs.length===0
+              ? <p style={{ fontSize:12, color:C.muted }}>No jobs scheduled for this day.</p>
+              : selectedJobs.map(b=><BookingCard key={b.id} b={b} onView={()=>onView(b.id)} compact />)
+            }
           </div>
         </div>
       )}
@@ -663,96 +877,68 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Route Planning ───────────────────────────────────────────────────────────
-function RoutePlanning({ a, onToast }:{ a:Assignment; onToast:(m:string)=>void }) {
+function RoutePlanning({ b }:{ b:Booking|null }) {
+  if(!b) return <EmptyPage title="Route Planning" message="Select a job from the Dashboard or Calendar to view its destination." />
+  const loc = locationLabel(b)
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Route Planning</h2>
-      {/* Map placeholder */}
-      <Card style={{ overflow:'hidden', marginBottom:18 }}>
-        <div style={{ height:260, background:`linear-gradient(135deg,${C.bg},#DCE8EA)`, position:'relative' as const, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:8 }}>
-          <svg style={{ position:'absolute', inset:0, width:'100%', height:'100%', opacity:0.07 }} preserveAspectRatio="none"><defs><pattern id="rg" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M 36 0 L 0 0 0 36" fill="none" stroke={C.primary} strokeWidth="0.5"/></pattern></defs><rect width="100%" height="100%" fill="url(#rg)"/></svg>
-          {/* Route line */}
-          <svg style={{ position:'absolute', inset:0, width:'100%', height:'100%' }} viewBox="0 0 400 260" preserveAspectRatio="none">
-            <path d="M 80 200 C 120 180 160 140 200 120 C 240 100 280 90 320 80" stroke={C.primary} strokeWidth="3" fill="none" strokeDasharray="8 4" opacity="0.6"/>
-          </svg>
-          {/* Origin pin */}
-          <div style={{ position:'absolute', bottom:50, left:'20%', transform:'translate(-50%,0)' }}>
-            <div style={{ width:12, height:12, borderRadius:'50%', background:C.success, boxShadow:`0 0 0 5px ${C.success}30` }} />
-            <p style={{ fontSize:9, fontWeight:800, color:C.success, marginTop:4, whiteSpace:'nowrap' as const }}>You</p>
-          </div>
-          {/* Destination pin */}
-          <div style={{ position:'absolute', top:60, right:'20%', transform:'translate(50%,0)', zIndex:2 }}>
-            <div style={{ background:C.primary, color:'#fff', borderRadius:'8px 8px 2px 2px', padding:'5px 9px', fontSize:10, fontWeight:800, boxShadow:`0 3px 12px ${C.primary}60`, whiteSpace:'nowrap' as const }}>National Hospital</div>
-            <div style={{ width:8, height:8, background:C.primary, transform:'rotate(45deg)', margin:'-4px auto 0', borderRadius:2 }} />
-          </div>
-          <div style={{ position:'relative', zIndex:1 }}>
-            <p style={{ fontSize:13, fontWeight:700, color:C.sub, background:'rgba(255,255,255,0.9)', padding:'5px 14px', borderRadius:8 }}>Route preview · Interactive map coming soon</p>
+      <Card style={{ padding:22 }}>
+        <SectionTitle title="Destination" />
+        <div style={{ display:'flex', gap:8, alignItems:'flex-start', padding:'14px', borderRadius:12, background:C.bg, marginBottom:16 }}>
+          <span style={{ color:C.primary, display:'flex', marginTop:2 }}>{I.pin}</span>
+          <div>
+            <p style={{ fontSize:14, fontWeight:700, color:C.type }}>{serviceLabel(b.care_request)}</p>
+            <p style={{ fontSize:12, color:C.muted }}>{loc}</p>
           </div>
         </div>
-        <div style={{ padding:22 }}>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:18 }}>
-            {[{l:'Distance',v:'3.2 km'},{l:'Travel Time',v:'~18 min'},{l:'Traffic',v:'Moderate'}].map((s,i)=>(
-              <div key={i} style={{ textAlign:'center' as const, padding:'12px', borderRadius:12, background:C.bg }}>
-                <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>{s.l}</p>
-                <p style={{ fontSize:15, fontWeight:900, color:i===2?C.warning:C.primary, fontFamily:'Manrope,sans-serif' }}>{s.v}</p>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginBottom:16 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:8 }}>Destination</p>
-            <div style={{ display:'flex', gap:8, alignItems:'flex-start', padding:'12px', borderRadius:12, background:C.bg }}>
-              <span style={{ color:C.primary, display:'flex', marginTop:2 }}>{I.pin}</span>
-              <div>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>National Hospital, Colombo</p>
-                <p style={{ fontSize:11, color:C.muted }}>Regent Street, Colombo 10</p>
-              </div>
-            </div>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:14 }}>
-            {[{e:'🏥',l:'Nearest Hospital',v:'National Hospital — 0.0 km'},{e:'💊',l:'Nearest Pharmacy',v:'Osusala Pharmacy — 0.4 km'},{e:'🅿️',l:'Parking',v:'Hospital car park · LKR 80/hr'},{e:'🌦️',l:'Weather',v:'28°C, Partly cloudy'}].map((r,i)=>(
-              <div key={i} style={{ padding:'10px 12px', borderRadius:10, background:C.bg, display:'flex', gap:8, alignItems:'flex-start' }}>
-                <span style={{ fontSize:18 }}>{r.e}</span>
-                <div>
-                  <p style={{ fontSize:10, fontWeight:700, color:C.muted }}>{r.l}</p>
-                  <p style={{ fontSize:11, color:C.type }}>{r.v}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display:'flex', gap:10 }}>
-            <Btn label="Open Navigation" icon={I.nav} onClick={()=>onToast('Opening maps…')} full />
-            <Btn label="Share Location" variant="secondary" small onClick={()=>onToast('Sharing location…')} />
-          </div>
-        </div>
+        <p style={{ fontSize:11, color:C.muted, marginBottom:16 }}>Live distance, ETA, traffic and weather aren't available yet — open the destination directly in your maps app.</p>
+        <a href={mapsUrl} target="_blank" rel="noreferrer" style={{ textDecoration:'none' }}>
+          <Btn label="Open in Maps" icon={I.nav} full />
+        </a>
       </Card>
     </div>
   )
 }
 
 // ─── Beneficiary Profile ──────────────────────────────────────────────────────
-function BeneficiaryProfile() {
-  const sections = [
-    {title:'Care Preferences', items:['Window seat at hospital','Gentle pace — no rushing','Prefers male caregivers','Sinhala primary language']},
-    {title:'Medical Notes',    items:['Type 2 Diabetes — check blood sugar','Mild hypertension — BP medication daily','Post-fracture right hip — walking aid required','Penicillin allergy — critical']},
-  ]
+function BeneficiaryProfile({ b }:{ b:Booking|null }) {
+  if(!b) return <EmptyPage title="Beneficiary Profile" message="Select a job from the Dashboard or Calendar to view its beneficiary profile." />
+  const ben = b.beneficiary
+  if(!ben) return <EmptyPage title="Beneficiary Profile" message="No beneficiary information is linked to this booking." />
+
+  const age = ben.age ?? (ben.dob ? computeAgeFromDob(ben.dob) : null)
+  const conditions = toStringList(ben.conditions)
+  const medications = toStringList(ben.medications)
+  const allergies = toStringList(ben.allergies)
+  const languages = toStringList(ben.pref_languages)
+  const contacts = toContactList(ben.emergency_contacts)
+
   return (
     <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Beneficiary Profile</h2>
       <Card style={{ padding:24, marginBottom:16 }}>
         <div style={{ display:'flex', gap:16, alignItems:'flex-start', marginBottom:20 }}>
-          <div style={{ width:72, height:72, borderRadius:'50%', background:`${C.accent}15`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, flexShrink:0 }}>👴</div>
+          <div style={{ width:72, height:72, borderRadius:'50%', background:`${C.accent}15`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, flexShrink:0 }}>👤</div>
           <div>
-            <h3 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Nimal Perera</h3>
-            <p style={{ fontSize:13, color:C.muted, marginBottom:8 }}>Age 74 · Male · Sinhala / English</p>
+            <h3 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{beneficiaryName(ben)}</h3>
+            <p style={{ fontSize:13, color:C.muted, marginBottom:8 }}>
+              {age!=null?`Age ${age}`:'Age not provided'} · {ben.gender||'Gender not provided'}{ben.relationship?` · ${ben.relationship}`:''}
+            </p>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const }}>
-              <Bdg label="Mobility Aid" color={C.warning} />
-              <Bdg label="Diabetic" color={C.error} />
-              <Bdg label="Hypertension" color={C.accent} />
+              {ben.mobility&&<Bdg label={ben.mobility} color={C.warning} />}
+              {ben.blood_group&&<Bdg label={`Blood: ${ben.blood_group}`} color={C.error} />}
             </div>
           </div>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10 }} className="jm-4col">
-          {[{l:'Age',v:'74'},{l:'Gender',v:'Male'},{l:'Language',v:'Sinhala'},{l:'Mobility',v:'Walking Aid'}].map((s,i)=>(
+          {[
+            {l:'Age', v: age!=null?String(age):'Not provided'},
+            {l:'Gender', v: ben.gender||'Not provided'},
+            {l:'Relationship', v: ben.relationship||'Not provided'},
+            {l:'Mobility', v: ben.mobility||'Not provided'},
+          ].map((s,i)=>(
             <div key={i} style={{ padding:'10px 12px', borderRadius:12, background:C.bg, textAlign:'center' as const }}>
               <p style={{ fontSize:10, fontWeight:700, color:C.muted, marginBottom:4 }}>{s.l}</p>
               <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{s.v}</p>
@@ -761,66 +947,97 @@ function BeneficiaryProfile() {
         </div>
       </Card>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="jm-2col">
-        {sections.map((sec,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <SectionTitle title={sec.title} />
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {sec.items.map((item,j)=>(
-                <div key={j} style={{ display:'flex', gap:9, alignItems:'flex-start' }}>
-                  <div style={{ width:6, height:6, borderRadius:'50%', background:i===1?C.error:C.primary, marginTop:5, flexShrink:0 }} />
-                  <p style={{ fontSize:12, color:C.type, lineHeight:1.5 }}>{item}</p>
-                </div>
-              ))}
+        <Card style={{ padding:22 }}>
+          <SectionTitle title="Medical Information" />
+          {[
+            {l:'Conditions', v: conditions.length?conditions.join(', '):'Not provided'},
+            {l:'Medications', v: medications.length?medications.join(', '):'Not provided'},
+            {l:'Allergies', v: allergies.length?allergies.join(', '):'Not provided'},
+            {l:'Doctor', v: ben.doctor||'Not provided'},
+            {l:'Hospital', v: ben.hospital||'Not provided'},
+            {l:'Vision', v: ben.vision||'Not provided'},
+            {l:'Hearing', v: ben.hearing||'Not provided'},
+            {l:'Memory', v: ben.memory||'Not provided'},
+            {l:'Medical Notes', v: ben.med_notes||'Not provided'},
+          ].map((r,i)=>(
+            <div key={i} style={{ display:'flex', gap:9, alignItems:'flex-start', marginBottom:10 }}>
+              <div style={{ width:6, height:6, borderRadius:'50%', background:C.error, marginTop:5, flexShrink:0 }} />
+              <p style={{ fontSize:12, color:C.type, lineHeight:1.5 }}><strong>{r.l}:</strong> {r.v}</p>
             </div>
-          </Card>
-        ))}
+          ))}
+        </Card>
+        <Card style={{ padding:22 }}>
+          <SectionTitle title="Preferences" />
+          {[
+            {l:'Preferred Languages', v: languages.length?languages.join(', '):'Not provided'},
+            {l:'Dietary', v: ben.dietary||'Not provided'},
+            {l:'Special Requirements', v: ben.special_req||'Not provided'},
+            {l:'Address', v: ben.address||'Not provided'},
+          ].map((r,i)=>(
+            <div key={i} style={{ display:'flex', gap:9, alignItems:'flex-start', marginBottom:10 }}>
+              <div style={{ width:6, height:6, borderRadius:'50%', background:C.primary, marginTop:5, flexShrink:0 }} />
+              <p style={{ fontSize:12, color:C.type, lineHeight:1.5 }}><strong>{r.l}:</strong> {r.v}</p>
+            </div>
+          ))}
+        </Card>
       </div>
       <Card style={{ padding:22, marginTop:14, border:`1.5px solid ${C.error}20`, background:`${C.error}04` }}>
         <SectionTitle title="Emergency Contacts" />
-        {[{name:'Kumari Perera',rel:'Daughter',phone:'+94 77 345 6789'},{name:'Saman Perera',rel:'Son',phone:'+94 71 234 5678'}].map((ec,i)=>(
-          <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:i===0?`1px solid ${C.border}`:'none' }}>
-            <Avatar initials={ec.name.split(' ').map(x=>x[0]).join('')} color={C.error} size={36} />
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{ec.name} · {ec.rel}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{ec.phone}</p>
+        {contacts.length===0
+          ? <p style={{ fontSize:12, color:C.muted }}>No emergency contacts on file.</p>
+          : contacts.map((ec,i)=>(
+            <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:i<contacts.length-1?`1px solid ${C.border}`:'none' }}>
+              <Avatar initials={initials(ec.name)} color={C.error} size={36} />
+              <div style={{ flex:1 }}>
+                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{ec.name||'Not provided'}{ec.relationship?` · ${ec.relationship}`:''}</p>
+                <p style={{ fontSize:11, color:C.muted }}>{ec.phone||'Phone not provided'}</p>
+              </div>
             </div>
-          </div>
-        ))}
+          ))
+        }
       </Card>
     </div>
   )
 }
 
 // ─── Document Center ──────────────────────────────────────────────────────────
-function DocumentCenter({ onToast }:{ onToast:(m:string)=>void }) {
-  const docs = [
-    {cat:'Care Instructions',      name:'Care Plan — Nimal Perera.pdf',         size:'124 KB', date:'15 Jan',  icon:'📋'},
-    {cat:'Prescriptions',          name:'Prescription — Dr. K. Silva.pdf',       size:'88 KB',  date:'12 Jan',  icon:'💊'},
-    {cat:'Hospital Appointments',  name:'Appointment Letter — NHC.pdf',           size:'52 KB',  date:'10 Jan',  icon:'🏥'},
-    {cat:'Medical Reports',        name:'Blood Test Results — Jan 2025.pdf',      size:'210 KB', date:'8 Jan',   icon:'🧪'},
-    {cat:'Consent Forms',          name:'Care Consent — Mohamed Ihsan.pdf',       size:'96 KB',  date:'5 Jan',   icon:'✍️'},
-    {cat:'Care Instructions',      name:'Post-Hospital Instructions.pdf',         size:'64 KB',  date:'18 Jan',  icon:'📋'},
-  ]
-  const cats = [...new Set(docs.map(d=>d.cat))]
+function DocumentCenter({ beneficiary, documents, loading, error }:{
+  beneficiary:BeneficiaryInfo; documents:BeneficiaryDocument[]; loading:boolean; error:string|null
+}) {
+  if(!beneficiary) return <EmptyPage title="Document Center" message="Select a job from the Dashboard or Calendar to view its beneficiary's documents." />
+  if(loading) return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.muted }}>Loading documents…</p></div>
+  if(error) return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.error }}>{error}</p></div>
+
+  const cats = [...new Set(documents.map(d=>d.type||'Other'))]
+
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Document Center</h2>
-      {cats.map(cat=>(
+      {documents.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No documents available.</p>
+        </Card>
+      ) : cats.map(cat=>(
         <div key={cat} style={{ marginBottom:20 }}>
           <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.07em', marginBottom:10 }}>{cat}</p>
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {docs.filter(d=>d.cat===cat).map((doc,i)=>(
-              <Card key={i} hover style={{ padding:16 }}>
+            {documents.filter(d=>(d.type||'Other')===cat).map(doc=>(
+              <Card key={doc.id} hover style={{ padding:16 }}>
                 <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-                  <div style={{ width:44, height:44, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{doc.icon}</div>
+                  <div style={{ width:44, height:44, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary }}>
+                    <span style={{display:'flex'}}>{I.doc}</span>
+                  </div>
                   <div style={{ flex:1 }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{doc.name}</p>
-                    <p style={{ fontSize:11, color:C.muted }}>{doc.size} · Added {doc.date}</p>
+                    <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{doc.name || 'Untitled document'}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>
+                      {doc.uploaded_at ? `Added ${formatDateLabel(doc.uploaded_at)}` : 'Upload date not recorded'}
+                      {doc.expiry_date ? ` · Expires ${formatDateLabel(doc.expiry_date)}` : ''}
+                    </p>
                   </div>
-                  <div style={{ display:'flex', gap:6 }}>
-                    <button onClick={()=>onToast('Opening preview…')} style={{ padding:'6px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'#FAFAFA', cursor:'pointer', fontSize:11, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>Preview</button>
-                    <button onClick={()=>onToast('Downloading…')} style={{ padding:'6px 10px', borderRadius:8, border:`1px solid ${C.border}`, background:`${C.primary}10`, cursor:'pointer', color:C.primary, display:'flex', alignItems:'center' }}><span style={{display:'flex'}}>{I.download}</span></button>
-                  </div>
+                  {doc.file_url
+                    ? <a href={doc.file_url} target="_blank" rel="noreferrer" style={{ textDecoration:'none' }}><Btn label="Open" variant="secondary" small icon={I.download} /></a>
+                    : <p style={{ fontSize:11, color:C.muted }}>File not available</p>
+                  }
                 </div>
               </Card>
             ))}
@@ -831,247 +1048,289 @@ function DocumentCenter({ onToast }:{ onToast:(m:string)=>void }) {
   )
 }
 
-// ─── Schedule Management ──────────────────────────────────────────────────────
-function ScheduleManagement({ a, onToast }:{ a:Assignment; onToast:(m:string)=>void }) {
-  const [mode, setMode] = useState<'view'|'reschedule'|'suggest'>('view')
-  const [reason, setReason] = useState('')
+// ─── Schedule Management (read-only; reschedule requests not supported) ───────
+function ScheduleManagement({ b }:{ b:Booking|null }) {
+  if(!b) return <EmptyPage title="Schedule Management" message="Select a job from the Dashboard or Calendar to view its schedule." />
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Schedule Management</h2>
       <Card style={{ padding:24, marginBottom:16 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:18 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:6 }}>
           <div>
             <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:4 }}>Current Schedule</p>
-            <p style={{ fontSize:15, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{a.date}, {a.time}</p>
-            <p style={{ fontSize:12, color:C.muted }}>{a.duration} · {a.location}</p>
+            <p style={{ fontSize:15, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{formatDateLabel(b.scheduled_date)}{b.scheduled_time?`, ${formatTimeLabel(b.scheduled_time)}`:''}</p>
+            <p style={{ fontSize:12, color:C.muted }}>{b.duration||'Duration not set'} · {locationLabel(b)}</p>
           </div>
-          <Bdg label={STATUS[a.status].label} color={STATUS[a.status].color} dot />
-        </div>
-        <div style={{ display:'flex', gap:8 }}>
-          {(['reschedule','suggest'] as const).map(m=>(
-            <button key={m} onClick={()=>setMode(m)}
-              style={{ padding:'9px 16px', borderRadius:10, border:`1.5px solid ${mode===m?C.primary:C.border}`, background:mode===m?`${C.primary}06`:'#FAFAFA', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:mode===m?C.primary:C.sub, transition:'all 0.12s' }}>
-              {m==='reschedule'?'Request Reschedule':'Suggest Alternative'}
-            </button>
-          ))}
+          <Bdg label={statusMeta(b.status).label} color={statusMeta(b.status).color} dot />
         </div>
       </Card>
-      {(mode==='reschedule'||mode==='suggest')&&(
-        <Card style={{ padding:24 }}>
-          <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>
-            {mode==='reschedule'?'Request Reschedule':'Suggest Alternative Time'}
-          </h3>
-          <div style={{ marginBottom:14 }}>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:6 }}>New Date & Time</p>
-            <input type="datetime-local" style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', boxSizing:'border-box' as const }} />
-          </div>
-          <div style={{ marginBottom:16 }}>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:6 }}>Reason</p>
-            <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={3} placeholder="Please explain why you need to change the schedule…"
-              style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.6 }} />
-          </div>
-          <div style={{ display:'flex', gap:8 }}>
-            <Btn label="Send Request" onClick={()=>{ onToast('Reschedule request sent to client'); setMode('view') }} />
-            <Btn label="Cancel" variant="ghost" onClick={()=>setMode('view')} />
-          </div>
-        </Card>
-      )}
+      <Card style={{ padding:22, border:`1.5px solid ${C.warning}30`, background:`${C.warning}06` }}>
+        <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:6 }}>Reschedule requests aren't available yet</p>
+        <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:14 }}>This workflow needs client approval and reschedule-history tracking that hasn't been built yet. Please contact the client or ReadyPal Support directly if the schedule needs to change.</p>
+        <Btn label="Request Reschedule" disabled />
+      </Card>
     </div>
   )
 }
 
 // ─── Cancellation Management ──────────────────────────────────────────────────
-function CancellationManagement({ onToast }:{ onToast:(m:string)=>void }) {
+function CancellationManagement({ bookings, onSubmitReport, onToast }:{
+  bookings:Booking[]; onSubmitReport:(subject:string)=>Promise<void>; onToast:(m:string, kind?:'success'|'error')=>void
+}) {
+  const cancelled = bookings.filter(b=>b.status==='cancelled')
+  const [openId, setOpenId] = useState<string|null>(null)
   const [reason, setReason] = useState('')
-  const cancelled = ASSIGNMENTS.find(a=>a.status==='cancelled')!
+  const [submitting, setSubmitting] = useState(false)
+
+  if(cancelled.length===0) return <EmptyPage title="Cancellations" message="You have no cancelled bookings." />
+
+  async function submit(b:Booking) {
+    const trimmed = reason.trim()
+    if(!trimmed) { onToast('Please describe the issue', 'error'); return }
+    setSubmitting(true)
+    try {
+      await onSubmitReport(`Cancelled booking issue — ${serviceLabel(b.care_request)} (${formatDateLabel(b.scheduled_date)}): ${trimmed}`)
+      onToast('Report submitted successfully', 'success')
+      setReason(''); setOpenId(null)
+    } catch(e:any) {
+      // Keep the reason text so the user can retry.
+      onToast(e?.message || 'Could not submit report. Please try again.', 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Cancellation Management</h2>
-      <Card style={{ padding:22, marginBottom:16, border:`1.5px solid ${C.error}30`, background:`${C.error}04` }}>
-        <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:12 }}>
-          <div style={{ width:36, height:36, borderRadius:12, background:`${C.error}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>❌</div>
-          <div>
-            <p style={{ fontSize:13, fontWeight:800, color:C.error }}>Assignment Cancelled</p>
-            <p style={{ fontSize:11, color:C.muted }}>Ref: {cancelled.id} · {cancelled.date}</p>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Cancellations</h2>
+      {cancelled.map(b=>(
+        <Card key={b.id} style={{ padding:22, marginBottom:16, border:`1.5px solid ${C.error}30`, background:`${C.error}04` }}>
+          <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:12 }}>
+            <div style={{ width:36, height:36, borderRadius:12, background:`${C.error}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>❌</div>
+            <div>
+              <p style={{ fontSize:13, fontWeight:800, color:C.error }}>Booking Cancelled</p>
+              <p style={{ fontSize:11, color:C.muted }}>{formatDateLabel(b.scheduled_date)}{b.scheduled_time?`, ${formatTimeLabel(b.scheduled_time)}`:''}</p>
+            </div>
           </div>
-        </div>
-        <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:4 }}>{cancelled.service}</p>
-        <p style={{ fontSize:12, color:C.muted }}>{cancelled.client} → {cancelled.beneficiary}</p>
-      </Card>
-      {/* Timeline */}
-      <Card style={{ padding:22, marginBottom:16 }}>
-        <SectionTitle title="Cancellation Timeline" />
-        {[{l:'Assignment Confirmed',t:'18 Jan, 11 AM',done:true},{l:'Cancellation Requested by Client',t:'19 Jan, 3:00 PM',done:true},{l:'Agent Notified',t:'19 Jan, 3:05 PM',done:true},{l:'Refund Processed (Policy)',t:'20 Jan (auto)',done:false}].map((t,i,arr)=>(
-          <div key={i} style={{ display:'flex', gap:12 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:20, height:20, borderRadius:'50%', background:t.done?C.error:`${C.error}10`, border:`2px solid ${t.done?C.error:C.border}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                {t.done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.65)'}}>{I.check}</span>}
+          <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:4 }}>{serviceLabel(b.care_request)}</p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:14 }}>{clientName(b.client)} → {beneficiaryName(b.beneficiary)}</p>
+          {openId===b.id ? (
+            <>
+              <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={3} placeholder="Describe any issues or request a review…"
+                style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.6, marginBottom:12 }} />
+              <div style={{ display:'flex', gap:8 }}>
+                <Btn label={submitting?'Submitting…':'Submit Report'} variant="danger" onClick={()=>submit(b)} disabled={submitting} />
+                <Btn label="Cancel" variant="ghost" onClick={()=>{ setOpenId(null); setReason('') }} />
               </div>
-              {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'3px 0' }}/>}
-            </div>
-            <div style={{ paddingBottom:i<arr.length-1?10:0 }}>
-              <p style={{ fontSize:12, fontWeight:600, color:t.done?C.type:C.muted }}>{t.l}</p>
-              <p style={{ fontSize:10, color:C.muted }}>{t.t}</p>
-            </div>
-          </div>
-        ))}
-      </Card>
-      <Card style={{ padding:22 }}>
-        <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:12 }}>Report an Issue with this Cancellation</p>
-        <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={3} placeholder="Describe any issues or request a review…"
-          style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.6, marginBottom:12 }} />
-        <Btn label="Submit Report" variant="danger" onClick={()=>onToast('Report submitted')} />
-      </Card>
+            </>
+          ) : (
+            <Btn label="Report an Issue" variant="secondary" small onClick={()=>setOpenId(b.id)} />
+          )}
+        </Card>
+      ))}
     </div>
   )
 }
 
-// ─── Reminders ────────────────────────────────────────────────────────────────
-function Reminders({ onToast }:{ onToast:(m:string)=>void }) {
-  const [dismissed, setDismissed] = useState<Set<number>>(new Set())
-  const reminders = [
-    {icon:'📅', title:'Visit Tomorrow',             body:'Hospital Appointment with Nimal Perera — 9:30 AM at National Hospital',    color:C.primary, urgent:false},
-    {icon:'🚗', title:'Leave in 30 Minutes',         body:'Head off by 9:00 AM to arrive on time. Traffic is moderate.',              color:C.warning, urgent:true },
-    {icon:'💊', title:'Bring Medication List',       body:"Nimal's prescription list is required for the pharmacist today.",          color:C.error,   urgent:true },
-    {icon:'🏥', title:'Hospital Appointment',        body:'Confirm Dr. Silva appointment: Room 4B, OPD, National Hospital Colombo.', color:C.accent,  urgent:false},
-    {icon:'📄', title:'Document Reminder',           body:'Bring signed consent form and ID proof for hospital registration.',        color:C.info,    urgent:false},
-  ]
+// ─── Reminders (derived from real upcoming bookings, session-only dismiss) ────
+function Reminders({ bookings }:{ bookings:Booking[] }) {
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set())
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const in3days = new Date(startOfToday); in3days.setDate(in3days.getDate()+3)
+
+  const upcoming = bookings
+    .filter(b=>{
+      if(b.status!=='assigned'&&b.status!=='confirmed') return false
+      if(!b.scheduled_date) return false
+      const d = new Date(`${b.scheduled_date}T00:00:00`)
+      return d>=startOfToday && d<=in3days
+    })
+    .sort((a,b)=>bookingSortKey(a).localeCompare(bookingSortKey(b)))
+
+  const active = upcoming.filter(b=>!dismissed.has(b.id))
+
   return (
     <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Reminders</h2>
-        <Bdg label={`${reminders.length-dismissed.size} active`} color={C.primary} dot />
+        <Bdg label={`${active.length} active`} color={C.primary} dot />
       </div>
       <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {reminders.map((r,i)=>dismissed.has(i)?null:(
-          <Card key={i} style={{ padding:20, border:`1.5px solid ${r.urgent?r.color+'40':C.border}`, background:r.urgent?`${r.color}06`:C.surface }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${r.color}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{r.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:4 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{r.title}</p>
-                  {r.urgent&&<Bdg label="Urgent" color={r.color} dot />}
-                </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:10 }}>{r.body}</p>
-                <div style={{ display:'flex', gap:6 }}>
-                  <Btn label="Acknowledge" variant="secondary" small onClick={()=>{ setDismissed(s=>new Set([...s,i])); onToast('Reminder acknowledged') }} />
-                  <Btn label="Dismiss" variant="ghost" small onClick={()=>setDismissed(s=>new Set([...s,i]))} />
-                </div>
-              </div>
-            </div>
-          </Card>
-        ))}
-        {dismissed.size===reminders.length&&(
+        {active.length===0 ? (
           <div style={{ textAlign:'center' as const, padding:'60px 20px' }}>
             <div style={{ fontSize:48, marginBottom:14 }}>✅</div>
             <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>All caught up!</p>
-            <p style={{ fontSize:13, color:C.muted }}>No active reminders.</p>
+            <p style={{ fontSize:13, color:C.muted }}>No upcoming visits in the next 3 days.</p>
           </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ─── Status Center ────────────────────────────────────────────────────────────
-function StatusCenter({ onToast }:{ onToast:(m:string)=>void }) {
-  const [current, setCurrent] = useState<keyof typeof STATUS>('confirmed')
-  return (
-    <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Status Center</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Update your current assignment status. Clients see this in real time.</p>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }} className="jm-2col">
-        {(Object.entries(STATUS) as [keyof typeof STATUS, {color:string;label:string}][]).map(([k,s])=>(
-          <Card key={k} hover style={{ padding:20, border:`2px solid ${current===k?s.color+'50':C.border}`, background:current===k?`${s.color}06`:C.surface }}
-            onClick={()=>{ setCurrent(k); onToast(`Status updated to ${s.label}`) }}>
-            <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-              <div style={{ width:12, height:12, borderRadius:'50%', background:s.color, boxShadow:current===k?`0 0 0 5px ${s.color}25`:undefined }} />
-              <div>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.label}</p>
-                {current===k&&<Bdg label="Current" color={s.color} />}
+        ) : active.map(b=>(
+          <Card key={b.id} style={{ padding:20 }}>
+            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+              <div style={{ width:44, height:44, borderRadius:14, background:`${C.primary}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>📅</div>
+              <div style={{ flex:1 }}>
+                <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:4 }}>Upcoming Visit</p>
+                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:10 }}>{serviceLabel(b.care_request)} — {formatDateLabel(b.scheduled_date)}{b.scheduled_time?`, ${formatTimeLabel(b.scheduled_time)}`:''} at {locationLabel(b)}</p>
+                <Btn label="Dismiss" variant="ghost" small onClick={()=>setDismissed(s=>new Set([...s,b.id]))} />
               </div>
             </div>
           </Card>
         ))}
       </div>
+      <p style={{ fontSize:11, color:C.muted, marginTop:14 }}>Dismissing a reminder only hides it for this session — it isn't saved.</p>
     </div>
   )
 }
 
-// ─── Activity Feed ────────────────────────────────────────────────────────────
-function ActivityFeed() {
-  const feed = [
-    {icon:'✅', l:'Assignment Confirmed',  d:'Hospital Appointment confirmed by Mohamed Ihsan',       t:'Today, 8:30 AM',  col:C.success},
-    {icon:'📅', l:'Schedule Updated',      d:'Reminder set for 8:00 PM tonight',                      t:'Today, 8:00 AM',  col:C.primary},
-    {icon:'💬', l:'Client Message',        d:'Mohamed Ihsan: "Please be on time, we need to register early"', t:'Yesterday, 6 PM', col:C.info},
-    {icon:'📄', l:'Document Uploaded',     d:'Care Instructions updated by Mohamed Ihsan',            t:'18 Jan, 3:00 PM', col:C.accent},
-    {icon:'🔔', l:'Reminder Sent',         d:'System reminder: Visit tomorrow at 9:30 AM',            t:'18 Jan, 8:00 PM', col:C.warning},
-    {icon:'📋', l:'Visit Modified',        d:'Duration updated from 2.5 hrs to 3 hrs',               t:'18 Jan, 11:30 AM',col:C.muted},
-    {icon:'👤', l:'Beneficiary Updated',   d:"Nimal Perera's care notes updated by client",           t:'17 Jan, 2:00 PM', col:C.primary},
-    {icon:'💰', l:'Payment Confirmed',     d:'LKR 6,000 confirmed for this assignment',              t:'15 Jan, 4:00 PM', col:C.success},
-  ]
+// ─── Status (read-only; real lifecycle is owned by Care Execution) ────────────
+function StatusCenter({ b, onOpenCareExecution }:{ b:Booking|null; onOpenCareExecution:()=>void }) {
+  if(!b) return <EmptyPage title="Status" message="Select a job from the Dashboard or Calendar to view its status." />
+  const st = statusMeta(b.status)
+  const canExecute = b.status==='assigned'||b.status==='confirmed'||b.status==='in_progress'
+  return (
+    <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Status</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Status changes automatically as the visit progresses in Care Execution — it isn't set manually here.</p>
+      <Card style={{ padding:24 }}>
+        <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:16 }}>
+          <div style={{ width:14, height:14, borderRadius:'50%', background:st.color }} />
+          <p style={{ fontSize:18, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{st.label}</p>
+        </div>
+        <p style={{ fontSize:13, color:C.sub, marginBottom:canExecute?16:0 }}>{serviceLabel(b.care_request)} · {beneficiaryName(b.beneficiary)}</p>
+        {canExecute&&<Btn label={b.status==='in_progress'?'Continue Visit':'Start Visit'} onClick={onOpenCareExecution} />}
+      </Card>
+    </div>
+  )
+}
+
+// ─── Activity Feed (honest summary — no fabricated event log) ─────────────────
+function ActivityFeed({ bookings }:{ bookings:Booking[] }) {
+  const completed = bookings.filter(b=>b.status==='completed')
+  const cancelled = bookings.filter(b=>b.status==='cancelled')
+  const rescheduled = bookings.filter(b=>b.status==='rescheduled')
+  const mostRecentCompleted = [...completed].sort((a,b)=>(b.scheduled_date??'').localeCompare(a.scheduled_date??''))[0]
+
   return (
     <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Activity Feed</h2>
-      <div style={{ display:'flex', flexDirection:'column' }}>
-        {feed.map((ev,i,arr)=>(
-          <div key={i} style={{ display:'flex', gap:14 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:40, height:40, borderRadius:12, background:`${ev.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{ev.icon}</div>
-              {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }}/>}
+      <Card style={{ padding:22, marginBottom:14 }}>
+        <SectionTitle title="Summary" />
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }}>
+          {[
+            {l:'Completed Jobs', v:completed.length},
+            {l:'Cancelled Jobs', v:cancelled.length},
+            {l:'Rescheduled Jobs', v:rescheduled.length},
+          ].map((s,i)=>(
+            <div key={i} style={{ textAlign:'center' as const, padding:'12px', borderRadius:12, background:C.bg }}>
+              <p style={{ fontSize:18, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{s.v}</p>
+              <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
             </div>
-            <div style={{ paddingBottom:i<arr.length-1?16:0, paddingTop:4 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{ev.l}</p>
-              <p style={{ fontSize:12, color:C.sub, marginBottom:2, lineHeight:1.5 }}>{ev.d}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{ev.t}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+        {mostRecentCompleted&&(
+          <p style={{ fontSize:12, color:C.muted, marginTop:14 }}>Most recently completed: {serviceLabel(mostRecentCompleted.care_request)} on {formatDateLabel(mostRecentCompleted.scheduled_date)}.</p>
+        )}
+      </Card>
+      <Card style={{ padding:22 }}>
+        <p style={{ fontSize:13, color:C.muted }}>A detailed activity history isn't available yet.</p>
+      </Card>
+    </div>
+  )
+}
+
+// ─── Report Issue ─────────────────────────────────────────────────────────────
+function ReportIssue({ bookings, onSubmit, onToast }:{
+  bookings:Booking[]; onSubmit:(subject:string)=>Promise<void>; onToast:(m:string, kind?:'success'|'error')=>void
+}) {
+  const [bookingId, setBookingId] = useState('')
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const relevant = bookings.filter(b=>b.status!=='cancelled')
+
+  async function submit() {
+    const trimmed = description.trim()
+    if(!trimmed) { onToast('Please describe the issue', 'error'); return }
+    const b = relevant.find(x=>x.id===bookingId)
+    const context = b ? `${serviceLabel(b.care_request)} — ${formatDateLabel(b.scheduled_date)}` : 'General'
+    setSubmitting(true)
+    try {
+      await onSubmit(`[${context}] ${trimmed}`)
+      onToast('Report submitted successfully', 'success')
+      setDescription(''); setBookingId('')
+    } catch(e:any) {
+      // Keep the description so the user can retry — do not clear the
+      // form or imply the report was submitted.
+      onToast(e?.message || 'Could not submit report. Please try again.', 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Report Issue</h2>
+      <Card style={{ padding:24 }}>
+        <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:6 }}>Related Job (optional)</p>
+        <select value={bookingId} onChange={e=>setBookingId(e.target.value)}
+          style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', boxSizing:'border-box' as const, marginBottom:14 }}>
+          <option value="">General / Not job-specific</option>
+          {relevant.map(b=><option key={b.id} value={b.id}>{serviceLabel(b.care_request)} — {formatDateLabel(b.scheduled_date)}</option>)}
+        </select>
+        <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:6 }}>Description</p>
+        <textarea value={description} onChange={e=>setDescription(e.target.value)} rows={4} placeholder="Describe the issue…"
+          style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.6, marginBottom:16 }} />
+        <Btn label={submitting?'Submitting…':'Submit Report'} variant="danger" onClick={submit} disabled={submitting} />
+      </Card>
     </div>
   )
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
-function Notifications() {
-  const items = [
-    {icon:'✅', title:'Assignment Confirmed',  body:'Hospital Appointment confirmed by Mohamed Ihsan for Mon 20 Jan', time:'2 hrs ago',  col:C.success, read:false},
-    {icon:'📅', title:'Schedule Changed',      body:'Home Wellness Visit moved to Tue 21 Jan at 10:00 AM',           time:'4 hrs ago',  col:C.warning, read:false},
-    {icon:'🔔', title:'Reminder',             body:'Hospital Appointment tomorrow at 9:30 AM — prepare now',        time:'Yesterday',  col:C.primary, read:false},
-    {icon:'📄', title:'Document Added',        body:'Mohamed Ihsan uploaded a new care instruction',                 time:'2 days ago', col:C.accent,  read:true },
-    {icon:'👤', title:'Beneficiary Updated',   body:"Nimal Perera's medical notes have been updated",               time:'2 days ago', col:C.info,    read:true },
-    {icon:'💬', title:'Client Message',        body:'New message from Mohamed Ihsan',                               time:'3 days ago', col:C.primary, read:true },
-  ]
+function Notifications({ notifications, onMarkRead, onMarkAllRead }:{
+  notifications:NotificationRow[]|null; onMarkRead:(id:string)=>void; onMarkAllRead:()=>void
+}) {
+  if(notifications===null) {
+    return <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.muted }}>Loading notifications…</p></div>
+  }
+  const unread = notifications.filter(n=>!n.read).length
   return (
     <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
-        <Bdg label={`${items.filter(n=>!n.read).length} new`} color={C.primary} dot />
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+          {unread>0&&<Bdg label={`${unread} new`} color={C.primary} dot />}
+          {unread>0&&<Btn label="Mark All Read" variant="ghost" small onClick={onMarkAllRead} />}
+        </div>
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-        {items.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.col}04`, border:`1px solid ${n.read?C.border:n.col+'20'}` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:42, height:42, borderRadius:12, background:`${n.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
-                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.col }}/>}
+      {notifications.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No notifications yet.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+          {notifications.map(n=>(
+            <Card key={n.id} hover onClick={()=>{ if(!n.read) onMarkRead(n.id) }} style={{ padding:18, background:n.read?C.surface:`${C.primary}04`, border:`1px solid ${n.read?C.border:C.primary+'20'}` }}>
+              <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>🔔</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3, gap:8 }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title || 'Notification'}</p>
+                      {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:C.primary }}/>}
+                    </div>
+                    <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{formatDateLabel(n.created_at)}</p>
                   </div>
-                  <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{n.time}</p>
+                  <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body || ''}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body}</p>
               </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
-// ─── Empty / Loading / Error / Success ────────────────────────────────────────
+// ─── Empty / Loading / Error / Success (Dev showcase — untouched) ─────────────
 function EmptyStates() {
   return (
     <div style={{ padding:'28px 28px 60px' }}>
@@ -1149,10 +1408,10 @@ function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
     <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
       <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
       {[
-        {e:'✅', t:'Preparation Completed',  d:'All 10 preparation tasks are complete. You are ready for the visit!', col:C.success},
-        {e:'📅', t:'Schedule Updated',       d:'Reschedule request sent to Mohamed Ihsan. Awaiting confirmation.',    col:C.primary},
-        {e:'🔔', t:'Reminder Acknowledged',  d:'Hospital Appointment reminder dismissed. See you there!',            col:C.accent},
-        {e:'💼', t:'Assignment Confirmed',   d:'Hospital Appointment on Mon 20 Jan is confirmed. All set!',          col:C.success},
+        {e:'✅', t:'Preparation Completed',  d:'All preparation tasks are complete. You are ready for the visit!', col:C.success},
+        {e:'📅', t:'Schedule Updated',       d:'Reschedule request sent to the client. Awaiting confirmation.',    col:C.primary},
+        {e:'🔔', t:'Reminder Acknowledged',  d:'Visit reminder dismissed. See you there!',                        col:C.accent},
+        {e:'💼', t:'Assignment Confirmed',   d:'The assignment has been confirmed. All set!',                     col:C.success},
       ].map((s,i)=>(
         <Card key={i} style={{ padding:20, marginBottom:10, border:`1.5px solid ${s.col}30`, background:`${s.col}04` }}>
           <div style={{ display:'flex', gap:12, alignItems:'center' }}>
@@ -1170,7 +1429,7 @@ function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'dashboard'|'calendar'|'preparation'|'route'|'beneficiary'|'documents'|'schedule'|'cancellation'|'reminders'|'status'|'activity'|'notifications'|'empty'|'loading'|'error'|'success'
+type SubView = 'dashboard'|'calendar'|'preparation'|'route'|'beneficiary'|'documents'|'schedule'|'cancellation'|'reminders'|'status'|'activity'|'notifications'|'reportIssue'|'empty'|'loading'|'error'|'success'
 
 const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'dashboard',     l:'Dashboard',          icon:I.trending,  group:'Overview'       },
@@ -1182,8 +1441,9 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'documents',     l:'Document Center',    icon:I.doc,       group:'Visit'          },
   { k:'schedule',      l:'Schedule Mgmt',      icon:I.edit,      group:'Management'     },
   { k:'cancellation',  l:'Cancellations',      icon:I.close,     group:'Management'     },
-  { k:'status',        l:'Status Center',      icon:I.shield,    group:'Management'     },
+  { k:'status',        l:'Status',             icon:I.shield,    group:'Management'     },
   { k:'activity',      l:'Activity Feed',      icon:I.clock,     group:'Management'     },
+  { k:'reportIssue',   l:'Report Issue',       icon:I.alert,     group:'Management'     },
   { k:'notifications', l:'Notifications',      icon:I.bell,      group:'Management'     },
   { k:'empty',         l:'Empty States',       icon:I.alert,     group:'Dev'            },
   { k:'loading',       l:'Loading States',     icon:I.refresh,   group:'Dev'            },
@@ -1193,37 +1453,169 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function JobManagement() {
+  const navigate = useNavigate()
   const [sub, setSub] = useState<SubView>('dashboard')
   const [viewingId, setViewingId] = useState<string|null>(null)
-  const [toast, setToast] = useState<string|null>(null)
+  const [selectedId, setSelectedId] = useState<string|null>(null)
+  const [toast, setToast] = useState<{msg:string;kind:'success'|'error'}|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
-  const primaryJob = ASSIGNMENTS[0]
+  const [profile, setProfile] = useState<{ full_name:string|null; preferred_name?:string|null }|null>(null)
+  const [bookings, setBookings] = useState<Booking[]>([])
+  const [notifications, setNotifications] = useState<NotificationRow[]|null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string|null>(null)
+
+  const [documents, setDocuments] = useState<BeneficiaryDocument[]>([])
+  const [documentsLoading, setDocumentsLoading] = useState(false)
+  const [documentsError, setDocumentsError] = useState<string|null>(null)
+
+  const showToast = (m:string, kind:'success'|'error'='success') => { setToast({msg:m,kind}); setTimeout(()=>setToast(null),2800) }
   const groups = [...new Set(NAV.map(n=>n.group))]
 
+  // Loads real profile/bookings/notifications once on mount. Nothing here
+  // is mocked — a failure surfaces as loadError rather than falling back
+  // to demo content.
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const [profileData, bookingsData, notifData] = await Promise.all([
+          getMyProfile(),
+          getMyBookings(),
+          getMyNotifications(),
+        ])
+        if(cancelled) return
+        setProfile(profileData)
+        setBookings(bookingsData as unknown as Booking[])
+        setNotifications(notifData as NotificationRow[])
+      } catch(e:any) {
+        if(!cancelled) setLoadError(e?.message || 'Failed to load jobs')
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  const selectedBooking = useMemo(()=>{
+    if(selectedId) return bookings.find(b=>b.id===selectedId) ?? null
+    return pickRelevantBooking(bookings)
+  }, [bookings, selectedId])
+
+  const viewingBooking = viewingId ? bookings.find(b=>b.id===viewingId) ?? null : null
+
+  // Beneficiary documents for the currently selected booking's beneficiary.
+  useEffect(() => {
+    const benId = selectedBooking?.beneficiary_id
+    if(!benId) { setDocuments([]); setDocumentsError(null); return }
+    let cancelled = false
+    setDocumentsLoading(true); setDocumentsError(null)
+    getBeneficiaryDocuments(benId)
+      .then(docs => { if(!cancelled) setDocuments(docs as unknown as BeneficiaryDocument[]) })
+      .catch(e => { if(!cancelled) setDocumentsError(e?.message || 'Could not load documents') })
+      .finally(() => { if(!cancelled) setDocumentsLoading(false) })
+    return () => { cancelled = true }
+  }, [selectedBooking?.beneficiary_id])
+
+  function handleView(id:string) {
+    setSelectedId(id)
+    setViewingId(id)
+  }
+
+  async function handleConfirm(id:string) {
+    try {
+      const updated = await confirmBooking(id)
+      // Reflect exactly what Supabase actually returned — never assume
+      // both fields changed if the row didn't come back as expected.
+      setBookings(bs => bs.map(b => b.id===id ? {
+        ...b,
+        status: (updated as any)?.status ?? b.status,
+        confirmed: (updated as any)?.confirmed ?? b.confirmed,
+      } : b))
+      showToast('Assignment confirmed')
+    } catch(e:any) {
+      showToast(e?.message || 'Could not confirm assignment', 'error')
+    }
+  }
+
+  async function handleSubmitTicket(subject:string) {
+    await createSupportTicket(subject)
+  }
+
+  async function handleMarkRead(id:string) {
+    try {
+      await markNotificationRead(id)
+      setNotifications(ns => ns ? ns.map(n=>n.id===id?{ ...n, read:true }:n) : ns)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update notification')
+    }
+  }
+  async function handleMarkAllRead() {
+    try {
+      await markAllNotificationsRead()
+      setNotifications(ns => ns ? ns.map(n=>({ ...n, read:true })) : ns)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update notifications')
+    }
+  }
+
+  function openCareExecution() {
+    navigate('/agent/careexecution')
+  }
+
+  const unreadCount = notifications?.filter(n=>!n.read).length ?? 0
+  const remindersCount = useMemo(()=>{
+    const now = new Date()
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const in3days = new Date(startOfToday); in3days.setDate(in3days.getDate()+3)
+    return bookings.filter(b=>{
+      if(b.status!=='assigned'&&b.status!=='confirmed') return false
+      if(!b.scheduled_date) return false
+      const d = new Date(`${b.scheduled_date}T00:00:00`)
+      return d>=startOfToday && d<=in3days
+    }).length
+  }, [bookings])
+
   const renderMain = () => {
-    if (viewingId) {
-      const a = ASSIGNMENTS.find(x=>x.id===viewingId)!
-      return <div style={{flex:1,overflowY:'auto'}}><JobDetails a={a} onBack={()=>setViewingId(null)} onNav={s=>{setSub(s);setViewingId(null)}} onToast={showToast} /></div>
+    if(loading) {
+      return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.muted }}>Loading your jobs…</p></div>
+    }
+    if(loadError) {
+      return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.error }}>{loadError}</p></div>
+    }
+    if(viewingBooking) {
+      return (
+        <JobDetails
+          b={viewingBooking}
+          documents={documents}
+          documentsLoading={documentsLoading}
+          onBack={()=>setViewingId(null)}
+          onNav={s=>{ setSub(s); setViewingId(null) }}
+          onToast={showToast}
+          onOpenCareExecution={openCareExecution}
+        />
+      )
     }
     switch(sub) {
-      case 'dashboard':    return <div style={{flex:1,overflowY:'auto'}}><Dashboard onNav={s=>{setSub(s)}} onView={setViewingId} onToast={showToast} /></div>
-      case 'calendar':     return <div style={{flex:1,overflowY:'auto'}}><CalendarView onToast={showToast} /></div>
-      case 'preparation':  return <div style={{flex:1,overflowY:'auto'}}><Preparation a={primaryJob} onToast={showToast} /></div>
-      case 'route':        return <div style={{flex:1,overflowY:'auto'}}><RoutePlanning a={primaryJob} onToast={showToast} /></div>
-      case 'beneficiary':  return <div style={{flex:1,overflowY:'auto'}}><BeneficiaryProfile /></div>
-      case 'documents':    return <div style={{flex:1,overflowY:'auto'}}><DocumentCenter onToast={showToast} /></div>
-      case 'schedule':     return <div style={{flex:1,overflowY:'auto'}}><ScheduleManagement a={primaryJob} onToast={showToast} /></div>
-      case 'cancellation': return <div style={{flex:1,overflowY:'auto'}}><CancellationManagement onToast={showToast} /></div>
-      case 'reminders':    return <div style={{flex:1,overflowY:'auto'}}><Reminders onToast={showToast} /></div>
-      case 'status':       return <div style={{flex:1,overflowY:'auto'}}><StatusCenter onToast={showToast} /></div>
-      case 'activity':     return <div style={{flex:1,overflowY:'auto'}}><ActivityFeed /></div>
-      case 'notifications':return <div style={{flex:1,overflowY:'auto'}}><Notifications /></div>
-      case 'empty':        return <div style={{flex:1,overflowY:'auto'}}><EmptyStates /></div>
-      case 'loading':      return <div style={{flex:1,overflowY:'auto'}}><LoadingStates /></div>
-      case 'error':        return <div style={{flex:1,overflowY:'auto'}}><ErrorStates onToast={showToast} /></div>
-      case 'success':      return <div style={{flex:1,overflowY:'auto'}}><SuccessStates onToast={showToast} /></div>
+      case 'dashboard':    return <Dashboard profile={profile} bookings={bookings} unreadCount={unreadCount} onNav={setSub} onView={handleView} onToast={showToast} onConfirm={handleConfirm} />
+      case 'calendar':     return <CalendarView bookings={bookings} onView={handleView} />
+      case 'preparation':  return <Preparation b={selectedBooking} onOpenCareExecution={openCareExecution} />
+      case 'route':        return <RoutePlanning b={selectedBooking} />
+      case 'beneficiary':  return <BeneficiaryProfile b={selectedBooking} />
+      case 'documents':    return <DocumentCenter beneficiary={selectedBooking?.beneficiary ?? null} documents={documents} loading={documentsLoading} error={documentsError} />
+      case 'schedule':     return <ScheduleManagement b={selectedBooking} />
+      case 'cancellation': return <CancellationManagement bookings={bookings} onSubmitReport={handleSubmitTicket} onToast={showToast} />
+      case 'reminders':    return <Reminders bookings={bookings} />
+      case 'status':       return <StatusCenter b={selectedBooking} onOpenCareExecution={openCareExecution} />
+      case 'activity':     return <ActivityFeed bookings={bookings} />
+      case 'reportIssue':  return <ReportIssue bookings={bookings} onSubmit={handleSubmitTicket} onToast={showToast} />
+      case 'notifications':return <Notifications notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
+      case 'empty':        return <EmptyStates />
+      case 'loading':      return <LoadingStates />
+      case 'error':        return <ErrorStates onToast={showToast} />
+      case 'success':      return <SuccessStates onToast={showToast} />
       default: return null
     }
   }
@@ -1234,13 +1626,9 @@ export default function JobManagement() {
       <div className="jm-sidebar" style={{ width:220, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
         <div style={{ padding:'18px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-            <Avatar initials="KP" size={36} />
+            <Avatar initials={initials(profile?.preferred_name || profile?.full_name)} size={36} />
             <div>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
-              <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-                <div style={{ width:6, height:6, borderRadius:'50%', background:C.success }} />
-                <p style={{ fontSize:11, color:C.success, fontWeight:700 }}>Online</p>
-              </div>
+              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{profile?.preferred_name || profile?.full_name || 'Agent'}</p>
             </div>
           </div>
         </div>
@@ -1254,8 +1642,8 @@ export default function JobManagement() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?C.primary:C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?C.primary:C.muted }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='reminders'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.warning, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>2</div>}
-                  {n.k==='notifications'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>3</div>}
+                  {n.k==='reminders'&&remindersCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.warning, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{remindersCount}</div>}
+                  {n.k==='notifications'&&unreadCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{unreadCount}</div>}
                 </button>
               )
             })}
@@ -1290,10 +1678,12 @@ export default function JobManagement() {
 
       {/* Main */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }} className="jm-main">
-        {renderMain()}
+        <div style={{ flex:1, overflowY:'auto' }}>
+          {renderMain()}
+        </div>
       </div>
 
-      {toast&&<Toast msg={toast} />}
+      {toast&&<Toast msg={toast.msg} kind={toast.kind} />}
     </div>
   )
 }
