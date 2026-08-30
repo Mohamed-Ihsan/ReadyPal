@@ -7,6 +7,7 @@ import CareAgentOnboarding from "./screens/CareAgentOnboarding"
 import BrowseJobs from './screens/BrowseJobs'
 import CareAgentDashboard from './screens/CareAgentDashboard'
 import AgentProfileMgmt from './screens/AgentProfileMgmt'
+import TaskManagement from './screens/TaskManagement'
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
         <Route path="/agent/jobs" element={<BrowseJobs />} />
         <Route path="/agent/agentdashboard" element={<CareAgentDashboard />} />
         <Route path="/agent/agentprofilemgmt" element={<AgentProfileMgmt />} />
+        <Route path="/agent/taskmanagement" element={<TaskManagement />} />
       </Routes>
     </BrowserRouter>
   )
