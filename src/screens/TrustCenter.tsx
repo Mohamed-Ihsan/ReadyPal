@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -25,14 +26,6 @@ const VSTATUS: Record<string,{ color:string; label:string }> = {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-const QUEUE = [
-  { id:'RP-VER-2026-00142', name:'Kasun Perera',       type:'Care Agent', submitted:'20 Jan 2026', stage:'Document Review',    priority:'high',   risk:12,  reviewer:'Ranjith B.', status:'underreview' },
-  { id:'RP-VER-2026-00143', name:'Dilshan Ratnayake',  type:'Care Agent', submitted:'21 Jan 2026', stage:'Identity Check',     priority:'medium', risk:18,  reviewer:'Unassigned', status:'pending'     },
-  { id:'RP-VER-2026-00144', name:'Ayesha Malik',       type:'Care Agent', submitted:'21 Jan 2026', stage:'Background Check',   priority:'high',   risk:24,  reviewer:'Ranjith B.', status:'awaiting'    },
-  { id:'RP-VER-2026-00138', name:'Sampath Jayawardena',type:'Care Agent', submitted:'18 Jan 2026', stage:'Final Review',       priority:'urgent', risk:42,  reviewer:'Thilina S.', status:'escalated'   },
-  { id:'RP-VER-2026-00135', name:'Chamara Kumarasinghe',type:'Care Agent',submitted:'16 Jan 2026', stage:'Awaiting Documents', priority:'medium', risk:8,   reviewer:'Amara S.',   status:'awaiting'    },
-  { id:'RP-VER-2026-00129', name:'Nirosha Jayasena',   type:'Support',    submitted:'14 Jan 2026', stage:'Approved',           priority:'low',    risk:5,   reviewer:'Ranjith B.', status:'approved'    },
-]
 
 const CERTS = [
   { name:'Kasun Perera',    cert:'Medical Certificate',    issued:'15 Jul 2025', expiry:'15 Mar 2026', daysLeft:52,  status:'expiring' },
@@ -301,10 +294,10 @@ function TrustHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:stri
 }
 
 // ─── Verification Queue ───────────────────────────────────────────────────────
-function VerificationQueue({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function VerificationQueue({ onNav, onToast, queue }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; queue:any[] }) {
   const [q, setQ] = useState('')
   const [stageF, setStageF] = useState('all')
-  const filtered = QUEUE.filter(r =>
+  const filtered = queue.filter(r =>
     (stageF==='all'||r.status===stageF) &&
     (r.name.toLowerCase().includes(q.toLowerCase())||r.id.includes(q))
   )
@@ -380,8 +373,8 @@ function VerificationQueue({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
 }
 
 // ─── Application Details ──────────────────────────────────────────────────────
-function ApplicationDetails({ onToast }:{ onToast:(m:string)=>void }) {
-  const app = QUEUE[0]
+function ApplicationDetails({ onToast, queue }:{ onToast:(m:string)=>void; queue:any[] }) {
+    const app = queue[0]
   const timeline = [
     { l:'Application Submitted', d:'Kasun Perera applied as Care Agent',     time:'20 Jan 09:12', done:true  },
     { l:'Reviewer Assigned',     d:'Ranjith Bandara assigned',                time:'20 Jan 10:00', done:true  },
@@ -1358,6 +1351,41 @@ function SuccessStates() {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function TrustCenter() {
+  const [QUEUE, setQUEUE] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadQueue() {
+      const { data, error } = await supabase
+        .from('verification_documents')
+        .select(`
+          id,
+          doc_type,
+          status,
+          expiry_date,
+          agent:profiles!agent_id(full_name, role),
+          reviewer:profiles!reviewed_by(full_name)
+        `)
+      if (error) {
+        console.error(error)
+        return
+      }
+      const roleMap: Record<string, string> = { agent: 'Care Agent', support: 'Support' }
+      const mapped = (data || []).map((r: any) => ({
+        id: r.id,
+        name: r.agent?.full_name || 'Unknown',
+        type: roleMap[r.agent?.role] || r.agent?.role || 'Unknown',
+        submitted: 'N/A',
+        stage: r.doc_type,
+        priority: 'medium',
+        risk: 0,
+        reviewer: r.reviewer?.full_name || 'Unassigned',
+        status: r.status,
+      }))
+      setQUEUE(mapped)
+    }
+    loadQueue()
+  }, [])
+
   const [sub, setSub] = useState<SubView>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1367,8 +1395,8 @@ export default function TrustCenter() {
   const renderMain = () => {
     switch(sub) {
       case 'home':         return <TrustHome onNav={setSub} onToast={showToast} />
-      case 'queue':        return <VerificationQueue onNav={setSub} onToast={showToast} />
-      case 'appDetail':    return <ApplicationDetails onToast={showToast} />
+      case 'queue':        return <VerificationQueue onNav={setSub} onToast={showToast} queue={QUEUE} />
+      case 'appDetail':    return <ApplicationDetails onToast={showToast} queue={QUEUE} />
       case 'docReview':    return <DocumentReview onToast={showToast} />
       case 'identity':     return <IdentityVerification onToast={showToast} />
       case 'background':   return <BackgroundChecks onToast={showToast} />

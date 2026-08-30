@@ -1,4 +1,23 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
+type Review = {
+  id: string
+  reviewer: string
+  date: string
+  rating: number
+  agent: string
+  beneficiary: string
+  service: string
+  task: string
+  text: string
+  categories: Record<string, number>
+  helpful: number
+  notHelpful: number
+  badges: string[]
+  agentReply: string | null
+  agentReplyDate: string | null
+  photos: string[]
+}
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -112,35 +131,6 @@ function ReviewBdg({ type }: { type:keyof typeof REVIEW_BADGES }) {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-const REVIEWS = [
-  {
-    id:'rv1', reviewer:'Mohamed Ihsan', date:'14 Jan 2025', rating:5, agent:'Kasun Perera',
-    beneficiary:'Nimal Perera', service:'Hospital Companion', task:'RP-T-20259',
-    text:"Kasun was punctual, compassionate and kept us informed throughout the hospital visit. We felt reassured despite being overseas. He handled the doctors' questions confidently and ensured Thaththi was comfortable the entire time.",
-    categories:{ Professionalism:5, Punctuality:5, Communication:5, Compassion:5, CareQuality:4, ProblemSolving:5 },
-    helpful:24, notHelpful:0, badges:['verified','repeat','photos'] as const,
-    agentReply:"Thank you so much for your kind words. It was my honour to support Nimal Aiyya during his visit. I will always strive to give my best.",
-    agentReplyDate:'15 Jan 2025',
-    photos:['Photo 1','Photo 2'],
-  },
-  {
-    id:'rv2', reviewer:'Preethi Fernando', date:'8 Jan 2025', rating:5, agent:'Chamari Dissanayake',
-    beneficiary:'Amara Fernando', service:'Medication Collection', task:'RP-T-20247',
-    text:"Chamari collected and delivered all medications correctly and even double-checked the dosages with the pharmacy. Very professional and trustworthy.",
-    categories:{ Professionalism:5, Punctuality:4, Communication:5, Compassion:5, CareQuality:5, Reliability:5 },
-    helpful:11, notHelpful:0, badges:['verified','public'] as const,
-    agentReply:null, agentReplyDate:null, photos:[],
-  },
-  {
-    id:'rv3', reviewer:'Ruwan Jayasinghe', date:'2 Jan 2025', rating:4, agent:'Nadeesha Silva',
-    beneficiary:'Sunil Jayasinghe', service:'Home Wellness Visit', task:'RP-T-20218',
-    text:"Overall a good experience. Nadeesha was caring and patient with my father. Could improve on proactive updates but handled everything well.",
-    categories:{ Professionalism:4, Punctuality:4, Communication:3, Compassion:5, Appearance:5, Respect:5 },
-    helpful:8, notHelpful:1, badges:['verified'] as const,
-    agentReply:"Thank you for the feedback Ruwan. I have noted the communication suggestion and will make sure to send regular updates on future visits.",
-    agentReplyDate:'3 Jan 2025', photos:[],
-  },
-]
 
 const CATEGORIES = ['Professionalism','Punctuality','Communication','Compassion','Care Quality','Problem Solving','Reliability','Knowledge','Respect','Appearance']
 const SENTIMENTS = [
@@ -153,7 +143,7 @@ const SENTIMENTS = [
 function getSentiment(r:number) { return SENTIMENTS.find(s=>r>=s.min&&r<=s.max)??SENTIMENTS[4] }
 
 // ─── Review Card ──────────────────────────────────────────────────────────────
-function ReviewCard({ review, onExpand }: { review:typeof REVIEWS[0]; onExpand?:()=>void }) {
+function ReviewCard({ review, onExpand }: { review:Review; onExpand?:()=>void }) {
   const [helpful, setHelpful] = useState(review.helpful)
   const [voted, setVoted] = useState<'up'|'down'|null>(null)
   const [showReport, setShowReport] = useState(false)
@@ -249,7 +239,7 @@ type SubView = 'dashboard'|'wizard'|'public'|'analytics'|'search'|'private'|'suc
 // ──────────────────────────────────────────────────────────────────────────────
 // REVIEWS DASHBOARD
 // ──────────────────────────────────────────────────────────────────────────────
-function Dashboard({ onNav }: { onNav:(v:SubView)=>void }) {
+function Dashboard({ onNav, REVIEWS }: { onNav:(v:SubView)=>void; REVIEWS:Review[] }) {
   const pending = [
     { agent:'Priya Senanayake', service:'Physiotherapy Escort', date:'20 Dec 2024', task:'RP-T-20199', due:'3 days left' },
     { agent:'Kasun Perera',     service:'Hospital Companion',   date:'2 Jan 2025',  task:'RP-T-20231', due:'Overdue' },
@@ -648,7 +638,7 @@ function LeaveReview({ onBack, onSuccess }: { onBack:()=>void; onSuccess:()=>voi
 // ──────────────────────────────────────────────────────────────────────────────
 // PUBLIC REVIEW PAGE
 // ──────────────────────────────────────────────────────────────────────────────
-function PublicReviews({ onBack }: { onBack:()=>void }) {
+function PublicReviews({ onBack, REVIEWS }: { onBack:()=>void; REVIEWS:Review[] }) {
   const [filter, setFilter] = useState('Newest')
   const [search, setSearch] = useState('')
   const [ratingFilter, setRatingFilter] = useState(0)
@@ -726,7 +716,7 @@ function PublicReviews({ onBack }: { onBack:()=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // RATING ANALYTICS
 // ──────────────────────────────────────────────────────────────────────────────
-function RatingAnalytics({ onBack }: { onBack:()=>void }) {
+function RatingAnalytics({ onBack, REVIEWS }: { onBack:()=>void; REVIEWS:Review[] }) {
   const months = ['Aug','Sep','Oct','Nov','Dec','Jan']
   const trend  = [4.5, 4.7, 4.6, 4.8, 4.9, 4.9]
   const maxT   = 5
@@ -803,7 +793,7 @@ function RatingAnalytics({ onBack }: { onBack:()=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // REVIEW SEARCH
 // ──────────────────────────────────────────────────────────────────────────────
-function ReviewSearch({ onBack }: { onBack:()=>void }) {
+function ReviewSearch({ onBack, REVIEWS }: { onBack:()=>void; REVIEWS:Review[] }) {
   const [q, setQ] = useState('')
   const [agent, setAgent] = useState('')
   const [rating, setRating] = useState(0)
@@ -945,6 +935,49 @@ function ReviewSuccess({ onBack }: { onBack:()=>void }) {
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
 export default function ReviewsFeedback() {
+  const [REVIEWS, setREVIEWS] = useState<Review[]>([])
+  useEffect(() => {
+    async function loadReviews() {
+      const { data, error } = await supabase
+        .from('reviews')
+        .select(`
+          id,
+          rating,
+          category_ratings,
+          comment,
+          response,
+          badges,
+          created_at,
+          reviewer:profiles!reviewer_id(full_name),
+          agent:profiles!reviewee_id(full_name)
+        `)
+      if (error) {
+        console.error(error)
+        return
+      }
+      const mapped = (data || []).map((r: any) => ({
+        id: r.id,
+        reviewer: r.reviewer?.full_name || 'Unknown',
+        date: r.created_at ? new Date(r.created_at).toLocaleDateString() : 'N/A',
+        rating: r.rating,
+        agent: r.agent?.full_name || 'Unknown',
+        beneficiary: 'N/A',
+        service: 'N/A',
+        task: 'N/A',
+        text: r.comment || '',
+        categories: r.category_ratings || {},
+        helpful: 0,
+        notHelpful: 0,
+        badges: r.badges || [],
+        agentReply: r.response || null,
+        agentReplyDate: null,
+        photos: [] as string[],
+      }))
+      setREVIEWS(mapped)
+    }
+    loadReviews()
+  }, [])
+
   const [view, setView] = useState<SubView>('dashboard')
 
   const NAV: {key:SubView;label:string}[] = [
@@ -974,11 +1007,11 @@ export default function ReviewsFeedback() {
 
       {/* Content */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflowY:'auto' }}>
-        {view==='dashboard' && <Dashboard onNav={setView} />}
+        {view==='dashboard' && <Dashboard onNav={setView} REVIEWS={REVIEWS} />}
         {view==='wizard'    && <LeaveReview onBack={()=>setView('dashboard')} onSuccess={()=>setView('success')} />}
-        {view==='public'    && <PublicReviews onBack={()=>setView('dashboard')} />}
-        {view==='analytics' && <RatingAnalytics onBack={()=>setView('dashboard')} />}
-        {view==='search'    && <ReviewSearch onBack={()=>setView('dashboard')} />}
+        {view==='public'    && <PublicReviews onBack={()=>setView('dashboard')} REVIEWS={REVIEWS} />}
+        {view==='analytics' && <RatingAnalytics onBack={()=>setView('dashboard')} REVIEWS={REVIEWS} />}
+        {view==='search'    && <ReviewSearch onBack={()=>setView('dashboard')} REVIEWS={REVIEWS} />}
         {view==='private'   && <PrivateFeedback onBack={()=>setView('dashboard')} />}
         {view==='success'   && <ReviewSuccess onBack={()=>setView('dashboard')} />}
       </div>

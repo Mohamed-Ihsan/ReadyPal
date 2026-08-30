@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Brand ─────────────────────────────────────────────────────────────────────
 const C = {
@@ -91,14 +92,7 @@ function PayBdg({ s }: { s:string }) {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-const TRANSACTIONS = [
-  { id:'TXN-29841', ref:'INV-1047', date:'14 Jan 2025', agent:'Kasun Perera', beneficiary:'Nimal Perera', service:'Hospital Companion', amount:5250, fee:787, total:6037, method:'Visa •••• 4242', status:'Paid',       task:'RP-T-20259' },
-  { id:'TXN-29820', ref:'INV-1043', date:'8 Jan 2025',  agent:'Chamari Dissanayake', beneficiary:'Amara Fernando', service:'Medication Collection', amount:3500, fee:525, total:4025, method:'Wallet', status:'Paid', task:'RP-T-20247' },
-  { id:'TXN-29799', ref:'INV-1038', date:'2 Jan 2025',  agent:'Kasun Perera', beneficiary:'Nimal Perera', service:'Emergency Companion', amount:8000, fee:1200, total:9200, method:'Mastercard •••• 7766', status:'Refunded', task:'RP-T-20231' },
-  { id:'TXN-29771', ref:'INV-1031', date:'28 Dec 2024', agent:'Nadeesha Silva', beneficiary:'Amara Fernando', service:'Home Wellness Visit', amount:5500, fee:825, total:6325, method:'Visa •••• 4242', status:'Paid', task:'RP-T-20218' },
-  { id:'TXN-29750', ref:'INV-1025', date:'20 Dec 2024', agent:'Priya Senanayake', beneficiary:'Sunil Jayasinghe', service:'Physiotherapy Escort', amount:4200, fee:630, total:4830, method:'Wallet', status:'Cancelled', task:'RP-T-20199' },
-  { id:'TXN-29720', ref:'INV-1018', date:'12 Dec 2024', agent:'Kasun Perera', beneficiary:'Nimal Perera', service:'Hospital Companion', amount:3500, fee:525, total:4025, method:'Visa •••• 4242', status:'Paid', task:'RP-T-20188' },
-]
+
 
 const INVOICES = [
   { num:'INV-1047', issued:'14 Jan 2025', due:'21 Jan 2025', amount:6037, beneficiary:'Nimal Perera', task:'Hospital Companion', status:'Paid' },
@@ -113,12 +107,6 @@ const CARDS = [
   { id:'cd2', brand:'Mastercard', last4:'7766', expiry:'03/26', holder:'Mohamed Ihsan', isDefault:false, color:'#EB001B' },
 ]
 
-const COUPONS = [
-  { code:'FIRST20', desc:'20% off first booking', discount:20, type:'%', expiry:'31 Jan 2025', used:false },
-  { code:'CARE50',  desc:'LKR 500 off any care visit', discount:500, type:'LKR', expiry:'28 Feb 2025', used:false },
-  { code:'SUMMER15',desc:'15% off this summer', discount:15, type:'%', expiry:'Expired', used:true },
-]
-
 // Monthly spend data (Jan = index 0)
 const MONTHLY = [38000,42000,31500,55000,48000,62000,44000,39000,57000,71000,53000,66000]
 const MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -128,7 +116,7 @@ type SubView = 'dashboard'|'checkout'|'methods'|'history'|'detail'|'invoices'|'r
 // ──────────────────────────────────────────────────────────────────────────────
 // PAYMENT DASHBOARD
 // ──────────────────────────────────────────────────────────────────────────────
-function Dashboard({ onNav }: { onNav:(v:SubView)=>void }) {
+function Dashboard({ onNav, TRANSACTIONS }: { onNav:(v:SubView)=>void; TRANSACTIONS:any[] }) {
   const metrics = [
     { v:'LKR 6,037', l:'Outstanding',    c:C.warning, sub:'Due 21 Jan' },
     { v:'LKR 34,412',l:'Paid This Month',c:C.success, sub:'↑ 14% vs last month' },
@@ -481,7 +469,7 @@ function PaymentFailed({ onBack, onRetry }: { onBack:()=>void; onRetry:()=>void 
 // ──────────────────────────────────────────────────────────────────────────────
 // TRANSACTION HISTORY
 // ──────────────────────────────────────────────────────────────────────────────
-function TxnHistory({ onBack, onDetail }: { onBack:()=>void; onDetail:(id:string)=>void }) {
+function TxnHistory({ onBack, onDetail, TRANSACTIONS }: { onBack:()=>void; onDetail:(id:string)=>void; TRANSACTIONS:any[] }) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
 
@@ -563,7 +551,7 @@ function TxnHistory({ onBack, onDetail }: { onBack:()=>void; onDetail:(id:string
 // ──────────────────────────────────────────────────────────────────────────────
 // TRANSACTION DETAIL
 // ──────────────────────────────────────────────────────────────────────────────
-function TxnDetail({ id, onBack }: { id:string; onBack:()=>void }) {
+function TxnDetail({ id, onBack, TRANSACTIONS }: { id:string; onBack:()=>void; TRANSACTIONS:any[] }) {
   const t = TRANSACTIONS.find(x=>x.id===id)??TRANSACTIONS[0]
   const timeline = [
     { e:'Payment Initiated',  t:`${t.date} · 9:28 AM`, done:true },
@@ -789,7 +777,7 @@ function Wallet({ onBack }: { onBack:()=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // COUPONS
 // ──────────────────────────────────────────────────────────────────────────────
-function CouponView({ onBack }: { onBack:()=>void }) {
+function CouponView({ onBack, COUPONS }: { onBack:()=>void; COUPONS:any[] }) {
   const [input, setInput] = useState('')
 
   return (
@@ -834,7 +822,7 @@ function CouponView({ onBack }: { onBack:()=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // REFUNDS
 // ──────────────────────────────────────────────────────────────────────────────
-function Refunds({ onBack }: { onBack:()=>void }) {
+function Refunds({ onBack, TRANSACTIONS }: { onBack:()=>void; TRANSACTIONS:any[] }) {
   const [reason, setReason] = useState('')
   const reasons = ['Service not delivered as expected','Care agent did not arrive','Overcharged','Duplicate payment','Other']
 
@@ -1059,6 +1047,54 @@ function PaymentMethods({ onBack }: { onBack:()=>void }) {
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
 export default function PaymentsBilling() {
+  const [TRANSACTIONS, setTRANSACTIONS] = useState<any[]>([])
+  const [COUPONS, setCOUPONS] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadTransactions() {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          id, amount, method, status, created_at,
+          agent:profiles!agent_id(full_name)
+        `)
+      if (error) { console.error(error); return }
+      const statusMap: Record<string, string> = {
+        pending: 'Pending', completed: 'Paid', failed: 'Failed', refunded: 'Refunded',
+      }
+      const mapped = (data || []).map((t: any) => ({
+        id: t.id,
+        ref: 'N/A',
+        date: t.created_at ? new Date(t.created_at).toLocaleDateString() : 'N/A',
+        agent: t.agent?.full_name || 'Unknown',
+        beneficiary: 'N/A',
+        service: 'N/A',
+        amount: t.amount,
+        fee: 0,
+        total: t.amount,
+        method: t.method || 'N/A',
+        status: statusMap[t.status] || t.status,
+        task: 'N/A',
+      }))
+      setTRANSACTIONS(mapped)
+    }
+    async function loadCoupons() {
+      const { data, error } = await supabase.from('coupons').select('*')
+      if (error) { console.error(error); return }
+      const mapped = (data || []).map((c: any) => ({
+        code: c.code,
+        desc: `${c.discount_value}${c.discount_type === 'percent' ? '%' : ' LKR'} off`,
+        discount: c.discount_value,
+        type: c.discount_type === 'percent' ? '%' : 'LKR',
+        expiry: c.expiry_date ? new Date(c.expiry_date).toLocaleDateString() : 'N/A',
+        used: false,
+      }))
+      setCOUPONS(mapped)
+    }
+    loadTransactions()
+    loadCoupons()
+  }, [])
+
   const [view, setView] = useState<SubView>('dashboard')
   const [detailId, setDetailId] = useState('TXN-29841')
 
@@ -1098,16 +1134,16 @@ export default function PaymentsBilling() {
 
       {/* Content */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflowY:'auto' }}>
-        {view==='dashboard' && <Dashboard onNav={setView} />}
+        {view==='dashboard' && <Dashboard onNav={setView} TRANSACTIONS={TRANSACTIONS} />}
         {view==='checkout'  && <Checkout onBack={()=>setView('dashboard')} onSuccess={()=>setView('success')} onFailed={()=>setView('failed')} />}
-        {view==='history'   && <TxnHistory onBack={()=>setView('dashboard')} onDetail={id=>{ setDetailId(id); setView('detail') }} />}
-        {view==='detail'    && <TxnDetail id={detailId} onBack={()=>setView('history')} />}
+        {view==='history'   && <TxnHistory onBack={()=>setView('dashboard')} onDetail={id=>{ setDetailId(id); setView('detail') }} TRANSACTIONS={TRANSACTIONS} />}
+        {view==='detail'    && <TxnDetail id={detailId} onBack={()=>setView('history')} TRANSACTIONS={TRANSACTIONS} />}
         {view==='invoices'  && <InvoiceCenter onBack={()=>setView('dashboard')} />}
         {view==='wallet'    && <Wallet onBack={()=>setView('dashboard')} />}
         {view==='methods'   && <PaymentMethods onBack={()=>setView('dashboard')} />}
         {view==='analytics' && <Analytics onBack={()=>setView('dashboard')} />}
-        {view==='refunds'   && <Refunds onBack={()=>setView('dashboard')} />}
-        {view==='coupons'   && <CouponView onBack={()=>setView('dashboard')} />}
+        {view==='refunds'   && <Refunds onBack={()=>setView('dashboard')} TRANSACTIONS={TRANSACTIONS} />}
+        {view==='coupons'   && <CouponView onBack={()=>setView('dashboard')} COUPONS={COUPONS} />}
         {view==='success'   && <PaymentSuccess onBack={()=>setView('dashboard')} />}
         {view==='failed'    && <PaymentFailed onBack={()=>setView('checkout')} onRetry={()=>setView('checkout')} />}
       </div>

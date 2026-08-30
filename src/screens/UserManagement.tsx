@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -36,18 +37,6 @@ const I: Record<string,ReactNode> = {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-const USERS = [
-  { id:'USR-0001', name:'Mohamed Ihsan',       role:'Client',              email:'m.ihsan@email.com',  phone:'+94 77 123 4567', status:'active',    verified:true,  risk:'low',  rating:null, login:'2 min ago',   created:'Jan 10, 2025' },
-  { id:'USR-0002', name:'Kasun Perera',         role:'Care Agent',          email:'kasun.p@email.com',  phone:'+94 71 987 6543', status:'active',    verified:true,  risk:'low',  rating:4.9,  login:'8 min ago',   created:'Mar 5, 2024'  },
-  { id:'USR-0003', name:'Nimal Perera',         role:'Client',              email:'nimal.p@email.com',  phone:'+94 76 234 5678', status:'pending',   verified:false, risk:'low',  rating:null, login:'1 day ago',   created:'Jan 20, 2025' },
-  { id:'USR-0004', name:'Priya Fernando',       role:'Client',              email:'priya.f@email.com',  phone:'+94 77 345 6789', status:'suspended', verified:true,  risk:'high', rating:null, login:'3 days ago',  created:'Oct 15, 2024' },
-  { id:'USR-0005', name:'Dilshan Ratnayake',    role:'Care Agent',          email:'dilshan.r@email.com',phone:'+94 70 456 7890', status:'pending',   verified:false, risk:'low',  rating:null, login:'Never',       created:'Jan 22, 2025' },
-  { id:'USR-0006', name:'Chamari Wickrama',     role:'Client',              email:'chamari.w@email.com',phone:'+94 71 567 8901', status:'active',    verified:true,  risk:'low',  rating:null, login:'30 min ago',  created:'Nov 3, 2024'  },
-  { id:'USR-0007', name:'Amara Silva',          role:'Support Executive',   email:'amara.s@email.com',  phone:'+94 77 678 9012', status:'active',    verified:true,  risk:'low',  rating:null, login:'1 hr ago',    created:'Feb 14, 2024' },
-  { id:'USR-0008', name:'Ranjith Bandara',      role:'Verification Officer',email:'ranjith.b@email.com',phone:'+94 76 789 0123', status:'active',    verified:true,  risk:'low',  rating:null, login:'4 hrs ago',   created:'Jan 8, 2024'  },
-  { id:'USR-0009', name:'Thilina Senanayake',   role:'Operations Manager',  email:'thilina.s@email.com',phone:'+94 71 890 1234', status:'active',    verified:true,  risk:'low',  rating:null, login:'Yesterday',   created:'Jul 1, 2023'  },
-  { id:'USR-0010', name:'Nirosha Jayasena',     role:'Finance Manager',     email:'nirosha.j@email.com',phone:'+94 77 901 2345', status:'active',    verified:true,  risk:'low',  rating:null, login:'2 days ago',  created:'Jul 1, 2023'  },
-]
 
 const STATUS_COLOR: Record<string,string> = { active:C.success, pending:C.warning, suspended:C.error, locked:C.error, inactive:C.muted }
 const RISK_COLOR: Record<string,string> = { low:C.success, medium:C.warning, high:C.error }
@@ -261,9 +250,9 @@ function MgmtHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:strin
 }
 
 // ─── Global Search ────────────────────────────────────────────────────────────
-function GlobalSearch({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function GlobalSearch({ onNav, onToast, users }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; users:any[] }) {
   const [q, setQ] = useState('')
-  const results = q.length > 1 ? USERS.filter(u => u.name.toLowerCase().includes(q.toLowerCase()) || u.email.includes(q.toLowerCase()) || u.id.includes(q)) : []
+  const results = q.length > 1 ? users.filter(u => u.name.toLowerCase().includes(q.toLowerCase()) || u.email.includes(q.toLowerCase()) || u.id.includes(q)) : []
   return (
     <div style={{ maxWidth:740, margin:'0 auto', padding:'20px 24px 60px' }}>
       <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Global Search</h2>
@@ -323,11 +312,11 @@ function GlobalSearch({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:s
 }
 
 // ─── User Directory ───────────────────────────────────────────────────────────
-function UserDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function UserDirectory({ onNav, onToast, users }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; users:any[] }) {
   const [selected, setSelected] = useState<string[]>([])
   const [q, setQ] = useState('')
   const [statusF, setStatusF] = useState('all')
-  const filtered = USERS.filter(u =>
+  const filtered = users.filter(u =>
     (statusF==='all'||u.status===statusF) &&
     (u.name.toLowerCase().includes(q.toLowerCase())||u.role.toLowerCase().includes(q.toLowerCase()))
   )
@@ -404,7 +393,7 @@ function UserDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:
       </Card>
       {/* Pagination stub */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:14 }}>
-        <p style={{ fontSize:11, color:C.muted }}>Showing {filtered.length} of {USERS.length} users</p>
+        <p style={{ fontSize:11, color:C.muted }}>Showing {filtered.length} of {users.length} users</p>
         <div style={{ display:'flex', gap:4 }}>
           {[1,2,3,'...',48].map((p,i)=>(
             <button key={i} style={{ width:28, height:28, borderRadius:7, border:`1px solid ${i===0?C.primary:C.border}`, background:i===0?C.primary:'#FAFAFA', color:i===0?'#fff':C.sub, cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:11, fontWeight:700 }}>{p}</button>
@@ -416,8 +405,8 @@ function UserDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:
 }
 
 // ─── User Profile ─────────────────────────────────────────────────────────────
-function UserProfile({ onToast }:{ onToast:(m:string)=>void }) {
-  const u = USERS[0]
+function UserProfile({ onToast, users }:{ onToast:(m:string)=>void; users:any[] }) {
+  const u = users[0]
   return (
     <div style={{ maxWidth:800, margin:'0 auto', padding:'20px 24px 60px' }}>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="um-2col">
@@ -670,9 +659,9 @@ function AccountActions({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Bulk Actions ─────────────────────────────────────────────────────────────
-function BulkActions({ onToast }:{ onToast:(m:string)=>void }) {
-  const [sel, setSel] = useState([USERS[2].id, USERS[4].id])
-  const selected = USERS.filter(u=>sel.includes(u.id))
+function BulkActions({ onToast, users }:{ onToast:(m:string)=>void; users:any[] }) {
+  const [sel, setSel] = useState([users[2].id, users[4].id])
+  const selected = users.filter(u=>sel.includes(u.id))
   return (
     <div style={{ maxWidth:760, margin:'0 auto', padding:'20px 24px 60px' }}>
       <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Bulk Actions</h2>
@@ -1013,8 +1002,8 @@ function SuccessStates() {
 }
 
 // ─── Generic list views ───────────────────────────────────────────────────────
-function ClientList({ onToast }:{ onToast:(m:string)=>void }) {
-  const clients = USERS.filter(u=>u.role==='Client')
+function ClientList({ onToast, users }:{ onToast:(m:string)=>void, users:any[] }) {
+  const clients = users.filter(u=>u.role==='Client')
   return (
     <div style={{ padding:'20px 24px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
@@ -1053,8 +1042,8 @@ function ClientList({ onToast }:{ onToast:(m:string)=>void }) {
   )
 }
 
-function AgentMgmtList({ onToast }:{ onToast:(m:string)=>void }) {
-  const agents = USERS.filter(u=>u.role==='Care Agent')
+function AgentMgmtList({ onToast, users }:{ onToast:(m:string)=>void, users:any[] }) {
+  const agents = users.filter(u=>u.role==='Care Agent')
   return (
     <div style={{ padding:'20px 24px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
@@ -1092,8 +1081,8 @@ function AgentMgmtList({ onToast }:{ onToast:(m:string)=>void }) {
   )
 }
 
-function AdminMgmtList({ onToast }:{ onToast:(m:string)=>void }) {
-  const staff = USERS.filter(u=>u.role!=='Client'&&u.role!=='Care Agent')
+function AdminMgmtList({ onToast, users }:{ onToast:(m:string)=>void, users:any[] }) {
+  const staff = users.filter(u=>u.role!=='Client'&&u.role!=='Care Agent')
   return (
     <div style={{ padding:'20px 24px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
@@ -1132,6 +1121,36 @@ function AdminMgmtList({ onToast }:{ onToast:(m:string)=>void }) {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function UserManagement() {
+    const [USERS, setUSERS] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadUsers() {
+      const { data, error } = await supabase.from('profiles').select('*')
+      if (error) {
+        console.error(error)
+        return
+      }
+      const roleMap: Record<string, string> = {
+        client: 'Client',
+        agent: 'Care Agent',
+      }
+      const mapped = (data || []).map(p => ({
+        id: p.id,
+        name: p.full_name,
+        role: roleMap[p.role] || p.role,
+        email: p.email,
+        phone: p.phone,
+        status: p.status,
+        verified: true,
+        risk: p.risk_level,
+        rating: null,
+        login: 'N/A',
+        created: p.created_at,
+      }))
+      setUSERS(mapped)
+    }
+    loadUsers()
+  }, [])
   const [sub, setSub] = useState<SubView>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1141,18 +1160,18 @@ export default function UserManagement() {
   const renderMain = () => {
     switch(sub) {
       case 'home':          return <MgmtHome onNav={setSub} onToast={showToast} />
-      case 'search':        return <GlobalSearch onNav={setSub} onToast={showToast} />
-      case 'filters':       return <UserDirectory onNav={setSub} onToast={showToast} />
-      case 'directory':     return <UserDirectory onNav={setSub} onToast={showToast} />
-      case 'userProfile':   return <UserProfile onToast={showToast} />
-      case 'clients':       return <ClientList onToast={showToast} />
-      case 'agentMgmt':     return <AgentMgmtList onToast={showToast} />
-      case 'adminMgmt':     return <AdminMgmtList onToast={showToast} />
+      case 'search':        return <GlobalSearch onNav={setSub} onToast={showToast} users={USERS} />
+      case 'filters':       return <UserDirectory onNav={setSub} onToast={showToast} users={USERS} />
+      case 'directory':     return <UserDirectory onNav={setSub} onToast={showToast} users={USERS} />
+      case 'userProfile':   return <UserProfile onToast={showToast} users={USERS} />
+      case 'clients':       return <ClientList onToast={showToast} users={USERS} />
+      case 'agentMgmt':     return <AgentMgmtList onToast={showToast} users={USERS} />
+      case 'adminMgmt':     return <AdminMgmtList onToast={showToast} users={USERS} />
       case 'roles':         return <RoleManagement onNav={setSub} onToast={showToast} />
       case 'permissions':   return <PermissionMatrix onToast={showToast} />
       case 'roleEditor':    return <RoleEditor onToast={showToast} />
       case 'accountActions':return <AccountActions onToast={showToast} />
-      case 'bulkActions':   return <BulkActions onToast={showToast} />
+      case 'bulkActions':   return <BulkActions onToast={showToast} users={USERS} />
       case 'impersonation': return <UserImpersonation onToast={showToast} />
       case 'activityLog':   return <AuditLog onToast={showToast} />
       case 'auditLog':      return <AuditLog onToast={showToast} />

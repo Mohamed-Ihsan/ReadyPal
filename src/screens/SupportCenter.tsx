@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 const C = {
   primary:'#00737A', accent:'#EE8153', type:'#2C3E43', sub:'#6B7E85',
@@ -20,14 +21,6 @@ const TSTATUS: Record<string,{color:string;label:string}> = {
 }
 
 // ─── Module-level data ────────────────────────────────────────────────────────
-const TICKETS = [
-  { id:'SUP-2026-00481', subject:'Agent arrived late — rescheduling assistance needed', client:'Mohamed Ihsan',   agent:'Kasun Perera',    cat:'Booking Assistance', priority:'high',   assignee:'Amara S.',   status:'waiting',   sla:'breach',   created:'22 Jan 09:15', updated:'22 Jan 14:30' },
-  { id:'SUP-2026-00480', subject:'Payment deducted but booking not confirmed',          client:'Priya Fernando',  agent:'Dilshan R.',      cat:'Payment Issue',      priority:'urgent', assignee:'Thilina S.', status:'escalated', sla:'breach',   created:'21 Jan 18:42', updated:'22 Jan 11:00' },
-  { id:'SUP-2026-00479', subject:'Care agent behaviour complaint',                      client:'Sampath J.',      agent:'Ayesha M.',       cat:'Complaint',          priority:'high',   assignee:'Ranjith B.', status:'open',      sla:'ok',       created:'21 Jan 14:10', updated:'21 Jan 16:20' },
-  { id:'SUP-2026-00478', subject:'How do I add a second beneficiary?',                  client:'Chamara K.',      agent:'-',               cat:'How-to Query',       priority:'low',    assignee:'Amara S.',   status:'resolved',  sla:'ok',       created:'20 Jan 10:30', updated:'20 Jan 11:45' },
-  { id:'SUP-2026-00477', subject:'Refund request — service cancelled by agent',         client:'Nirosha J.',      agent:'Chamara W.',      cat:'Refund',             priority:'medium', assignee:'Thilina S.', status:'pending',   sla:'warning',  created:'20 Jan 08:00', updated:'21 Jan 09:30' },
-  { id:'SUP-2026-00476', subject:'App crash during live tracking',                      client:'Mohamed Ihsan',   agent:'Kasun Perera',    cat:'Technical',          priority:'medium', assignee:'Unassigned', status:'open',      sla:'ok',       created:'19 Jan 15:20', updated:'19 Jan 15:20' },
-]
 
 const COMPLAINTS = [
   { id:'CMP-2026-00041', booking:'RP-2026-000178', client:'Priya Fernando',  cat:'Agent Conduct',       severity:'high',   officer:'Ranjith B.',   status:'open',     raised:'18 Jan 2026' },
@@ -204,7 +197,7 @@ const DASH_KPIS = [
   { l:'CSAT Score',         v:'4.8',    c:C.success, sub:'Out of 5.0'          },
 ]
 
-function SupportHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function SupportHome({ onNav, onToast, TICKETS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; TICKETS:any[] }) {
   return (
     <div style={{ padding:'20px 24px 60px' }}>
       {/* SLA breach alert */}
@@ -288,7 +281,7 @@ function SupportHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:st
 }
 
 // ─── Ticket Directory ─────────────────────────────────────────────────────────
-function TicketDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function TicketDirectory({ onNav, onToast, TICKETS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; TICKETS:any[] }) {
   const [q, setQ] = useState('')
   const [sf, setSf] = useState('all')
   const filtered = TICKETS.filter(t =>
@@ -355,7 +348,7 @@ function TicketDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(
 }
 
 // ─── Ticket Details ───────────────────────────────────────────────────────────
-function TicketDetails({ onToast }:{ onToast:(m:string)=>void }) {
+function TicketDetails({ onToast, TICKETS }:{ onToast:(m:string)=>void; TICKETS:any[] }) {
   const t = TICKETS[0]
   const [reply, setReply] = useState('')
   const [note, setNote] = useState('')
@@ -613,7 +606,7 @@ function LiveChatCenter({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── CRM Profile ─────────────────────────────────────────────────────────────
-function CRMProfile({ onToast }:{ onToast:(m:string)=>void }) {
+function CRMProfile({ onToast, TICKETS }:{ onToast:(m:string)=>void; TICKETS:any[] }) {
   const timeline = [
     { l:'Ticket SUP-2026-00481 opened',       d:'Booking assistance — Agent late arrival',   time:'22 Jan 09:15', c:C.error   },
     { l:'Booking RP-2026-000184 completed',   d:'Hospital Appointment · LKR 8,500',          time:'21 Jan 16:40', c:C.success },
@@ -958,7 +951,7 @@ function KnowledgeBase({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── SLA Monitoring ───────────────────────────────────────────────────────────
-function SLAMonitoring() {
+function SLAMonitoring({ TICKETS }:{ TICKETS:any[] }) {
   const slaData = [94,96,93,97,95,98,94]
   const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
   const maxS = Math.max(...slaData)
@@ -1540,6 +1533,36 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string; badge?:number }[
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function SupportCenter() {
+    const [TICKETS, setTICKETS] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadTickets() {
+      const { data, error } = await supabase
+        .from('support_tickets')
+        .select(`
+          id, subject, category, priority, status, created_at,
+          client:profiles!user_id(full_name),
+          assignee:profiles!assigned_to(full_name)
+        `)
+      if (error) { console.error(error); return }
+      const mapped = (data || []).map((t: any) => ({
+        id: t.id,
+        subject: t.subject,
+        client: t.client?.full_name || 'Unknown',
+        agent: '-',
+        cat: t.category || 'General',
+        priority: t.priority || 'medium',
+        assignee: t.assignee?.full_name || 'Unassigned',
+        status: t.status,
+        sla: 'ok',
+        created: t.created_at ? new Date(t.created_at).toLocaleString() : 'N/A',
+        updated: t.created_at ? new Date(t.created_at).toLocaleString() : 'N/A',
+      }))
+      setTICKETS(mapped)
+    }
+    loadTickets()
+  }, [])
+
   const [sub, setSub] = useState<SubView>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1550,18 +1573,18 @@ export default function SupportCenter() {
 
   const renderMain = () => {
     switch(sub) {
-      case 'home':         return <SupportHome onNav={setSub} onToast={showToast} />
-      case 'tickets':      return <TicketDirectory onNav={setSub} onToast={showToast} />
-      case 'ticketDetail': return <TicketDetails onToast={showToast} />
+      case 'home':         return <SupportHome onNav={setSub} onToast={showToast} TICKETS={TICKETS} />
+      case 'tickets':      return <TicketDirectory onNav={setSub} onToast={showToast} TICKETS={TICKETS} />
+      case 'ticketDetail': return <TicketDetails onToast={showToast} TICKETS={TICKETS} />
       case 'chat':         return <LiveChatCenter onToast={showToast} />
-      case 'crm':          return <CRMProfile onToast={showToast} />
+      case 'crm':          return <CRMProfile onToast={showToast} TICKETS={TICKETS} />
       case 'complaints':   return <ComplaintManagement onToast={showToast} />
       case 'escalation':   return <EscalationCenter onToast={showToast} />
       case 'comms':        return <CommunicationHub onNav={setSub} onToast={showToast} />
       case 'announcements':return <AnnouncementsView onToast={showToast} />
       case 'kb':           return <KnowledgeBase onToast={showToast} />
       case 'activity':     return <LiveActivity />
-      case 'sla':          return <SLAMonitoring />
+      case 'sla':          return <SLAMonitoring TICKETS={TICKETS} />
       case 'agentPerf':    return <AgentPerformance />
       case 'feedback':     return <CustomerFeedback />
       case 'automation':   return <AutomationCenter onToast={showToast} />
