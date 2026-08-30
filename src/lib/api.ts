@@ -1394,3 +1394,272 @@ export async function submitMyCareAgentApplication() {
 
   return data
 }
+
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Care Execution: active booking + visit log
+//
+// visit_logs.status and bookings.status are constrained enums — only the
+// values below are ever written. No other status string is valid.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type VisitStatus =
+  | "not_started"
+  | "en_route"
+  | "checked_in"
+  | "in_progress"
+  | "checked_out"
+  | "completed"
+
+export type BookingStatus =
+  | "assigned"
+  | "confirmed"
+  | "in_progress"
+  | "completed"
+  | "cancelled"
+  | "rescheduled"
+
+// Bookings in one of these statuses represent a visit that is upcoming or
+// underway. Cancelled, completed and rescheduled bookings are excluded.
+const ACTIVE_BOOKING_STATUSES: BookingStatus[] = ["assigned", "confirmed", "in_progress"]
+
+const BOOKING_SELECT = `
+  *,
+  care_request:care_requests(id, title, service_type, duration, tasks, address1, address2, city, province),
+  client:profiles!client_id(id, full_name, avatar_url, phone),
+  beneficiary:beneficiaries!beneficiary_id(id, name, preferred_name, age)
+`
+
+function bookingSortKey(b: any): string {
+  const d = b.scheduled_date ?? ""
+  const t = b.scheduled_time ?? ""
+  return `${d}T${t}`
+}
+
+// Picks the single most relevant active booking for this agent: an
+// in-progress booking always wins; otherwise the nearest upcoming
+// assigned/confirmed booking; only falls back to the most recent past one
+// if nothing upcoming exists. Never blindly returns the oldest row.
+export async function getMyActiveBooking() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("bookings")
+    .select(BOOKING_SELECT)
+    .eq("agent_id", user.id)
+    .in("status", ACTIVE_BOOKING_STATUSES)
+
+  if (error) {
+    throw error
+  }
+
+  if (!data || data.length === 0) {
+    return null
+  }
+
+  const inProgress = data.filter(b => b.status === "in_progress")
+  if (inProgress.length) {
+    return [...inProgress].sort((a, b) => bookingSortKey(a).localeCompare(bookingSortKey(b)))[0]
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const withDate = data.filter(b => b.scheduled_date)
+  const upcoming = withDate
+    .filter(b => b.scheduled_date >= today)
+    .sort((a, b) => bookingSortKey(a).localeCompare(bookingSortKey(b)))
+  if (upcoming.length) {
+    return upcoming[0]
+  }
+
+  const past = [...withDate].sort((a, b) => bookingSortKey(b).localeCompare(bookingSortKey(a)))
+  if (past.length) {
+    return past[0]
+  }
+
+  return data[0]
+}
+
+export async function updateBookingStatus(bookingId: string, status: BookingStatus) {
+  const { data, error } = await supabase
+    .from("bookings")
+    .update({ status })
+    .eq("id", bookingId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function getVisitLog(bookingId: string) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .select("*")
+    .eq("booking_id", bookingId)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Creates the visit_logs row for a booking on check-in (idempotent — if a
+// row already exists for this booking, it is returned as-is rather than
+// duplicated) and marks the booking in_progress. GPS is only saved if the
+// browser actually reported a location; failure to obtain it is never
+// papered over with a fake coordinate.
+export async function startVisit(
+  bookingId: string,
+  gps?: { lat: number; lng: number } | null
+) {
+  const existing = await getVisitLog(bookingId)
+
+  if (existing) {
+    return existing
+  }
+
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .insert({
+      booking_id: bookingId,
+      status: "checked_in" satisfies VisitStatus,
+      check_in_time: new Date().toISOString(),
+      gps_lat: gps?.lat ?? null,
+      gps_lng: gps?.lng ?? null,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  await updateBookingStatus(bookingId, "in_progress")
+
+  return data
+}
+
+export async function updateVisitStatus(visitLogId: string, status: VisitStatus) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({ status })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function updateVisitChecklist(visitLogId: string, checklist: unknown) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({ checklist })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function updateVisitMedication(visitLogId: string, medicationLog: unknown) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({ medication_log: medicationLog })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function updateVisitVitals(visitLogId: string, vitals: unknown) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({ vitals })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function updateVisitNotes(visitLogId: string, notes: string) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({ notes })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+export async function submitIncidentReport(visitLogId: string, incidentReport: string) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({ incident_report: incidentReport })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Ends the visit: visit_logs and the booking both move to their terminal
+// "completed" state together, since this app has no separate post-visit
+// review/approval step.
+export async function endVisit(visitLogId: string, bookingId?: string) {
+  const { data, error } = await supabase
+    .from("visit_logs")
+    .update({
+      check_out_time: new Date().toISOString(),
+      status: "completed" satisfies VisitStatus,
+    })
+    .eq("id", visitLogId)
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  if (bookingId) {
+    await updateBookingStatus(bookingId, "completed")
+  }
+
+  return data
+}
