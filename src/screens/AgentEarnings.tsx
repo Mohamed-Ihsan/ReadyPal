@@ -1,4 +1,15 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, type ReactNode, type CSSProperties } from 'react'
+import {
+  getMyProfile,
+  getMyCompletedBookings,
+  getMyTransactions,
+  getMyPayouts,
+  getMyBankAccount,
+  saveMyBankAccount,
+  getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -6,7 +17,12 @@ const C = {
   muted:'#9AAAB0', border:'#E4E8EA', bg:'#F2F4F5', surface:'#FFFFFF',
   success:'#22C55E', warning:'#F59E0B', error:'#EF4444', info:'#3B82F6',
 }
-const fmt = (n:number) => `LKR ${n.toLocaleString()}`
+// LKR is the only currency assumed for bookings.payment_amount and
+// payouts.amount (neither table has a currency column, and the rest of the
+// app already assumes LKR). transactions.amount DOES have a real currency
+// column, so transaction-specific views use fmtCurrency instead.
+const fmt = (n:number) => `LKR ${Math.round(n).toLocaleString()}`
+const fmtCurrency = (n:number, currency?:string|null) => `${currency || 'LKR'} ${Math.round(n).toLocaleString()}`
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I: Record<string,ReactNode> = {
@@ -142,63 +158,235 @@ function LineChart({ data, color=C.primary, height=100 }:{ data:{label:string;va
   )
 }
 
-// ─── Progress Ring ────────────────────────────────────────────────────────────
-function ProgressRing({ pct, color=C.primary, size=80, label='', sub='' }:{ pct:number; color?:string; size?:number; label?:string; sub?:string }) {
-  const r = (size-10)/2, circ = 2*Math.PI*r
-  return (
-    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle cx={size/2} cy={size/2} r={r} stroke={`${color}15`} strokeWidth={7} fill="none"/>
-        <circle cx={size/2} cy={size/2} r={r} stroke={color} strokeWidth={7} fill="none"
-          strokeDasharray={`${circ*pct/100} ${circ*(1-pct/100)}`}
-          strokeDashoffset={circ*0.25} strokeLinecap="round" style={{ transition:'stroke-dasharray 0.6s ease' }}/>
-        <text x={size/2} y={size/2+5} textAnchor="middle" fontSize={13} fontWeight={900} fill={color} fontFamily="Manrope,sans-serif">{pct}%</text>
-      </svg>
-      {label&&<p style={{ fontSize:12, fontWeight:700, color:C.type, textAlign:'center' as const }}>{label}</p>}
-      {sub&&<p style={{ fontSize:10, color:C.muted, textAlign:'center' as const }}>{sub}</p>}
-    </div>
-  )
-}
-
 // ─── Status config ────────────────────────────────────────────────────────────
+// A convenience color/label palette for status strings we've actually seen
+// or reasonably expect. It is never treated as the exhaustive set of valid
+// values — statusMeta() falls back gracefully for anything not listed here,
+// since real transactions/payouts status values are used exactly as
+// returned by Supabase.
 const PAY_STATUS: Record<string,{color:string;label:string}> = {
   pending:    { color:C.warning, label:'Pending'    },
   processing: { color:C.info,    label:'Processing' },
   paid:       { color:C.success, label:'Paid'       },
+  completed:  { color:C.success, label:'Completed'  },
   scheduled:  { color:C.primary, label:'Scheduled'  },
   failed:     { color:C.error,   label:'Failed'     },
   cancelled:  { color:C.muted,   label:'Cancelled'  },
-  bonus:      { color:C.accent,  label:'Bonus Earned'},
+}
+function statusMeta(status?:string|null):{color:string;label:string} {
+  if(!status) return { color:C.muted, label:'Unknown' }
+  const known = PAY_STATUS[status.toLowerCase()]
+  if(known) return known
+  return { color:C.muted, label: status.charAt(0).toUpperCase()+status.slice(1).replace(/_/g,' ') }
 }
 
-// ─── Data ─────────────────────────────────────────────────────────────────────
-const TRANSACTIONS = [
-  { id:'TXN-001', date:'20 Jan', service:'Hospital Appointment Assistance', client:'Mohamed Ihsan', base:6000, tips:500, bonus:0,  fee:480, net:6020, status:'paid',       method:'Bank Transfer' },
-  { id:'TXN-002', date:'18 Jan', service:'Home Wellness Visit',             client:'Priya Fernando',base:7000, tips:0,   bonus:500, fee:560, net:6940, status:'paid',       method:'Bank Transfer' },
-  { id:'TXN-003', date:'15 Jan', service:'Medication Collection',           client:'Arjuna W.',     base:3500, tips:200, bonus:0,  fee:280, net:3420, status:'paid',       method:'Bank Transfer' },
-  { id:'TXN-004', date:'22 Jan', service:'Post-Surgery Care',               client:'Chamari D.',    base:9500, tips:0,   bonus:0,  fee:760, net:8740, status:'pending',    method:'—' },
-  { id:'TXN-005', date:'26 Jan', service:'Physiotherapy Support',           client:'Nirosha J.',    base:4500, tips:0,   bonus:0,  fee:360, net:4140, status:'scheduled',  method:'—' },
-  { id:'TXN-006', date:'12 Jan', service:'Night Care Assistance',           client:'Suresh P.',     base:12000,tips:1000,bonus:800,fee:960, net:12840,status:'paid',       method:'Bank Transfer' },
-]
+// ─── Real data shapes ─────────────────────────────────────────────────────────
+// These mirror the confirmed Supabase schema. bookings.payment_amount
+// (status = 'completed') is the source of truth for gross earnings —
+// transactions is a separate, supplementary payment-record table.
+type CompletedBooking = {
+  id:string; payment_amount:number|null; status:string
+  scheduled_date:string|null; scheduled_time:string|null; duration:string|null
+  location:string|null; created_at:string
+  care_request:{ id:string; title:string|null; service_type:string|null } | null
+  client:{ id:string; full_name:string|null } | null
+}
 
-const WEEKLY = [
-  {label:'Mon',value:8500},{label:'Tue',value:12000},{label:'Wed',value:0},{label:'Thu',value:9500},
-  {label:'Fri',value:7000},{label:'Sat',value:3500},{label:'Sun',value:1500},
-]
-const MONTHLY = [
-  {label:'Jan',value:168000},{label:'Feb',value:142000},{label:'Mar',value:155000},
-  {label:'Apr',value:132000},{label:'May',value:178000},{label:'Jun',value:162000},
-  {label:'Jul',value:195000},{label:'Aug',value:188000},{label:'Sep',value:172000},
-  {label:'Oct',value:210000},{label:'Nov',value:198000},{label:'Dec',value:168000},
-]
+type TransactionRow = {
+  id:string; booking_id:string|null; amount:number|null; currency:string|null
+  method:string|null; type:string|null; status:string|null; invoice_url:string|null
+  created_at:string
+  booking:{ id:string; scheduled_date:string|null; care_request:{ title:string|null; service_type:string|null } | null } | null
+  client:{ id:string; full_name:string|null } | null
+}
+
+type PayoutRow = {
+  id:string; agent_id:string; amount:number|null; status:string
+  bank_account_id:string|null; requested_at:string|null; paid_at:string|null
+}
+
+type BankAccount = {
+  id:string; agent_id:string; bank_name:string|null; branch:string|null
+  account_name:string|null; account_number:string|null; swift_code:string|null
+  payout_preference:string|null; is_default:boolean|null
+  verification_status:string|null; verified_at:string|null
+}
+
+type NotificationRow = { id:string; type:string|null; title:string|null; body:string|null; read:boolean; action_url:string|null; created_at:string }
+
+// ─── Date / formatting helpers ─────────────────────────────────────────────────
+// The earnings date for a booking is scheduled_date when present, falling
+// back to created_at's calendar date — never fabricated.
+function bookingDateStr(b:CompletedBooking):string|null {
+  return b.scheduled_date ?? b.created_at?.slice(0,10) ?? null
+}
+function bookingLabel(b:CompletedBooking):string {
+  return b.care_request?.title || b.care_request?.service_type || 'Service'
+}
+function bookingClientName(b:CompletedBooking):string {
+  return b.client?.full_name || 'Client not provided'
+}
+function hasAmount(b:CompletedBooking):boolean {
+  return typeof b.payment_amount === 'number'
+}
+function bookingAmount(b:CompletedBooking):number {
+  return hasAmount(b) ? (b.payment_amount as number) : 0
+}
+function isoDate(d:Date):string {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+}
+function startOfWeek(d:Date):Date {
+  const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const day = copy.getDay()
+  copy.setDate(copy.getDate() + (day===0?-6:1-day)) // Monday as week start
+  return copy
+}
+function sumBookings(bookings:CompletedBooking[], predicate:(dateStr:string)=>boolean):number {
+  return bookings.reduce((sum,b)=>{
+    const ds = bookingDateStr(b)
+    if(!ds || !hasAmount(b)) return sum
+    return predicate(ds) ? sum+bookingAmount(b) : sum
+  }, 0)
+}
+function formatDateLabel(dateStr?:string|null):string {
+  if(!dateStr) return 'Not recorded'
+  const d = new Date(dateStr.length<=10 ? `${dateStr}T00:00:00` : dateStr)
+  if(Number.isNaN(d.getTime())) return 'Not recorded'
+  return d.toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' })
+}
+function formatDateTimeLabel(iso?:string|null):string {
+  if(!iso) return 'Not recorded'
+  const d = new Date(iso)
+  if(Number.isNaN(d.getTime())) return 'Not recorded'
+  return d.toLocaleString('en-GB',{ day:'numeric', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })
+}
+function maskAccountNumber(num?:string|null):string {
+  if(!num || num.length<4) return 'Not provided'
+  return `•••• •••• •••• ${num.slice(-4)}`
+}
+
+// ─── Earnings aggregation ──────────────────────────────────────────────────────
+// All figures below are derived only from real completed bookings — nothing
+// here is invented, and periods with no data simply total 0.
+type EarningsSummary = {
+  today:number; yesterday:number
+  week:number; prevWeek:number; weekCount:number
+  month:number; prevMonth:number
+  year:number; prevYear:number
+  total:number; completedCount:number
+  weeklyChart:{label:string;value:number}[]
+  monthlyChart:{label:string;value:number}[]
+  bestDay:{label:string;value:number}|null
+  dailyAvgThisWeek:number
+}
+function computeEarningsSummary(bookings:CompletedBooking[], now:Date):EarningsSummary {
+  const inRange = (ds:string, from:Date, to:Date) => ds>=isoDate(from) && ds<=isoDate(to)
+  const todayStr = isoDate(now)
+  const yestDate = new Date(now); yestDate.setDate(yestDate.getDate()-1)
+
+  const weekStart = startOfWeek(now)
+  const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6)
+  const prevWeekStart = new Date(weekStart); prevWeekStart.setDate(prevWeekStart.getDate()-7)
+  const prevWeekEnd = new Date(weekStart); prevWeekEnd.setDate(prevWeekEnd.getDate()-1)
+
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const monthEnd = new Date(now.getFullYear(), now.getMonth()+1, 0)
+  const prevMonthStart = new Date(now.getFullYear(), now.getMonth()-1, 1)
+  const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0)
+
+  const yearStart = new Date(now.getFullYear(), 0, 1)
+  const yearEnd = new Date(now.getFullYear(), 11, 31)
+  const prevYearStart = new Date(now.getFullYear()-1, 0, 1)
+  const prevYearEnd = new Date(now.getFullYear()-1, 11, 31)
+
+  const dayLabels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+  const weeklyChart = dayLabels.map((label,i)=>{
+    const d = new Date(weekStart); d.setDate(d.getDate()+i)
+    const ds = isoDate(d)
+    return { label, value: sumBookings(bookings, x=>x===ds) }
+  })
+  const bestDay = weeklyChart.reduce<{label:string;value:number}|null>((best,d)=>(!best||d.value>best.value)?d:best, null)
+
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const monthlyChart = monthLabels.map((label,i)=>{
+    const from = new Date(now.getFullYear(), i, 1)
+    const to = new Date(now.getFullYear(), i+1, 0)
+    return { label, value: sumBookings(bookings, ds=>inRange(ds, from, to)) }
+  })
+
+  const daysElapsedThisWeek = Math.min(7, Math.floor((now.getTime()-weekStart.getTime())/86400000)+1)
+  const week = sumBookings(bookings, ds=>inRange(ds, weekStart, weekEnd))
+  const weekCount = bookings.filter(b=>{ const ds = bookingDateStr(b); return ds ? inRange(ds, weekStart, weekEnd) : false }).length
+
+  return {
+    today: sumBookings(bookings, ds=>ds===todayStr),
+    yesterday: sumBookings(bookings, ds=>ds===isoDate(yestDate)),
+    week, weekCount,
+    prevWeek: sumBookings(bookings, ds=>inRange(ds, prevWeekStart, prevWeekEnd)),
+    month: sumBookings(bookings, ds=>inRange(ds, monthStart, monthEnd)),
+    prevMonth: sumBookings(bookings, ds=>inRange(ds, prevMonthStart, prevMonthEnd)),
+    year: sumBookings(bookings, ds=>inRange(ds, yearStart, yearEnd)),
+    prevYear: sumBookings(bookings, ds=>inRange(ds, prevYearStart, prevYearEnd)),
+    total: sumBookings(bookings, ()=>true),
+    completedCount: bookings.length,
+    weeklyChart, monthlyChart, bestDay,
+    dailyAvgThisWeek: daysElapsedThisWeek>0 ? week/daysElapsedThisWeek : 0,
+  }
+}
+// Only shown when there is a real, non-zero prior period to compare
+// against — never a fabricated trend.
+function trendPct(current:number, previous:number):number|null {
+  if(previous<=0) return null
+  return Math.round(((current-previous)/previous)*100)
+}
+function computeServiceBreakdown(bookings:CompletedBooking[]):{label:string;value:number;pct:number}[] {
+  const totals = new Map<string,number>()
+  bookings.forEach(b=>{
+    if(!hasAmount(b)) return
+    const key = bookingLabel(b)
+    totals.set(key, (totals.get(key)??0)+bookingAmount(b))
+  })
+  const grand = Array.from(totals.values()).reduce((a,b)=>a+b,0)
+  return Array.from(totals.entries())
+    .map(([label,value])=>({ label, value, pct: grand>0?Math.round((value/grand)*100):0 }))
+    .sort((a,b)=>b.value-a.value)
+}
+function timeBucket(timeStr:string):string {
+  const hour = Number(timeStr.split(':')[0])
+  if(Number.isNaN(hour)) return 'Unspecified'
+  if(hour<12) return 'Morning (before 12PM)'
+  if(hour<18) return 'Afternoon (12–6PM)'
+  return 'Evening (after 6PM)'
+}
+function computeTimeOfDayBreakdown(bookings:CompletedBooking[]):{label:string;value:number;pct:number}[] {
+  const buckets = new Map<string,number>()
+  bookings.forEach(b=>{
+    if(!hasAmount(b)) return
+    const key = b.scheduled_time ? timeBucket(b.scheduled_time) : 'Unspecified'
+    buckets.set(key, (buckets.get(key)??0)+bookingAmount(b))
+  })
+  const grand = Array.from(buckets.values()).reduce((a,b)=>a+b,0)
+  return Array.from(buckets.entries())
+    .map(([label,value])=>({ label, value, pct: grand>0?Math.round((value/grand)*100):0 }))
+    .sort((a,b)=>b.value-a.value)
+}
 
 // ─── Earnings Dashboard ───────────────────────────────────────────────────────
-function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function EarningsDashboard({ profile, completedBookings, transactions, payouts, onNav }:{
+  profile:{ full_name:string|null }|null
+  completedBookings:CompletedBooking[]; transactions:TransactionRow[]; payouts:PayoutRow[]
+  onNav:(s:SubView)=>void
+}) {
+  const summary = useMemo(()=>computeEarningsSummary(completedBookings, new Date()), [completedBookings])
+  const pendingPayouts = payouts.filter(p=>!p.paid_at)
+  const pendingPayoutTotal = pendingPayouts.reduce((sum,p)=>sum+(p.amount??0),0)
+  const mostRecentPayout = payouts[0] ?? null
+
   const stats = [
-    { l:"Today's Earnings",  v:8500,   color:C.primary,  trend:'+12%' },
-    { l:'Weekly Earnings',   v:42000,  color:C.success,  trend:'+8%'  },
-    { l:'Monthly Earnings',  v:168000, color:C.info,     trend:'+15%' },
-    { l:'Annual Earnings',   v:1850000,color:C.accent,   trend:'+22%' },
+    { l:"Today's Earnings",   v:summary.today, color:C.primary, trend:trendPct(summary.today, summary.yesterday) },
+    { l:'This Week Earnings', v:summary.week,  color:C.success, trend:trendPct(summary.week, summary.prevWeek) },
+    { l:'This Month Earnings',v:summary.month, color:C.info,    trend:trendPct(summary.month, summary.prevMonth) },
+    { l:'This Year Earnings', v:summary.year,  color:C.accent,  trend:trendPct(summary.year, summary.prevYear) },
   ]
   const quickActions = [
     {e:'💸', l:'Withdraw',      cb:()=>onNav('withdraw')},
@@ -210,16 +398,20 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
   ]
   return (
     <div style={{ padding:'24px 28px 60px' }}>
-      {/* Hero wallet card */}
+      {/* Hero earnings card */}
       <Card style={{ padding:'26px 28px', marginBottom:20, background:`linear-gradient(135deg,${C.primary},#005D63)`, border:'none', boxShadow:`0 10px 36px ${C.primary}35`, position:'relative' as const, overflow:'hidden' }}>
         <div style={{ position:'absolute', top:'-20%', right:'-4%', width:220, height:220, borderRadius:'50%', background:'rgba(255,255,255,0.05)' }} />
         <div style={{ position:'absolute', bottom:'-30%', left:'10%', width:160, height:160, borderRadius:'50%', background:'rgba(255,255,255,0.04)' }} />
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:16 }}>
           <div>
-            <p style={{ fontSize:12, color:'rgba(255,255,255,0.65)', marginBottom:4 }}>Wallet Balance · Kasun Perera</p>
-            <p style={{ fontSize:38, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:8 }}>LKR 32,450</p>
+            <p style={{ fontSize:12, color:'rgba(255,255,255,0.65)', marginBottom:4 }}>Total Gross Earnings · {profile?.full_name || 'Agent'}</p>
+            <p style={{ fontSize:38, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:8 }}>{fmt(summary.total)}</p>
             <div style={{ display:'flex', gap:16, flexWrap:'wrap' as const }}>
-              {[{l:'Pending',v:'LKR 12,800'},{l:'Next Payout',v:'Friday 5 PM'},{l:'Completed',v:'LKR 1.85M'}].map((s,i)=>(
+              {[
+                {l:'Completed Jobs',v:String(summary.completedCount)},
+                {l:'This Month',v:fmt(summary.month)},
+                {l:'Pending Payouts',v: pendingPayouts.length ? fmt(pendingPayoutTotal) : 'None'},
+              ].map((s,i)=>(
                 <div key={i}>
                   <p style={{ fontSize:10, color:'rgba(255,255,255,0.55)', marginBottom:2 }}>{s.l}</p>
                   <p style={{ fontSize:14, fontWeight:700, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{s.v}</p>
@@ -232,16 +424,6 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
             <Btn label="View Payouts" variant="ghost" small onClick={()=>onNav('payouts')} />
           </div>
         </div>
-        {/* Balance bar */}
-        <div style={{ marginTop:18 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-            <p style={{ fontSize:10, color:'rgba(255,255,255,0.6)' }}>Monthly goal: LKR 200,000</p>
-            <p style={{ fontSize:10, color:'rgba(255,255,255,0.8)', fontWeight:700 }}>84%</p>
-          </div>
-          <div style={{ height:6, borderRadius:99, background:'rgba(255,255,255,0.15)' }}>
-            <div style={{ width:'84%', height:'100%', background:'rgba(255,255,255,0.7)', borderRadius:99 }} />
-          </div>
-        </div>
       </Card>
 
       {/* KPI grid */}
@@ -252,7 +434,7 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
               <div style={{ width:38, height:38, borderRadius:12, background:`${s.color}12`, display:'flex', alignItems:'center', justifyContent:'center', color:s.color }}>
                 <span style={{display:'flex'}}>{I.trending}</span>
               </div>
-              <span style={{ fontSize:11, fontWeight:700, color:C.success, background:`${C.success}10`, padding:'2px 8px', borderRadius:99 }}>{s.trend}</span>
+              {s.trend!=null&&<span style={{ fontSize:11, fontWeight:700, color:s.trend>=0?C.success:C.error, background:`${s.trend>=0?C.success:C.error}10`, padding:'2px 8px', borderRadius:99 }}>{s.trend>=0?'+':''}{s.trend}%</span>}
             </div>
             <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{s.l}</p>
             <p style={{ fontSize:s.v>999999?18:22, fontWeight:900, color:s.color, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{fmt(s.v)}</p>
@@ -265,9 +447,13 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
           {/* Weekly chart */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="This Week" action="Analytics" onAction={()=>onNav('analytics')} />
-            <BarChart data={WEEKLY} color={C.primary} height={110} />
+            <BarChart data={summary.weeklyChart} color={C.primary} height={110} />
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10, marginTop:12 }}>
-              {[{l:'Daily Avg',v:'LKR 6,000'},{l:'Best Day',v:'Tue LKR 12k'},{l:'Hours',v:'21 hrs'}].map((s,i)=>(
+              {[
+                {l:'Daily Avg',v:fmt(summary.dailyAvgThisWeek)},
+                {l:'Best Day',v:summary.bestDay&&summary.bestDay.value>0?`${summary.bestDay.label} ${fmt(summary.bestDay.value)}`:'No data'},
+                {l:'Jobs This Week',v:String(summary.weekCount)},
+              ].map((s,i)=>(
                 <div key={i} style={{ textAlign:'center' as const, padding:'8px', borderRadius:10, background:C.bg }}>
                   <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{s.v}</p>
                   <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
@@ -278,21 +464,25 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
           {/* Recent transactions */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Recent Transactions" action="View All" onAction={()=>onNav('transactions')} />
-            {TRANSACTIONS.slice(0,4).map(t=>(
-              <div key={t.id} style={{ display:'flex', gap:12, alignItems:'center', padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
-                <div style={{ width:38, height:38, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:17, flexShrink:0 }}>
-                  {t.service.includes('Hospital')?'🏥':t.service.includes('Medication')?'💊':'🏠'}
+            {transactions.length===0 ? (
+              <p style={{ fontSize:12, color:C.muted }}>No transactions yet.</p>
+            ) : transactions.slice(0,4).map(t=>{
+              const st = statusMeta(t.status)
+              const label = t.booking?.care_request?.title || t.booking?.care_request?.service_type || 'Payment'
+              return (
+                <div key={t.id} style={{ display:'flex', gap:12, alignItems:'center', padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
+                  <div style={{ width:38, height:38, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:17, flexShrink:0 }}>💳</div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' as const }}>{label}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>{formatDateLabel(t.created_at)}{t.client?.full_name?` · ${t.client.full_name}`:''}</p>
+                  </div>
+                  <div style={{ textAlign:'right' as const, flexShrink:0 }}>
+                    <p style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{typeof t.amount==='number'?fmtCurrency(t.amount,t.currency):'—'}</p>
+                    <Bdg label={st.label} color={st.color} />
+                  </div>
                 </div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' as const }}>{t.service}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{t.date} · {t.client}</p>
-                </div>
-                <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-                  <p style={{ fontSize:13, fontWeight:800, color:t.status==='paid'?C.success:C.warning, fontFamily:'Manrope,sans-serif' }}>{fmt(t.net)}</p>
-                  <Bdg label={PAY_STATUS[t.status].label} color={PAY_STATUS[t.status].color} />
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </Card>
         </div>
 
@@ -314,32 +504,39 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
           </Card>
           {/* Payout info */}
           <Card style={{ padding:22, background:`linear-gradient(135deg,${C.success}08,${C.surface})`, border:`1.5px solid ${C.success}20` }}>
-            <SectionTitle title="Next Payout" />
-            <div style={{ textAlign:'center' as const, marginBottom:14 }}>
-              <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>Scheduled for</p>
-              <p style={{ fontSize:22, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', marginBottom:2 }}>Friday, 5:00 PM</p>
-              <p style={{ fontSize:12, color:C.muted }}>3 days from now · Bank Transfer</p>
-            </div>
-            <div style={{ padding:'12px', borderRadius:12, background:`${C.success}08`, border:`1px solid ${C.success}20`, marginBottom:12 }}>
-              <div style={{ display:'flex', justifyContent:'space-between' }}>
-                <p style={{ fontSize:12, color:C.sub }}>Scheduled amount</p>
-                <p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR 32,450</p>
-              </div>
-            </div>
+            <SectionTitle title="Payouts" />
+            {mostRecentPayout ? (
+              <>
+                <div style={{ textAlign:'center' as const, marginBottom:14 }}>
+                  <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>Most recent payout request</p>
+                  <p style={{ fontSize:22, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', marginBottom:2 }}>{typeof mostRecentPayout.amount==='number'?fmt(mostRecentPayout.amount):'—'}</p>
+                  <Bdg label={statusMeta(mostRecentPayout.status).label} color={statusMeta(mostRecentPayout.status).color} dot />
+                </div>
+                <div style={{ padding:'12px', borderRadius:12, background:`${C.success}08`, border:`1px solid ${C.success}20`, marginBottom:12 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between' }}>
+                    <p style={{ fontSize:12, color:C.sub }}>{mostRecentPayout.paid_at?'Paid on':'Requested on'}</p>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{formatDateLabel(mostRecentPayout.paid_at ?? mostRecentPayout.requested_at)}</p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p style={{ fontSize:12, color:C.muted, marginBottom:14 }}>No payouts requested yet.</p>
+            )}
             <Btn label="View Payout Center" variant="secondary" small full onClick={()=>onNav('payouts')} />
           </Card>
-          {/* Pending */}
+          {/* Pending payouts */}
           <Card style={{ padding:22 }}>
-            <SectionTitle title="Pending Review" />
-            {TRANSACTIONS.filter(t=>t.status==='pending'||t.status==='scheduled').map(t=>(
-              <div key={t.id} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
+            <SectionTitle title="Pending Payouts" />
+            {pendingPayouts.length===0 ? (
+              <p style={{ fontSize:12, color:C.muted }}>No pending payouts.</p>
+            ) : pendingPayouts.map(p=>(
+              <div key={p.id} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
                 <div>
-                  <p style={{ fontSize:12, color:C.type, fontWeight:600 }}>{t.service.split(' ')[0]}</p>
-                  <p style={{ fontSize:10, color:C.muted }}>{t.date}</p>
+                  <p style={{ fontSize:12, color:C.type, fontWeight:600 }}>Requested {formatDateLabel(p.requested_at)}</p>
                 </div>
                 <div style={{ textAlign:'right' as const }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.warning, fontFamily:'Manrope,sans-serif' }}>{fmt(t.net)}</p>
-                  <Bdg label={PAY_STATUS[t.status].label} color={PAY_STATUS[t.status].color} />
+                  <p style={{ fontSize:13, fontWeight:700, color:C.warning, fontFamily:'Manrope,sans-serif' }}>{typeof p.amount==='number'?fmt(p.amount):'—'}</p>
+                  <Bdg label={statusMeta(p.status).label} color={statusMeta(p.status).color} />
                 </div>
               </div>
             ))}
@@ -351,16 +548,44 @@ function EarningsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast
 }
 
 // ─── Earnings Analytics ───────────────────────────────────────────────────────
-function EarningsAnalytics() {
+// Every figure here is derived from real completed bookings. Metrics with no
+// safe real source (avg hourly rate, YoY growth without a prior-year
+// baseline) are replaced with honestly-derivable equivalents rather than
+// removed outright, to keep the layout intact.
+function EarningsAnalytics({ completedBookings }:{ completedBookings:CompletedBooking[] }) {
   const [period, setPeriod] = useState<'week'|'month'|'year'>('month')
-  const chartData = period==='week'?WEEKLY:period==='year'?MONTHLY:[
-    {label:'W1',value:42000},{label:'W2',value:38000},{label:'W3',value:51000},{label:'W4',value:37000},
-  ]
+  const now = new Date()
+  const summary = useMemo(()=>computeEarningsSummary(completedBookings, now), [completedBookings])
+
+  const weeksInMonth = useMemo(()=>{
+    const buckets = [0,0,0,0,0]
+    completedBookings.forEach(b=>{
+      const ds = bookingDateStr(b)
+      if(!ds || !hasAmount(b)) return
+      const d = new Date(`${ds}T00:00:00`)
+      if(d.getFullYear()!==now.getFullYear()||d.getMonth()!==now.getMonth()) return
+      const weekIdx = Math.min(4, Math.floor((d.getDate()-1)/7))
+      buckets[weekIdx]+=bookingAmount(b)
+    })
+    return buckets.map((value,i)=>({ label:`W${i+1}`, value }))
+  }, [completedBookings])
+
+  const chartData = period==='week' ? summary.weeklyChart : period==='year' ? summary.monthlyChart : weeksInMonth
+  const serviceBreakdown = useMemo(()=>computeServiceBreakdown(completedBookings), [completedBookings])
+  const timeBreakdown = useMemo(()=>computeTimeOfDayBreakdown(completedBookings), [completedBookings])
+  const avgPerJob = summary.completedCount>0 ? summary.total/summary.completedCount : 0
+  const bestMonth = summary.monthlyChart.reduce<{label:string;value:number}|null>((best,m)=>(!best||m.value>best.value)?m:best, null)
+
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Earnings Analytics</h2>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20 }} className="ew-4col">
-        {[{l:'Avg Per Visit',v:'LKR 7,200',c:C.primary},{l:'Avg Hourly',v:'LKR 2,400',c:C.info},{l:'Best Month',v:'Oct — LKR 210k',c:C.success},{l:'YoY Growth',v:'+22%',c:C.accent}].map((s,i)=>(
+        {[
+          {l:'Avg Per Completed Job',v: summary.completedCount>0 ? fmt(avgPerJob) : 'No data', c:C.primary},
+          {l:'Completed Jobs (Year)',v: String(summary.completedCount), c:C.info},
+          {l:'Best Month',v: bestMonth&&bestMonth.value>0?`${bestMonth.label} — ${fmt(bestMonth.value)}`:'No data', c:C.success},
+          {l:'This Year Total',v: fmt(summary.year), c:C.accent},
+        ].map((s,i)=>(
           <Card key={i} style={{ padding:20, textAlign:'center' as const }}>
             <p style={{ fontSize:22, fontWeight:900, color:s.c, fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:4 }}>{s.v}</p>
             <p style={{ fontSize:11, color:C.muted }}>{s.l}</p>
@@ -383,32 +608,35 @@ function EarningsAnalytics() {
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="ew-2col">
         <Card style={{ padding:22 }}>
           <SectionTitle title="By Service Type" />
-          {[{l:'Hospital Appointment',pct:45,v:'LKR 75,600',c:C.primary},{l:'Home Wellness',pct:30,v:'LKR 50,400',c:C.info},{l:'Medication Collection',pct:15,v:'LKR 25,200',c:C.accent},{l:'Other',pct:10,v:'LKR 16,800',c:C.muted}].map((s,i)=>(
+          {serviceBreakdown.length===0 ? (
+            <p style={{ fontSize:12, color:C.muted }}>No data available.</p>
+          ) : serviceBreakdown.map((s,i)=>(
             <div key={i} style={{ marginBottom:12 }}>
               <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                <p style={{ fontSize:12, color:C.type }}>{s.l}</p>
-                <p style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</p>
+                <p style={{ fontSize:12, color:C.type }}>{s.label}</p>
+                <p style={{ fontSize:12, fontWeight:700, color:C.primary }}>{fmt(s.value)}</p>
               </div>
-              <div style={{ height:6, borderRadius:99, background:`${s.c}15` }}>
-                <div style={{ width:`${s.pct}%`, height:'100%', background:s.c, borderRadius:99 }} />
+              <div style={{ height:6, borderRadius:99, background:`${C.primary}15` }}>
+                <div style={{ width:`${s.pct}%`, height:'100%', background:C.primary, borderRadius:99 }} />
               </div>
             </div>
           ))}
         </Card>
         <Card style={{ padding:22 }}>
           <SectionTitle title="Time-of-Day Breakdown" />
-          {[{l:'Morning (6–12)',pct:50,v:'LKR 84,000',c:C.primary},{l:'Afternoon (12–18)',pct:35,v:'LKR 58,800',c:C.warning},{l:'Evening (18–22)',pct:15,v:'LKR 25,200',c:C.muted}].map((s,i)=>(
+          {timeBreakdown.length===0 ? (
+            <p style={{ fontSize:12, color:C.muted }}>No data available.</p>
+          ) : timeBreakdown.map((s,i)=>(
             <div key={i} style={{ marginBottom:12 }}>
               <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                <p style={{ fontSize:12, color:C.type }}>{s.l}</p>
-                <p style={{ fontSize:12, fontWeight:700, color:s.c }}>{s.v}</p>
+                <p style={{ fontSize:12, color:C.type }}>{s.label}</p>
+                <p style={{ fontSize:12, fontWeight:700, color:C.warning }}>{fmt(s.value)}</p>
               </div>
-              <div style={{ height:6, borderRadius:99, background:`${s.c}15` }}>
-                <div style={{ width:`${s.pct}%`, height:'100%', background:s.c, borderRadius:99 }} />
+              <div style={{ height:6, borderRadius:99, background:`${C.warning}15` }}>
+                <div style={{ width:`${s.pct}%`, height:'100%', background:C.warning, borderRadius:99 }} />
               </div>
             </div>
           ))}
-          <BarChart data={[{label:'6AM',value:14000},{label:'9AM',value:28000},{label:'12PM',value:22000},{label:'3PM',value:18000},{label:'6PM',value:10000}]} color={C.warning} height={80} />
         </Card>
       </div>
     </div>
@@ -416,42 +644,75 @@ function EarningsAnalytics() {
 }
 
 // ─── Job Earnings ─────────────────────────────────────────────────────────────
-function JobEarnings({ onToast }:{ onToast:(m:string)=>void }) {
+// Gross amount comes from bookings.payment_amount only — no tips, bonus,
+// platform fee, tax, or net income are shown since none of those have a
+// real backing field or business rule. When a matching transaction exists
+// for the booking, its payment method/status/invoice are shown as
+// supplementary real information.
+function JobEarnings({ completedBookings, transactions }:{ completedBookings:CompletedBooking[]; transactions:TransactionRow[] }) {
+  const txnByBooking = useMemo(()=>{
+    const map = new Map<string,TransactionRow>()
+    transactions.forEach(t=>{ if(t.booking_id) map.set(t.booking_id, t) })
+    return map
+  }, [transactions])
+
+  if(completedBookings.length===0) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Job Earnings</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No completed jobs yet.</p>
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Job Earnings</h2>
       <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {TRANSACTIONS.map(t=>{
-          const st = PAY_STATUS[t.status]
+        {completedBookings.map(b=>{
+          const txn = txnByBooking.get(b.id)
           return (
-            <Card key={t.id} hover style={{ padding:22 }}>
+            <Card key={b.id} hover style={{ padding:22 }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
                 <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-                  <div style={{ width:44, height:44, borderRadius:14, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>
-                    {t.service.includes('Hospital')?'🏥':t.service.includes('Medication')?'💊':'🏠'}
-                  </div>
+                  <div style={{ width:44, height:44, borderRadius:14, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>💼</div>
                   <div>
-                    <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:3 }}>{t.service}</p>
-                    <p style={{ fontSize:12, color:C.muted }}>{t.client} · {t.date}</p>
-                    <div style={{ marginTop:5 }}><Bdg label={st.label} color={st.color} dot /></div>
+                    <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:3 }}>{bookingLabel(b)}</p>
+                    <p style={{ fontSize:12, color:C.muted }}>{bookingClientName(b)} · {formatDateLabel(bookingDateStr(b))}</p>
+                    <div style={{ marginTop:5, display:'flex', gap:6 }}>
+                      <Bdg label="Completed" color={C.success} dot />
+                      {txn&&<Bdg label={statusMeta(txn.status).label} color={statusMeta(txn.status).color} />}
+                    </div>
                   </div>
                 </div>
                 <div style={{ textAlign:'right' as const }}>
-                  <p style={{ fontSize:22, fontWeight:900, color:t.status==='paid'?C.success:C.warning, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{fmt(t.net)}</p>
-                  <p style={{ fontSize:10, color:C.muted, marginTop:2 }}>Net Earnings</p>
+                  <p style={{ fontSize:22, fontWeight:900, color:hasAmount(b)?C.success:C.muted, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{hasAmount(b)?fmt(bookingAmount(b)):'Not recorded'}</p>
+                  <p style={{ fontSize:10, color:C.muted, marginTop:2 }}>Gross Job Amount</p>
                 </div>
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:10, paddingTop:14, borderTop:`1px solid ${C.border}` }} className="ew-5col">
-                {[{l:'Base',v:fmt(t.base)},{l:'Tips',v:fmt(t.tips),c:t.tips>0?C.success:undefined},{l:'Bonus',v:fmt(t.bonus),c:t.bonus>0?C.accent:undefined},{l:'Platform Fee',v:`−${fmt(t.fee)}`,c:C.muted},{l:'Net',v:fmt(t.net),c:C.success}].map((s,i)=>(
-                  <div key={i} style={{ textAlign:'center' as const, padding:'8px', borderRadius:10, background:i===4?`${C.success}06`:C.bg }}>
-                    <p style={{ fontSize:11, fontWeight:700, color:(s as any).c??C.type }}>{s.v}</p>
-                    <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop:10, display:'flex', gap:8 }}>
-                <Btn label="Download Receipt" variant="ghost" small icon={I.download} onClick={()=>onToast('Downloading…')} />
-              </div>
+              {txn&&(
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, paddingTop:14, borderTop:`1px solid ${C.border}` }} className="ew-5col">
+                  {[
+                    {l:'Payment Method',v:txn.method||'Not recorded'},
+                    {l:'Payment Status',v:statusMeta(txn.status).label},
+                    {l:'Recorded',v:formatDateLabel(txn.created_at)},
+                  ].map((s,i)=>(
+                    <div key={i} style={{ textAlign:'center' as const, padding:'8px', borderRadius:10, background:C.bg }}>
+                      <p style={{ fontSize:11, fontWeight:700, color:C.type }}>{s.v}</p>
+                      <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {txn?.invoice_url&&(
+                <div style={{ marginTop:10, display:'flex', gap:8 }}>
+                  <a href={txn.invoice_url} target="_blank" rel="noreferrer" style={{ textDecoration:'none' }}>
+                    <Btn label="View Invoice" variant="ghost" small icon={I.download} />
+                  </a>
+                </div>
+              )}
             </Card>
           )
         })}
@@ -461,66 +722,85 @@ function JobEarnings({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Transaction History ──────────────────────────────────────────────────────
-function TransactionHistory({ onToast }:{ onToast:(m:string)=>void }) {
+function TransactionHistory({ transactions, onSelect }:{ transactions:TransactionRow[]; onSelect:(t:TransactionRow)=>void }) {
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<string>('all')
-  const filtered = TRANSACTIONS.filter(t=>(filter==='all'||t.status===filter)&&(t.service.toLowerCase().includes(q.toLowerCase())||t.client.toLowerCase().includes(q.toLowerCase())))
+  const statusOptions = useMemo(()=>['all', ...Array.from(new Set(transactions.map(t=>t.status).filter(Boolean) as string[]))], [transactions])
+  const filtered = transactions.filter(t=>{
+    const label = t.booking?.care_request?.title || t.booking?.care_request?.service_type || ''
+    const client = t.client?.full_name || ''
+    const matchesQuery = q.trim()==='' || label.toLowerCase().includes(q.toLowerCase()) || client.toLowerCase().includes(q.toLowerCase())
+    return (filter==='all'||t.status===filter) && matchesQuery
+  })
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Transaction History</h2>
-      {/* Search + filter */}
-      <Card style={{ padding:18, marginBottom:18 }}>
-        <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' as const }}>
-          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search by service or client…"
-            style={{ flex:1, minWidth:200, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none' }} />
-          <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const }}>
-            {['all',...Object.keys(PAY_STATUS)].map(f=>(
-              <button key={f} onClick={()=>setFilter(f)}
-                style={{ padding:'6px 14px', borderRadius:99, border:`1.5px solid ${filter===f?C.primary:C.border}`, background:filter===f?`${C.primary}08`:'#FAFAFA', cursor:'pointer', fontSize:11, fontWeight:700, color:filter===f?C.primary:C.muted, fontFamily:'Manrope,sans-serif', transition:'all 0.1s' }}>
-                {f.charAt(0).toUpperCase()+f.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-      </Card>
-      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {filtered.map(t=>{
-          const st = PAY_STATUS[t.status]
-          return (
-            <Card key={t.id} hover style={{ padding:18 }}>
-              <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-                <div style={{ width:42, height:42, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>
-                  {t.service.includes('Hospital')?'🏥':t.service.includes('Medication')?'💊':'🏠'}
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:2 }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{t.service}</p>
-                    <Bdg label={st.label} color={st.color} />
-                  </div>
-                  <p style={{ fontSize:11, color:C.muted }}>{t.id} · {t.date} · {t.client} · {t.method}</p>
-                </div>
-                <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-                  <p style={{ fontSize:15, fontWeight:900, color:t.status==='paid'?C.success:C.warning, fontFamily:'Manrope,sans-serif' }}>{fmt(t.net)}</p>
-                  {t.status==='paid'&&<button onClick={()=>onToast('Downloading receipt…')} style={{ color:C.muted, background:'none', border:'none', cursor:'pointer', display:'flex', marginLeft:'auto', marginTop:4 }}><span style={{display:'flex'}}>{I.download}</span></button>}
-                </div>
+      {transactions.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:32, marginBottom:12 }}>💳</p>
+          <p style={{ fontSize:14, fontWeight:700, color:C.type, marginBottom:6 }}>No transactions yet</p>
+          <p style={{ fontSize:12, color:C.muted }}>Transaction records will appear here once payments are recorded.</p>
+        </Card>
+      ) : (
+        <>
+          {/* Search + filter */}
+          <Card style={{ padding:18, marginBottom:18 }}>
+            <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' as const }}>
+              <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search by service or client…"
+                style={{ flex:1, minWidth:200, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none' }} />
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const }}>
+                {statusOptions.map(f=>(
+                  <button key={f} onClick={()=>setFilter(f)}
+                    style={{ padding:'6px 14px', borderRadius:99, border:`1.5px solid ${filter===f?C.primary:C.border}`, background:filter===f?`${C.primary}08`:'#FAFAFA', cursor:'pointer', fontSize:11, fontWeight:700, color:filter===f?C.primary:C.muted, fontFamily:'Manrope,sans-serif', transition:'all 0.1s' }}>
+                    {f==='all'?'All':statusMeta(f).label}
+                  </button>
+                ))}
               </div>
-            </Card>
-          )
-        })}
-        {filtered.length===0&&(
-          <div style={{ textAlign:'center' as const, padding:'60px 0' }}>
-            <p style={{ fontSize:32, marginBottom:12 }}>🔍</p>
-            <p style={{ fontSize:14, fontWeight:700, color:C.type }}>No transactions found</p>
+            </div>
+          </Card>
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {filtered.map(t=>{
+              const st = statusMeta(t.status)
+              const label = t.booking?.care_request?.title || t.booking?.care_request?.service_type || 'Payment'
+              return (
+                <Card key={t.id} hover onClick={()=>onSelect(t)} style={{ padding:18 }}>
+                  <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+                    <div style={{ width:42, height:42, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>💳</div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:2 }}>
+                        <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{label}</p>
+                        <Bdg label={st.label} color={st.color} />
+                      </div>
+                      <p style={{ fontSize:11, color:C.muted }}>{formatDateLabel(t.created_at)}{t.client?.full_name?` · ${t.client.full_name}`:''}{t.method?` · ${t.method}`:''}</p>
+                    </div>
+                    <div style={{ textAlign:'right' as const, flexShrink:0 }}>
+                      <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{typeof t.amount==='number'?fmtCurrency(t.amount,t.currency):'—'}</p>
+                      {t.invoice_url&&<a href={t.invoice_url} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} style={{ color:C.muted, display:'flex', marginLeft:'auto', marginTop:4 }}><span style={{display:'flex'}}>{I.download}</span></a>}
+                    </div>
+                  </div>
+                </Card>
+              )
+            })}
+            {filtered.length===0&&(
+              <div style={{ textAlign:'center' as const, padding:'60px 0' }}>
+                <p style={{ fontSize:32, marginBottom:12 }}>🔍</p>
+                <p style={{ fontSize:14, fontWeight:700, color:C.type }}>No transactions found</p>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   )
 }
 
 // ─── Transaction Details ──────────────────────────────────────────────────────
-function TransactionDetails({ t, onBack, onToast }:{ t:typeof TRANSACTIONS[0]; onBack:()=>void; onToast:(m:string)=>void }) {
-  const st = PAY_STATUS[t.status]
+// Only real transaction fields are shown. No fabricated payment timeline,
+// settlement timestamps, reference numbers, taxes, platform fee, tips,
+// bonus, net income, or generated receipts.
+function TransactionDetails({ t, onBack }:{ t:TransactionRow; onBack:()=>void }) {
+  const st = statusMeta(t.status)
+  const label = t.booking?.care_request?.title || t.booking?.care_request?.service_type || 'Payment'
   return (
     <div style={{ maxWidth:680, margin:'0 auto', padding:'24px 28px 60px' }}>
       <button onClick={onBack} style={{ display:'flex', gap:5, alignItems:'center', background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, marginBottom:18, padding:0 }}>
@@ -531,61 +811,62 @@ function TransactionDetails({ t, onBack, onToast }:{ t:typeof TRANSACTIONS[0]; o
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16 }}>
           <div>
             <Bdg label={st.label} color={st.color} dot />
-            <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', margin:'8px 0 4px' }}>{t.service}</h2>
-            <p style={{ fontSize:12, color:C.muted }}>{t.id} · {t.date} · {t.client}</p>
+            <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', margin:'8px 0 4px' }}>{label}</h2>
+            <p style={{ fontSize:12, color:C.muted }}>{formatDateTimeLabel(t.created_at)}{t.client?.full_name?` · ${t.client.full_name}`:''}</p>
           </div>
-          <p style={{ fontSize:28, fontWeight:900, color:t.status==='paid'?C.success:C.warning, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{fmt(t.net)}</p>
+          <p style={{ fontSize:28, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{typeof t.amount==='number'?fmtCurrency(t.amount,t.currency):'—'}</p>
         </div>
-        {/* Payment breakdown */}
         <div style={{ borderRadius:14, overflow:'hidden', border:`1px solid ${C.border}` }}>
-          {[{l:'Base Service Fee',v:fmt(t.base),c:C.type},{l:'Tips',v:fmt(t.tips),c:C.success},{l:'Performance Bonus',v:fmt(t.bonus),c:C.accent},{l:'Platform Fee (8%)',v:`−${fmt(t.fee)}`,c:C.error},{l:'Taxes (Placeholder)',v:'—',c:C.muted},{l:'Net Income',v:fmt(t.net),c:C.success,bold:true}].map((r,i,arr)=>(
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'11px 16px', background:r.bold?`${C.success}06`:i%2===0?'#FAFAFA':C.surface, borderBottom:i<arr.length-1?`1px solid ${C.border}`:'none' }}>
-              <p style={{ fontSize:12, color:C.sub, fontWeight:r.bold?700:400 }}>{r.l}</p>
-              <p style={{ fontSize:12, fontWeight:r.bold?900:600, color:r.c, fontFamily:r.bold?'Manrope,sans-serif':undefined }}>{r.v}</p>
+          {[
+            {l:'Amount',v:typeof t.amount==='number'?fmtCurrency(t.amount,t.currency):'Not recorded'},
+            {l:'Method',v:t.method||'Not recorded'},
+            {l:'Type',v:t.type||'Not recorded'},
+            {l:'Status',v:st.label},
+            {l:'Booking Date',v:formatDateLabel(t.booking?.scheduled_date)},
+            {l:'Recorded At',v:formatDateTimeLabel(t.created_at)},
+          ].map((r,i,arr)=>(
+            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'11px 16px', background:i%2===0?'#FAFAFA':C.surface, borderBottom:i<arr.length-1?`1px solid ${C.border}`:'none' }}>
+              <p style={{ fontSize:12, color:C.sub }}>{r.l}</p>
+              <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{r.v}</p>
             </div>
           ))}
         </div>
         <div style={{ display:'flex', gap:8, marginTop:16 }}>
-          <Btn label="Download Receipt" icon={I.download} onClick={()=>onToast('Generating receipt…')} />
-          <Btn label="Download Invoice" variant="secondary" icon={I.download} onClick={()=>onToast('Generating invoice…')} />
+          {t.invoice_url ? (
+            <a href={t.invoice_url} target="_blank" rel="noreferrer" style={{ textDecoration:'none' }}>
+              <Btn label="View Invoice" icon={I.download} />
+            </a>
+          ) : (
+            <p style={{ fontSize:12, color:C.muted }}>No invoice available for this transaction.</p>
+          )}
         </div>
-      </Card>
-      {/* Timeline */}
-      <Card style={{ padding:22 }}>
-        <SectionTitle title="Payment Timeline" />
-        {[{l:'Service Completed',t:'20 Jan, 12:30 PM',done:true},{l:'Payment Initiated',t:'20 Jan, 12:35 PM',done:true},{l:'Under Review',t:'20 Jan, 12:40 PM',done:t.status!=='pending'},{l:'Funds Released',t:'21 Jan, 9:00 AM',done:t.status==='paid'},{l:'Bank Transfer Sent',t:'21 Jan, 9:05 AM',done:t.status==='paid'}].map((ev,i,arr)=>(
-          <div key={i} style={{ display:'flex', gap:12 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:22, height:22, borderRadius:'50%', background:ev.done?C.success:`${C.success}10`, border:`2px solid ${ev.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                {ev.done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.65)'}}>{I.check}</span>}
-              </div>
-              {i<arr.length-1&&<div style={{ width:2, flex:1, background:ev.done?`${C.success}40`:C.border, margin:'3px 0' }}/>}
-            </div>
-            <div style={{ paddingBottom:i<arr.length-1?12:0 }}>
-              <p style={{ fontSize:12, fontWeight:600, color:ev.done?C.type:C.muted }}>{ev.l}</p>
-              <p style={{ fontSize:10, color:C.muted }}>{ev.t}</p>
-            </div>
-          </div>
-        ))}
       </Card>
     </div>
   )
 }
 
 // ─── Payout Center ────────────────────────────────────────────────────────────
-function PayoutCenter({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+// Summary cards use paid_at (a real timestamp) rather than guessing which
+// status strings mean "paid" — paid_at present is unambiguous, unlike
+// assuming a fixed status vocabulary that hasn't been fully confirmed.
+function PayoutCenter({ payouts, bankAccount, onNav }:{ payouts:PayoutRow[]; bankAccount:BankAccount|null; onNav:(s:SubView)=>void }) {
+  const paid = payouts.filter(p=>p.paid_at)
+  const notYetPaid = payouts.filter(p=>!p.paid_at)
+  const totalPaid = paid.reduce((sum,p)=>sum+(p.amount??0),0)
+  const totalPending = notYetPaid.reduce((sum,p)=>sum+(p.amount??0),0)
+  const totalRequested = payouts.reduce((sum,p)=>sum+(p.amount??0),0)
+
   const sections = [
-    { l:'Available for Withdrawal',v:32450, c:C.success, e:'💰', status:'ready' },
-    { l:'Pending Review',           v:9500,  c:C.warning, e:'⏳', status:'pending' },
-    { l:'Scheduled Payout',         v:32450, c:C.primary, e:'📅', status:'scheduled' },
-    { l:'Completed Payouts',        v:1850000,c:C.info,   e:'✅', status:'paid' },
-    { l:'Failed Transfers',         v:0,     c:C.error,   e:'❌', status:'failed' },
+    { l:'Total Requested', v:totalRequested, c:C.primary, e:'📥' },
+    { l:'Paid Out',        v:totalPaid,      c:C.success, e:'✅' },
+    { l:'Not Yet Paid',    v:totalPending,   c:C.warning, e:'⏳' },
   ]
+
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Payout Center</h2>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20 }} className="ew-3col">
-        {sections.slice(0,3).map((s,i)=>(
+        {sections.map((s,i)=>(
           <Card key={i} hover style={{ padding:22, border:`1.5px solid ${s.c}20`, background:`${s.c}04` }}>
             <p style={{ fontSize:28, marginBottom:10 }}>{s.e}</p>
             <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>{s.l}</p>
@@ -595,270 +876,258 @@ function PayoutCenter({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:s
       </div>
       <div style={{ display:'flex', gap:10, marginBottom:20 }}>
         <Btn label="Withdraw Funds" icon={I.wallet} onClick={()=>onNav('withdraw')} />
-        <Btn label="View History" variant="secondary" onClick={()=>onNav('transactions')} />
+        <Btn label="View Transactions" variant="secondary" onClick={()=>onNav('transactions')} />
       </div>
       <Card style={{ padding:22, marginBottom:16 }}>
-        <SectionTitle title="Completed Payouts" />
-        {[
-          {date:'15 Jan',amount:45000,ref:'PAY-0042',bank:'Peoples Bank ••4231',status:'paid'},
-          {date:'8 Jan', amount:38500,ref:'PAY-0038',bank:'Peoples Bank ••4231',status:'paid'},
-          {date:'1 Jan', amount:52000,ref:'PAY-0031',bank:'Peoples Bank ••4231',status:'paid'},
-        ].map((p,i)=>(
-          <div key={i} style={{ display:'flex', gap:12, alignItems:'center', padding:'12px 0', borderBottom:i<2?`1px solid ${C.border}`:'none' }}>
-            <div style={{ width:38, height:38, borderRadius:12, background:`${C.success}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>💳</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{fmt(p.amount)}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{p.ref} · {p.date} · {p.bank}</p>
+        <SectionTitle title="Payout History" />
+        {payouts.length===0 ? (
+          <p style={{ fontSize:13, color:C.muted }}>No payouts requested yet.</p>
+        ) : payouts.map((p,i)=>{
+          const st = statusMeta(p.status)
+          const isSameBank = bankAccount && p.bank_account_id===bankAccount.id
+          return (
+            <div key={p.id} style={{ display:'flex', gap:12, alignItems:'center', padding:'12px 0', borderBottom:i<payouts.length-1?`1px solid ${C.border}`:'none' }}>
+              <div style={{ width:38, height:38, borderRadius:12, background:`${st.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>💳</div>
+              <div style={{ flex:1 }}>
+                <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{typeof p.amount==='number'?fmt(p.amount):'Amount not recorded'}</p>
+                <p style={{ fontSize:11, color:C.muted }}>
+                  Requested {formatDateLabel(p.requested_at)}{p.paid_at?` · Paid ${formatDateLabel(p.paid_at)}`:''}{isSameBank&&bankAccount?.bank_name?` · ${bankAccount.bank_name}`:''}
+                </p>
+              </div>
+              <Bdg label={st.label} color={st.color} dot />
             </div>
-            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-              <Bdg label="Paid" color={C.success} dot />
-              <button onClick={()=>onToast('Downloading…')} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.download}</span></button>
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </Card>
     </div>
   )
 }
 
 // ─── Withdraw Funds ───────────────────────────────────────────────────────────
-function WithdrawFunds({ onToast, onNav }:{ onToast:(m:string)=>void; onNav:(s:SubView)=>void }) {
-  const [step, setStep] = useState(1)
-  const [amount, setAmount] = useState('32450')
-  const [selectedBank, setSelectedBank] = useState(0)
-  const banks = [{name:"People's Bank",branch:'Colombo 3 Branch',acc:'••••4231',verified:true},{name:'Sampath Bank',branch:'Fort Branch',acc:'••••8872',verified:true}]
-  const numAmt = parseInt(amount)||0
-
+// There is no proven formula anywhere in this codebase for available
+// wallet balance, platform fee, payout min/max, transfer fee, processing
+// time, or an automatic payout schedule — so none of those are invented
+// here. Submission is intentionally disabled until that business rule
+// exists; the real bank account is still shown for context.
+function WithdrawFunds({ bankAccount, onNav }:{ bankAccount:BankAccount|null; onNav:(s:SubView)=>void }) {
   return (
     <div style={{ maxWidth:580, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Withdraw Funds</h2>
-      {/* Stepper */}
-      <div style={{ display:'flex', gap:0, marginBottom:28 }}>
-        {['Amount','Bank','Review','Done'].map((l,i)=>{
-          const done = step>i+1, active=step===i+1
-          return (
-            <div key={l} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', position:'relative' as const }}>
-              {i>0&&<div style={{ position:'absolute', left:'-50%', right:'50%', top:17, height:3, background:done?C.primary:C.border, zIndex:0 }}/>}
-              <div style={{ width:36, height:36, borderRadius:'50%', background:done?C.primary:active?`${C.primary}15`:C.bg, border:`2.5px solid ${done||active?C.primary:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', zIndex:1 }}>
-                {done?<span style={{display:'flex',color:'#fff',transform:'scale(0.8)'}}>{I.check}</span>:<p style={{ fontSize:12, fontWeight:800, color:active?C.primary:C.muted }}>{i+1}</p>}
+      <Card style={{ padding:24, marginBottom:16, border:`1.5px solid ${C.warning}30`, background:`${C.warning}06` }}>
+        <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+          <span style={{ fontSize:22 }}>⚠️</span>
+          <div>
+            <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:4 }}>Payout requests are temporarily unavailable</p>
+            <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>This feature requires payout rules (available balance, minimum/maximum amount, processing time) to be configured before requests can be submitted.</p>
+          </div>
+        </div>
+      </Card>
+      <Card style={{ padding:22, marginBottom:16 }}>
+        <SectionTitle title="Payout Bank Account" />
+        {bankAccount ? (
+          <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+            <div style={{ width:44, height:44, borderRadius:14, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>🏦</div>
+            <div style={{ flex:1 }}>
+              <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:3 }}>
+                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{bankAccount.bank_name || 'Bank account'}</p>
+                {bankAccount.verification_status&&<Bdg label={statusMeta(bankAccount.verification_status).label} color={statusMeta(bankAccount.verification_status).color} />}
               </div>
-              <p style={{ fontSize:10, fontWeight:700, color:active?C.primary:C.muted, marginTop:6 }}>{l}</p>
+              <p style={{ fontSize:11, color:C.muted }}>{bankAccount.branch || 'Branch not provided'} · {maskAccountNumber(bankAccount.account_number)}</p>
             </div>
-          )
-        })}
+          </div>
+        ) : (
+          <p style={{ fontSize:12, color:C.muted }}>No bank account on file yet. Add one in Bank Accounts before requesting a payout.</p>
+        )}
+      </Card>
+      <div style={{ display:'flex', gap:8 }}>
+        <Btn label="View Payout History" variant="secondary" onClick={()=>onNav('payouts')} />
+        <Btn label="Bank Accounts" variant="ghost" onClick={()=>onNav('bankAccounts')} />
       </div>
-
-      {step===1&&(
-        <Card style={{ padding:24 }}>
-          <h3 style={{ fontSize:16, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Select Amount</h3>
-          <div style={{ padding:'14px', borderRadius:12, background:`${C.success}08`, border:`1.5px solid ${C.success}20`, marginBottom:18 }}>
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              <p style={{ fontSize:12, color:C.sub }}>Available Balance</p>
-              <p style={{ fontSize:16, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR 32,450</p>
-            </div>
-            <div style={{ display:'flex', justifyContent:'space-between', marginTop:6 }}>
-              <p style={{ fontSize:11, color:C.muted }}>Min: LKR 1,000</p>
-              <p style={{ fontSize:11, color:C.muted }}>Max: LKR 32,450</p>
-            </div>
-          </div>
-          <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:6 }}>Withdrawal Amount (LKR)</p>
-          <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} min={1000} max={32450}
-            style={{ width:'100%', padding:'14px', borderRadius:12, border:`2px solid ${C.primary}`, fontFamily:'Manrope,sans-serif', fontSize:22, fontWeight:900, color:C.primary, background:'#FAFAFA', outline:'none', boxSizing:'border-box' as const, marginBottom:12 }} />
-          <div style={{ display:'flex', gap:8, marginBottom:18 }}>
-            {[5000,10000,20000].map(v=>(
-              <button key={v} onClick={()=>setAmount(String(v))} style={{ flex:1, padding:'8px', borderRadius:9, border:`1.5px solid ${C.border}`, background:amount===String(v)?`${C.primary}08`:'#FAFAFA', cursor:'pointer', fontSize:11, fontWeight:700, color:amount===String(v)?C.primary:C.sub, fontFamily:'Manrope,sans-serif' }}>
-                {fmt(v)}
-              </button>
-            ))}
-            <button onClick={()=>setAmount('32450')} style={{ flex:1, padding:'8px', borderRadius:9, border:`1.5px solid ${C.border}`, background:amount==='32450'?`${C.primary}08`:'#FAFAFA', cursor:'pointer', fontSize:11, fontWeight:700, color:amount==='32450'?C.primary:C.sub, fontFamily:'Manrope,sans-serif' }}>All</button>
-          </div>
-          <Btn label="Continue" full disabled={numAmt<1000||numAmt>32450} onClick={()=>setStep(2)} />
-        </Card>
-      )}
-
-      {step===2&&(
-        <Card style={{ padding:24 }}>
-          <h3 style={{ fontSize:16, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Choose Bank Account</h3>
-          {banks.map((b,i)=>(
-            <button key={i} onClick={()=>setSelectedBank(i)}
-              style={{ width:'100%', display:'flex', gap:12, alignItems:'center', padding:'16px', borderRadius:14, border:`2px solid ${selectedBank===i?C.primary:C.border}`, background:selectedBank===i?`${C.primary}06`:'#FAFAFA', cursor:'pointer', marginBottom:10, textAlign:'left' as const, transition:'all 0.12s' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>🏦</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:3 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{b.name}</p>
-                  {b.verified&&<Bdg label="Verified" color={C.success} />}
-                </div>
-                <p style={{ fontSize:11, color:C.muted }}>{b.branch} · {b.acc}</p>
-              </div>
-              {selectedBank===i&&<span style={{ display:'flex', color:C.primary, transform:'scale(1.1)' }}>{I.check}</span>}
-            </button>
-          ))}
-          <button onClick={()=>onToast('Opening add account form…')} style={{ width:'100%', padding:'14px', borderRadius:12, border:`2px dashed ${C.border}`, background:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:C.muted, fontFamily:'Manrope,sans-serif', display:'flex', gap:8, alignItems:'center', justifyContent:'center' }}>
-            <span style={{display:'flex'}}>{I.bank}</span>Add New Account
-          </button>
-          <div style={{ display:'flex', gap:8, marginTop:16 }}>
-            <Btn label="Back" variant="ghost" small onClick={()=>setStep(1)} />
-            <Btn label="Continue" full onClick={()=>setStep(3)} />
-          </div>
-        </Card>
-      )}
-
-      {step===3&&(
-        <Card style={{ padding:24 }}>
-          <h3 style={{ fontSize:16, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Review Withdrawal</h3>
-          {[{l:'Amount',v:fmt(numAmt)},{l:'Bank Account',v:`${banks[selectedBank].name} ${banks[selectedBank].acc}`},{l:'Processing Time',v:'1–2 business days'},{l:'Transfer Fee',v:'LKR 0'},{l:'You receive',v:fmt(numAmt),bold:true},{l:'Expected Arrival',v:'Thursday, 23 Jan'}].map((r,i,arr)=>(
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'10px 0', borderBottom:i<arr.length-1?`1px solid ${C.border}`:'none' }}>
-              <p style={{ fontSize:12, color:C.sub }}>{r.l}</p>
-              <p style={{ fontSize:12, fontWeight:(r as any).bold?900:600, color:(r as any).bold?C.success:C.type, fontFamily:(r as any).bold?'Manrope,sans-serif':undefined }}>{r.v}</p>
-            </div>
-          ))}
-          <div style={{ display:'flex', gap:8, marginTop:18 }}>
-            <Btn label="Back" variant="ghost" small onClick={()=>setStep(2)} />
-            <Btn label="Confirm Withdrawal" variant="success" full onClick={()=>{ setStep(4); onToast('Withdrawal submitted successfully!') }} />
-          </div>
-        </Card>
-      )}
-
-      {step===4&&(
-        <Card style={{ padding:32, textAlign:'center' as const }}>
-          <div style={{ fontSize:64, marginBottom:16 }}>🎉</div>
-          <h3 style={{ fontSize:22, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Withdrawal Submitted!</h3>
-          <p style={{ fontSize:13, color:C.muted, marginBottom:20 }}>Reference: WDR-{Math.floor(Math.random()*90000)+10000}</p>
-          {[{l:'Amount',v:fmt(numAmt)},{l:'Bank',v:`${banks[selectedBank].name} ${banks[selectedBank].acc}`},{l:'Estimated Arrival',v:'Thursday, 23 Jan 2025'}].map((r,i)=>(
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
-              <p style={{ fontSize:12, color:C.muted }}>{r.l}</p>
-              <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{r.v}</p>
-            </div>
-          ))}
-          <div style={{ display:'flex', gap:8, marginTop:20 }}>
-            <Btn label="Back to Wallet" full onClick={()=>{ setStep(1); onNav('dashboard') }} />
-          </div>
-        </Card>
-      )}
     </div>
   )
 }
 
-// ─── Bank Account Management ──────────────────────────────────────────────────
-function BankAccounts({ onToast }:{ onToast:(m:string)=>void }) {
-  const [accounts, setAccounts] = useState([
-    {id:0,bank:"People's Bank",branch:'Colombo 3',acc:'••••4231',primary:true, verified:true},
-    {id:1,bank:'Sampath Bank',branch:'Fort Branch',acc:'••••8872',primary:false,verified:true},
-  ])
+// ─── Bank Account ─────────────────────────────────────────────────────────────
+// The real API (getMyBankAccount/saveMyBankAccount) is shaped around a
+// single default account per agent — there is no set-default/remove
+// capability, so this view shows and edits that one real account rather
+// than a fabricated multi-account list.
+function BankAccounts({ bankAccount, onSaved, onToast }:{
+  bankAccount:BankAccount|null; onSaved:(acc:BankAccount)=>void; onToast:(m:string)=>void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [form, setForm] = useState({
+    bank_name: bankAccount?.bank_name ?? '',
+    branch: bankAccount?.branch ?? '',
+    account_name: bankAccount?.account_name ?? '',
+    swift_code: bankAccount?.swift_code ?? '',
+    payout_preference: bankAccount?.payout_preference ?? '',
+  })
+  useEffect(()=>{
+    setForm({
+      bank_name: bankAccount?.bank_name ?? '',
+      branch: bankAccount?.branch ?? '',
+      account_name: bankAccount?.account_name ?? '',
+      swift_code: bankAccount?.swift_code ?? '',
+      payout_preference: bankAccount?.payout_preference ?? '',
+    })
+  }, [bankAccount?.id])
+  // Never pre-filled from the saved account — this only ever holds a
+  // NEW account number the user has typed. An existing number is never
+  // loaded into it, so it can never be displayed or accidentally
+  // re-submitted in plain text.
+  const [accountNumberInput, setAccountNumberInput] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  function openEditing() {
+    setAccountNumberInput('')
+    setEditing(true)
+  }
+
+  async function save() {
+    const newAccountNumber = accountNumberInput.trim()
+    // Blank input means "keep the existing number" — only a non-blank
+    // entry replaces it.
+    const resolvedAccountNumber = newAccountNumber || bankAccount?.account_number || ''
+
+    if(!form.bank_name.trim()||!form.branch.trim()||!form.account_name.trim()||!resolvedAccountNumber) {
+      onToast('Bank name, branch, account name and account number are required')
+      return
+    }
+    setSaving(true)
+    try {
+      const saved = await saveMyBankAccount({
+        bank_name: form.bank_name.trim(),
+        branch: form.branch.trim(),
+        account_name: form.account_name.trim(),
+        account_number: resolvedAccountNumber,
+        swift_code: form.swift_code.trim() || undefined,
+        payout_preference: form.payout_preference.trim() || undefined,
+      })
+      onSaved(saved as BankAccount)
+      onToast('Bank account saved')
+      setAccountNumberInput('')
+      setEditing(false)
+    } catch(e:any) {
+      onToast(e?.message || 'Could not save bank account')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div style={{ maxWidth:680, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Bank Account Management</h2>
-      {accounts.map(a=>(
-        <Card key={a.id} style={{ padding:22, marginBottom:14, border:a.primary?`1.5px solid ${C.primary}30`:undefined, background:a.primary?`${C.primary}03`:C.surface }}>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Bank Account</h2>
+
+      {!editing&&bankAccount&&(
+        <Card style={{ padding:22, marginBottom:14, border:`1.5px solid ${C.primary}30`, background:`${C.primary}03` }}>
           <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
             <div style={{ width:52, height:52, borderRadius:16, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:24, flexShrink:0 }}>🏦</div>
             <div style={{ flex:1 }}>
               <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:4 }}>
-                <p style={{ fontSize:14, fontWeight:800, color:C.type }}>{a.bank}</p>
-                {a.primary&&<Bdg label="Primary" color={C.primary} />}
-                {a.verified&&<Bdg label="Verified" color={C.success} />}
+                <p style={{ fontSize:14, fontWeight:800, color:C.type }}>{bankAccount.bank_name || 'Bank account'}</p>
+                {bankAccount.verification_status&&<Bdg label={statusMeta(bankAccount.verification_status).label} color={statusMeta(bankAccount.verification_status).color} />}
               </div>
-              <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>{a.branch} · Account {a.acc}</p>
-              <div style={{ display:'flex', gap:8 }}>
-                <Btn label="Edit" variant="ghost" small icon={I.edit} onClick={()=>onToast('Opening edit…')} />
-                {!a.primary&&<Btn label="Set Default" variant="secondary" small onClick={()=>{ setAccounts(s=>s.map(x=>({...x,primary:x.id===a.id}))); onToast('Primary account updated') }} />}
-                {!a.primary&&<Btn label="Remove" variant="danger" small icon={I.trash} onClick={()=>{ setAccounts(s=>s.filter(x=>x.id!==a.id)); onToast('Account removed') }} />}
-              </div>
+              <p style={{ fontSize:12, color:C.muted, marginBottom:3 }}>{bankAccount.branch || 'Branch not provided'} · Account {maskAccountNumber(bankAccount.account_number)}</p>
+              <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>Account holder: {bankAccount.account_name || 'Not provided'}</p>
+              <Btn label="Edit" variant="ghost" small icon={I.edit} onClick={openEditing} />
             </div>
           </div>
         </Card>
-      ))}
-      <button onClick={()=>onToast('Opening add account form…')}
-        style={{ width:'100%', padding:'18px', borderRadius:14, border:`2px dashed ${C.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:C.muted, fontFamily:'Manrope,sans-serif', display:'flex', gap:8, alignItems:'center', justifyContent:'center' }}>
-        <span style={{display:'flex'}}>{I.bank}</span>+ Add New Bank Account
-      </button>
-    </div>
-  )
-}
+      )}
 
-// ─── Bonuses & Incentives ─────────────────────────────────────────────────────
-function BonusesIncentives({ onToast }:{ onToast:(m:string)=>void }) {
-  const bonuses = [
-    {e:'⭐',l:'Weekly Bonus',    sub:'Complete 10+ visits this week',      earned:true,  v:5000,  progress:80},
-    {e:'🏆',l:'Monthly Bonus',   sub:'Top 10% agent this month',           earned:true,  v:15000, progress:100},
-    {e:'⚡',l:'Peak Hour Bonus', sub:'Work 8–10 AM, 5–7 PM weekdays',      earned:false, v:2000,  progress:55},
-    {e:'👥',l:'Referral Bonus',  sub:'Refer 3 new agents this month',       earned:false, v:10000, progress:33},
-    {e:'📈',l:'Performance Bonus',sub:'Maintain 4.8+ rating for 30 days',  earned:true,  v:8000,  progress:100},
-    {e:'🎯',l:'Milestone Reward',sub:'Complete 100 total visits',           earned:false, v:20000, progress:72},
-  ]
-  return (
-    <div style={{ padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>Bonuses & Incentives</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Total earned this month: <strong style={{ color:C.accent }}>LKR 28,000</strong></p>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14 }} className="ew-3col">
-        {bonuses.map((b,i)=>(
-          <Card key={i} hover style={{ padding:22, border:b.earned?`1.5px solid ${C.success}30`:undefined, background:b.earned?`${C.success}04`:C.surface }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12 }}>
-              <div style={{ width:48, height:48, borderRadius:16, background:b.earned?`${C.success}12`:`${C.accent}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:24 }}>{b.e}</div>
-              {b.earned&&<Bdg label="Earned" color={C.success} />}
-            </div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{b.l}</p>
-            <p style={{ fontSize:11, color:C.muted, lineHeight:1.5, marginBottom:10 }}>{b.sub}</p>
-            <div style={{ height:5, borderRadius:99, background:`${b.earned?C.success:C.primary}15`, marginBottom:6 }}>
-              <div style={{ width:`${b.progress}%`, height:'100%', background:b.earned?C.success:C.primary, borderRadius:99 }} />
-            </div>
-            <div style={{ display:'flex', justifyContent:'space-between' }}>
-              <p style={{ fontSize:11, fontWeight:700, color:b.earned?C.success:C.primary }}>{b.progress}%</p>
-              <p style={{ fontSize:13, fontWeight:900, color:b.earned?C.success:C.type, fontFamily:'Manrope,sans-serif' }}>{fmt(b.v)}</p>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
+      {!editing&&!bankAccount&&(
+        <Card style={{ padding:40, textAlign:'center' as const, marginBottom:14 }}>
+          <p style={{ fontSize:13, color:C.muted, marginBottom:14 }}>No bank account added yet.</p>
+          <Btn label="Add Bank Account" icon={I.bank} onClick={openEditing} />
+        </Card>
+      )}
 
-// ─── Performance vs Earnings ──────────────────────────────────────────────────
-function PerformanceEarnings() {
-  const metrics = [
-    {l:'Rating',             v:'4.9',  sub:'/ 5.0',  pct:98, c:C.success},
-    {l:'Acceptance Rate',    v:'94%',  sub:'',        pct:94, c:C.primary},
-    {l:'Completion Rate',    v:'98%',  sub:'',        pct:98, c:C.info},
-    {l:'Response Time',      v:'4 min',sub:'avg',     pct:85, c:C.accent},
-    {l:'Repeat Clients',     v:'67%',  sub:'',        pct:67, c:C.warning},
-    {l:'Monthly Earnings',   v:'168k', sub:'LKR',     pct:84, c:C.success},
-  ]
-  return (
-    <div style={{ padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Performance vs Earnings</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20 }} className="ew-3col">
-        {metrics.map((m,i)=>(
-          <Card key={i} style={{ padding:22, textAlign:'center' as const }}>
-            <ProgressRing pct={m.pct} color={m.c} size={80} label={m.l} sub={`${m.v}${m.sub?` ${m.sub}`:''}`} />
-          </Card>
-        ))}
-      </div>
-      <Card style={{ padding:22 }}>
-        <SectionTitle title="How Performance Drives Earnings" />
-        {[{l:'Higher rating → More repeat clients → Stable income',e:'⭐ → 👥 → 💰'},{l:'Fast response rate → More job offers → Higher weekly earnings',e:'⚡ → 📋 → 📈'},{l:'High acceptance → Bonuses → Milestone rewards',e:'✅ → 🎁 → 🏆'}].map((r,i)=>(
-          <div key={i} style={{ display:'flex', gap:14, alignItems:'center', padding:'12px', borderRadius:12, background:C.bg, marginBottom:8 }}>
-            <p style={{ fontSize:22 }}>{r.e}</p>
-            <p style={{ fontSize:12, color:C.type }}>{r.l}</p>
+      {editing&&(
+        <Card style={{ padding:24 }}>
+          <h3 style={{ fontSize:16, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>{bankAccount?'Edit Bank Account':'Add Bank Account'}</h3>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="ew-2col">
+            {([
+              {k:'bank_name', l:'Bank Name'},
+              {k:'branch', l:'Branch'},
+              {k:'account_name', l:'Account Holder Name'},
+              {k:'swift_code', l:'SWIFT Code (optional)'},
+              {k:'payout_preference', l:'Payout Preference (optional)'},
+            ] as const).map(f=>(
+              <div key={f.k}>
+                <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:5 }}>{f.l}</p>
+                <input value={form[f.k]} onChange={e=>setForm(s=>({...s,[f.k]:e.target.value}))}
+                  style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', boxSizing:'border-box' as const }} />
+              </div>
+            ))}
+            <div>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:5 }}>
+                {bankAccount ? 'New Account Number (leave blank to keep current)' : 'Account Number'}
+              </p>
+              {bankAccount&&(
+                <p style={{ fontSize:11, color:C.muted, marginBottom:5 }}>
+                  Current: {maskAccountNumber(bankAccount.account_number)}
+                </p>
+              )}
+              <input value={accountNumberInput} onChange={e=>setAccountNumberInput(e.target.value)}
+                placeholder={bankAccount ? maskAccountNumber(bankAccount.account_number) : 'e.g. 1234567890'}
+                style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', boxSizing:'border-box' as const }} />
+            </div>
           </div>
-        ))}
+          <div style={{ display:'flex', gap:8, marginTop:16 }}>
+            {bankAccount&&<Btn label="Cancel" variant="ghost" small onClick={()=>setEditing(false)} />}
+            <Btn label={saving?'Saving…':'Save Bank Account'} disabled={saving} onClick={save} />
+          </div>
+        </Card>
+      )}
+    </div>
+  )
+}
+
+// ─── Not configured ─────────────────────────────────────────────────────────
+// Shared honest placeholder for subviews with no real backing schema or
+// business rule (bonuses, incentives, performance ratings, referrals,
+// goals). No fabricated values, no invented zeros implying the feature is
+// implemented.
+function NotConfigured({ title, message }:{ title:string; message:string }) {
+  return (
+    <div style={{ padding:'24px 28px 60px' }}>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>{title}</h2>
+      <Card style={{ padding:48, textAlign:'center' as const }}>
+        <p style={{ fontSize:36, marginBottom:14 }}>🚧</p>
+        <p style={{ fontSize:14, fontWeight:700, color:C.type, marginBottom:8 }}>Not configured yet</p>
+        <p style={{ fontSize:12, color:C.muted, lineHeight:1.6, maxWidth:420, margin:'0 auto' }}>{message}</p>
       </Card>
     </div>
   )
 }
 
+// ─── Bonuses & Incentives ─────────────────────────────────────────────────────
+function BonusesIncentives() {
+  return <NotConfigured title="Bonuses & Incentives" message="This feature requires bonus and incentive rules to be configured. No bonus data currently exists." />
+}
+
+// ─── Performance vs Earnings ──────────────────────────────────────────────────
+function PerformanceEarnings() {
+  return <NotConfigured title="Performance vs Earnings" message="Performance metrics (rating, acceptance rate, response time) are not yet tracked in this account." />
+}
+
 // ─── Financial Reports ────────────────────────────────────────────────────────
-function FinancialReports({ onToast }:{ onToast:(m:string)=>void }) {
+// Report generation (PDF/CSV) is not implemented — buttons are disabled
+// with an honest message. The chart reuses the same real monthly earnings
+// data computed elsewhere on this screen.
+function FinancialReports({ monthlyChart, onToast }:{ monthlyChart:{label:string;value:number}[]; onToast:(m:string)=>void }) {
   const reports = [
-    {e:'📋', l:'Monthly Statement',  sub:'January 2025 · LKR 168,000 income'},
-    {e:'📊', l:'Annual Summary',     sub:'2024 Full Year · LKR 1,850,000 total'},
-    {e:'💰', l:'Income Report',      sub:'Q4 2024 Breakdown by service type'},
-    {e:'🏥', l:'Service Breakdown',  sub:'Hospital, Medication, Wellness visits'},
+    {e:'📋', l:'Monthly Statement',  sub:'Report generation not available yet'},
+    {e:'📊', l:'Annual Summary',     sub:'Report generation not available yet'},
+    {e:'💰', l:'Income Report',      sub:'Report generation not available yet'},
+    {e:'🏥', l:'Service Breakdown',  sub:'Report generation not available yet'},
   ]
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Financial Reports</h2>
       {reports.map((r,i)=>(
-        <Card key={i} hover style={{ padding:22, marginBottom:12 }}>
+        <Card key={i} style={{ padding:22, marginBottom:12 }}>
           <div style={{ display:'flex', gap:12, alignItems:'center' }}>
             <div style={{ width:52, height:52, borderRadius:16, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:26, flexShrink:0 }}>{r.e}</div>
             <div style={{ flex:1 }}>
@@ -866,28 +1135,32 @@ function FinancialReports({ onToast }:{ onToast:(m:string)=>void }) {
               <p style={{ fontSize:12, color:C.muted }}>{r.sub}</p>
             </div>
             <div style={{ display:'flex', gap:8 }}>
-              <Btn label="PDF" variant="secondary" small icon={I.download} onClick={()=>onToast('Generating PDF…')} />
-              <Btn label="CSV" variant="ghost" small icon={I.download} onClick={()=>onToast('Exporting CSV…')} />
+              <Btn label="PDF" variant="secondary" small disabled icon={I.download} onClick={()=>onToast('Report generation is not available yet.')} />
+              <Btn label="CSV" variant="ghost" small disabled icon={I.download} onClick={()=>onToast('Report generation is not available yet.')} />
             </div>
           </div>
         </Card>
       ))}
       <Card style={{ padding:22, marginTop:8 }}>
-        <SectionTitle title="January 2025 Quick Summary" />
-        <BarChart data={MONTHLY.slice(0,6)} color={C.primary} height={100} />
+        <SectionTitle title="This Year — Monthly Earnings" />
+        <BarChart data={monthlyChart} color={C.primary} height={100} />
       </Card>
     </div>
   )
 }
 
 // ─── Tax Center ───────────────────────────────────────────────────────────────
-function TaxCenter({ onToast }:{ onToast:(m:string)=>void }) {
+// Annual income is real (this year's completed-booking gross earnings).
+// Estimated tax, filing status, and report generation have no real backing
+// rule and are shown as such rather than invented.
+function TaxCenter({ annualIncome, monthlyChart, onToast }:{ annualIncome:number; monthlyChart:{label:string;value:number}[]; onToast:(m:string)=>void }) {
+  const year = new Date().getFullYear()
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>Tax Center</h2>
       <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Future-ready. Consult a tax professional for Sri Lankan income tax guidance.</p>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:18 }} className="ew-2col">
-        {[{l:'Annual Income',v:'LKR 1,850,000',c:C.type},{l:'Estimated Tax',v:'TBD',c:C.warning},{l:'Tax Year',v:'2024/2025',c:C.primary},{l:'Filing Status',v:'Self-employed',c:C.info}].map((s,i)=>(
+        {[{l:'Annual Income',v:fmt(annualIncome),c:C.type},{l:'Estimated Tax',v:'Not configured',c:C.warning},{l:'Tax Year',v:String(year),c:C.primary},{l:'Filing Status',v:'Self-employed',c:C.info}].map((s,i)=>(
           <Card key={i} style={{ padding:20, textAlign:'center' as const }}>
             <p style={{ fontSize:20, fontWeight:900, color:s.c, fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:4 }}>{s.v}</p>
             <p style={{ fontSize:11, color:C.muted }}>{s.l}</p>
@@ -895,10 +1168,10 @@ function TaxCenter({ onToast }:{ onToast:(m:string)=>void }) {
         ))}
       </div>
       <Card style={{ padding:22 }}>
-        <SectionTitle title="Income History" />
-        <LineChart data={[{label:'Jul',value:195000},{label:'Aug',value:188000},{label:'Sep',value:172000},{label:'Oct',value:210000},{label:'Nov',value:198000},{label:'Dec',value:168000}]} color={C.primary} height={100} />
+        <SectionTitle title="Income History (This Year)" />
+        <LineChart data={monthlyChart} color={C.primary} height={100} />
         <div style={{ marginTop:14 }}>
-          <Btn label="Download Tax Report (Placeholder)" icon={I.download} variant="secondary" onClick={()=>onToast('Tax report generation coming soon')} />
+          <Btn label="Download Tax Report" icon={I.download} variant="secondary" disabled onClick={()=>onToast('Tax report generation is not available yet.')} />
         </div>
       </Card>
     </div>
@@ -906,150 +1179,64 @@ function TaxCenter({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Referrals ────────────────────────────────────────────────────────────────
-function Referrals({ onToast }:{ onToast:(m:string)=>void }) {
-  const referrals = [
-    {name:'Nimal Siripala',date:'15 Jan',status:'Active',reward:2000},
-    {name:'Kumari Perera', date:'10 Jan',status:'Pending',reward:2000},
-    {name:'Ravi Fernando',  date:'3 Jan', status:'Active',reward:2000},
-  ]
-  const link = 'readypal.lk/ref/kasun-perera'
-  return (
-    <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Referral Program</h2>
-      {/* Summary */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:20 }} className="ew-4col">
-        {[{e:'👥',l:'Invited',v:'3'},{e:'⏳',l:'Pending',v:'1',c:C.warning},{e:'✅',l:'Active',v:'2',c:C.success},{e:'💰',l:'Total Earned',v:'LKR 4,000',c:C.success}].map((s,i)=>(
-          <Card key={i} style={{ padding:18, textAlign:'center' as const }}>
-            <p style={{ fontSize:28, marginBottom:6 }}>{s.e}</p>
-            <p style={{ fontSize:17, fontWeight:900, color:(s as any).c??C.type, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{s.v}</p>
-            <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
-          </Card>
-        ))}
-      </div>
-      {/* Link */}
-      <Card style={{ padding:22, marginBottom:18 }}>
-        <SectionTitle title="Your Referral Link" />
-        <div style={{ display:'flex', gap:8, alignItems:'center', padding:'12px 16px', borderRadius:12, background:C.bg, border:`1.5px solid ${C.border}`, marginBottom:12 }}>
-          <p style={{ flex:1, fontSize:12, fontWeight:700, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{link}</p>
-          <button onClick={()=>onToast('Link copied!')} style={{ display:'flex', gap:5, alignItems:'center', padding:'6px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'#fff', cursor:'pointer', fontSize:11, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>
-            <span style={{display:'flex'}}>{I.copy}</span>Copy
-          </button>
-          <button onClick={()=>onToast('Sharing…')} style={{ display:'flex', gap:5, alignItems:'center', padding:'6px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'#fff', cursor:'pointer', fontSize:11, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>
-            <span style={{display:'flex'}}>{I.share}</span>Share
-          </button>
-        </div>
-        <p style={{ fontSize:11, color:C.muted }}>Earn LKR 2,000 for every new Care Agent you refer who completes their first job.</p>
-      </Card>
-      <Card style={{ padding:22 }}>
-        <SectionTitle title="Invited Friends" />
-        {referrals.map((r,i)=>(
-          <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'10px 0', borderBottom:i<referrals.length-1?`1px solid ${C.border}`:'none' }}>
-            <div style={{ width:36, height:36, borderRadius:'50%', background:`${C.primary}15`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, fontSize:12, fontWeight:900, flexShrink:0 }}>
-              {r.name.split(' ').map(x=>x[0]).join('')}
-            </div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{r.name}</p>
-              <p style={{ fontSize:11, color:C.muted }}>Joined {r.date}</p>
-            </div>
-            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-              <Bdg label={r.status} color={r.status==='Active'?C.success:C.warning} dot />
-              <p style={{ fontSize:12, fontWeight:700, color:r.status==='Active'?C.success:C.muted }}>{r.status==='Active'?`+${fmt(r.reward)}`:'Pending'}</p>
-            </div>
-          </div>
-        ))}
-      </Card>
-    </div>
-  )
+function Referrals() {
+  return <NotConfigured title="Referral Program" message="The referral program has not been set up for this account yet. No referral data currently exists." />
 }
 
 // ─── Goals ────────────────────────────────────────────────────────────────────
-function Goals({ onToast }:{ onToast:(m:string)=>void }) {
-  const goals = [
-    {l:'Daily',     target:12000, current:8500,  unit:'LKR', period:'Today',   c:C.primary},
-    {l:'Weekly',    target:50000, current:42000, unit:'LKR', period:'This Week',c:C.success},
-    {l:'Monthly',   target:200000,current:168000,unit:'LKR', period:'January', c:C.info},
-    {l:'Yearly',    target:2500000,current:1850000,unit:'LKR',period:'2025',   c:C.accent},
-    {l:'Visits',    target:10,    current:7,     unit:'visits',period:'This Week',c:C.warning},
-    {l:'Rating',    target:5,     current:4.9,   unit:'stars', period:'All Time',c:C.error},
-  ]
-  return (
-    <div style={{ padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Goals</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:20 }} className="ew-3col">
-        {goals.map((g,i)=>{
-          const pct = Math.min(Math.round((g.current/g.target)*100),100)
-          return (
-            <Card key={i} hover style={{ padding:22 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
-                <div>
-                  <Bdg label={g.period} color={g.c} />
-                  <p style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:8 }}>{g.l} Goal</p>
-                </div>
-                <ProgressRing pct={pct} color={g.c} size={60} />
-              </div>
-              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-                <p style={{ fontSize:12, color:C.muted }}>Progress</p>
-                <p style={{ fontSize:12, fontWeight:700, color:g.c }}>{g.unit==='LKR'?fmt(g.current):`${g.current} ${g.unit}`} / {g.unit==='LKR'?fmt(g.target):`${g.target} ${g.unit}`}</p>
-              </div>
-              <div style={{ height:6, borderRadius:99, background:`${g.c}15` }}>
-                <div style={{ width:`${pct}%`, height:'100%', background:g.c, borderRadius:99 }} />
-              </div>
-            </Card>
-          )
-        })}
-      </div>
-      <Card style={{ padding:22 }}>
-        <SectionTitle title="Milestones" action="Set New Goal" onAction={()=>onToast('Opening goal editor…')} />
-        {[{e:'🏆',l:'100 Visits Completed',target:100,current:72,c:C.accent},{e:'⭐',l:'1,000 Days on Platform',target:1000,current:342,c:C.primary},{e:'💰',l:'Earned LKR 2,000,000',target:2000000,current:1850000,c:C.success}].map((m,i)=>(
-          <div key={i} style={{ display:'flex', gap:12, alignItems:'center', padding:'12px 0', borderBottom:i<2?`1px solid ${C.border}`:'none' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${m.c}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{m.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:12, fontWeight:700, color:C.type, marginBottom:5 }}>{m.l}</p>
-              <div style={{ height:5, borderRadius:99, background:`${m.c}15` }}>
-                <div style={{ width:`${Math.round((m.current/m.target)*100)}%`, height:'100%', background:m.c, borderRadius:99 }} />
-              </div>
-              <p style={{ fontSize:10, color:C.muted, marginTop:3 }}>{typeof m.current==='number'&&m.current>999?fmt(m.current).replace('LKR ',''):m.current} / {typeof m.target==='number'&&m.target>999?fmt(m.target).replace('LKR ',''):m.target}</p>
-            </div>
-            <p style={{ fontSize:13, fontWeight:800, color:m.c, fontFamily:'Manrope,sans-serif' }}>{Math.round((m.current/m.target)*100)}%</p>
-          </div>
-        ))}
-      </Card>
-    </div>
-  )
+function Goals() {
+  return <NotConfigured title="Goals" message="Earnings and visit targets have not been configured for this account. No goal data currently exists." />
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
-function EarningsNotifications() {
-  const items = [
-    {e:'💸', t:'Payout Sent',             b:'LKR 45,000 transferred to your Peoples Bank account.',  col:C.success, read:false},
-    {e:'🎁', t:'Bonus Earned',            b:"You've earned the Monthly Top Agent bonus — LKR 15,000!", col:C.accent, read:false},
-    {e:'🎯', t:'Goal Achieved',           b:'Weekly earnings goal reached! You hit LKR 42,000.',       col:C.primary, read:false},
-    {e:'✅', t:'Withdrawal Approved',     b:'Your withdrawal of LKR 32,450 has been approved.',        col:C.success, read:true },
-    {e:'🏦', t:'Bank Verification Done',  b:"People's Bank account ending ••4231 is now verified.",    col:C.info,   read:true },
-    {e:'❌', t:'Payout Failed',           b:'Transfer failed for unknown reason. Please retry.',       col:C.error,  read:true },
-  ]
+// Backed by getMyNotifications() / markNotificationRead() / markAllNotificationsRead() —
+// the same real notifications feed used elsewhere in the app, not a
+// fabricated earnings-specific event log.
+function EarningsNotifications({ notifications, onMarkRead, onMarkAllRead }:{
+  notifications:NotificationRow[]|null; onMarkRead:(id:string)=>void; onMarkAllRead:()=>void
+}) {
+  if(notifications===null) {
+    return (
+      <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <p style={{ fontSize:13, color:C.muted }}>Loading notifications…</p>
+      </div>
+    )
+  }
+  const unread = notifications.filter(n=>!n.read).length
   return (
     <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
-        <Bdg label={`${items.filter(n=>!n.read).length} new`} color={C.primary} dot />
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+          {unread>0&&<Bdg label={`${unread} new`} color={C.primary} dot />}
+          {unread>0&&<Btn label="Mark All Read" variant="ghost" small onClick={onMarkAllRead} />}
+        </div>
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-        {items.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.col}04`, border:`1px solid ${n.read?C.border:n.col+'25'}` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:42, height:42, borderRadius:12, background:`${n.col}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>{n.e}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:3 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.t}</p>
-                  {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.col }}/>}
+      {notifications.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No notifications yet.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+          {notifications.map(n=>(
+            <Card key={n.id} hover onClick={()=>{ if(!n.read) onMarkRead(n.id) }} style={{ padding:18, background:n.read?C.surface:`${C.primary}04`, border:`1px solid ${n.read?C.border:C.primary+'25'}` }}>
+              <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:`${C.primary}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>🔔</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3, gap:8 }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title || 'Notification'}</p>
+                      {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:C.primary }}/>}
+                    </div>
+                    <p style={{ fontSize:10, color:C.muted, whiteSpace:'nowrap' as const }}>{formatDateLabel(n.created_at)}</p>
+                  </div>
+                  <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body || ''}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.b}</p>
               </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1174,32 +1361,99 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function AgentEarnings() {
   const [sub, setSub] = useState<SubView>('dashboard')
-  const [selectedTxn, setSelectedTxn] = useState<typeof TRANSACTIONS[0]|null>(null)
+  const [selectedTxn, setSelectedTxn] = useState<TransactionRow|null>(null)
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const [profile, setProfile] = useState<{ full_name:string|null }|null>(null)
+  const [completedBookings, setCompletedBookings] = useState<CompletedBooking[]>([])
+  const [transactions, setTransactions] = useState<TransactionRow[]>([])
+  const [payouts, setPayouts] = useState<PayoutRow[]>([])
+  const [bankAccount, setBankAccount] = useState<BankAccount|null>(null)
+  const [notifications, setNotifications] = useState<NotificationRow[]|null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string|null>(null)
 
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
   const groups = [...new Set(NAV.map(n=>n.group))]
 
+  // Loads real profile/earnings/transaction/payout/bank/notification data
+  // once on mount. Nothing here is mocked — a failure surfaces as
+  // loadError rather than falling back to demo content.
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const [profileData, bookingsData, txnData, payoutData, bankData, notifData] = await Promise.all([
+          getMyProfile(),
+          getMyCompletedBookings(),
+          getMyTransactions(),
+          getMyPayouts(),
+          getMyBankAccount(),
+          getMyNotifications(),
+        ])
+        if(cancelled) return
+        setProfile(profileData)
+        setCompletedBookings(bookingsData as unknown as CompletedBooking[])
+        setTransactions(txnData as unknown as TransactionRow[])
+        setPayouts(payoutData as PayoutRow[])
+        setBankAccount(bankData as BankAccount|null)
+        setNotifications(notifData as NotificationRow[])
+      } catch(e:any) {
+        if(!cancelled) setLoadError(e?.message || 'Failed to load earnings data')
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  async function handleMarkRead(id:string) {
+    try {
+      await markNotificationRead(id)
+      setNotifications(ns => ns ? ns.map(n=>n.id===id?{ ...n, read:true }:n) : ns)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update notification')
+    }
+  }
+  async function handleMarkAllRead() {
+    try {
+      await markAllNotificationsRead()
+      setNotifications(ns => ns ? ns.map(n=>({ ...n, read:true })) : ns)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update notifications')
+    }
+  }
+
+  const summary = useMemo(()=>computeEarningsSummary(completedBookings, new Date()), [completedBookings])
+  const unreadCount = notifications?.filter(n=>!n.read).length ?? 0
+
   const renderMain = () => {
+    if(loading) {
+      return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.muted }}>Loading your earnings…</p></div>
+    }
+    if(loadError) {
+      return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.error }}>{loadError}</p></div>
+    }
     if (sub==='txnDetail'&&selectedTxn) {
-      return <TransactionDetails t={selectedTxn} onBack={()=>setSub('transactions')} onToast={showToast} />
+      return <TransactionDetails t={selectedTxn} onBack={()=>setSub('transactions')} />
     }
     switch(sub) {
-      case 'dashboard':    return <EarningsDashboard onNav={setSub} onToast={showToast} />
-      case 'analytics':    return <EarningsAnalytics />
-      case 'jobEarnings':  return <JobEarnings onToast={showToast} />
-      case 'transactions': return <TransactionHistory onToast={t=>{ if(t==='view') { setSelectedTxn(TRANSACTIONS[0]); setSub('txnDetail') } else showToast(t) }} />
-      case 'payouts':      return <PayoutCenter onNav={setSub} onToast={showToast} />
-      case 'withdraw':     return <WithdrawFunds onToast={showToast} onNav={setSub} />
-      case 'bankAccounts': return <BankAccounts onToast={showToast} />
-      case 'bonuses':      return <BonusesIncentives onToast={showToast} />
+      case 'dashboard':    return <EarningsDashboard profile={profile} completedBookings={completedBookings} transactions={transactions} payouts={payouts} onNav={setSub} />
+      case 'analytics':    return <EarningsAnalytics completedBookings={completedBookings} />
+      case 'jobEarnings':  return <JobEarnings completedBookings={completedBookings} transactions={transactions} />
+      case 'transactions': return <TransactionHistory transactions={transactions} onSelect={t=>{ setSelectedTxn(t); setSub('txnDetail') }} />
+      case 'payouts':      return <PayoutCenter payouts={payouts} bankAccount={bankAccount} onNav={setSub} />
+      case 'withdraw':     return <WithdrawFunds bankAccount={bankAccount} onNav={setSub} />
+      case 'bankAccounts': return <BankAccounts bankAccount={bankAccount} onSaved={setBankAccount} onToast={showToast} />
+      case 'bonuses':      return <BonusesIncentives />
       case 'performance':  return <PerformanceEarnings />
-      case 'reports':      return <FinancialReports onToast={showToast} />
-      case 'tax':          return <TaxCenter onToast={showToast} />
-      case 'referrals':    return <Referrals onToast={showToast} />
-      case 'goals':        return <Goals onToast={showToast} />
-      case 'notifications':return <EarningsNotifications />
+      case 'reports':      return <FinancialReports monthlyChart={summary.monthlyChart} onToast={showToast} />
+      case 'tax':          return <TaxCenter annualIncome={summary.year} monthlyChart={summary.monthlyChart} onToast={showToast} />
+      case 'referrals':    return <Referrals />
+      case 'goals':        return <Goals />
+      case 'notifications':return <EarningsNotifications notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
       case 'statusBadges': return <StatusBadgesView />
       case 'empty':        return <EmptyStates />
       case 'loading':      return <LoadingStates />
@@ -1215,8 +1469,8 @@ export default function AgentEarnings() {
       <div className="ew-sidebar" style={{ width:218, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.08em', marginBottom:4 }}>Earnings & Wallet</p>
-          <p style={{ fontSize:20, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR 32,450</p>
-          <p style={{ fontSize:11, color:C.muted }}>Available balance</p>
+          <p style={{ fontSize:20, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{fmt(summary.total)}</p>
+          <p style={{ fontSize:11, color:C.muted }}>Total gross earnings</p>
         </div>
         {groups.map(group=>(
           <div key={group}>
@@ -1228,7 +1482,7 @@ export default function AgentEarnings() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?C.primary:C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?C.primary:C.muted }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='notifications'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>3</div>}
+                  {n.k==='notifications'&&unreadCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{unreadCount}</div>}
                 </button>
               )
             })}
@@ -1257,7 +1511,7 @@ export default function AgentEarnings() {
       <div className="ew-mobile-nav" style={{ display:'none', position:'fixed', top:0, left:0, right:0, zIndex:40, background:C.surface, borderBottom:`1px solid ${C.border}`, padding:'12px 18px', alignItems:'center', justifyContent:'space-between' }}>
         <div>
           <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{NAV.find(n=>n.k===sub)?.l??'Earnings'}</p>
-          <p style={{ fontSize:11, fontWeight:700, color:C.success }}>LKR 32,450</p>
+          <p style={{ fontSize:11, fontWeight:700, color:C.success }}>{fmt(summary.total)}</p>
         </div>
         <button onClick={()=>setSidebarOpen(v=>!v)} style={{ background:'none', border:'none', cursor:'pointer', color:C.type, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Menu</button>
       </div>

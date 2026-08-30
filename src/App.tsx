@@ -9,6 +9,7 @@ import CareAgentDashboard from './screens/CareAgentDashboard'
 import AgentProfileMgmt from './screens/AgentProfileMgmt'
 import TaskManagement from './screens/TaskManagement'
 import CareExecution from './screens/CareExecution'
+import AgentEarnings from './screens/AgentEarnings'
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
         <Route path="/agent/agentprofilemgmt" element={<AgentProfileMgmt />} />
         <Route path="/agent/taskmanagement" element={<TaskManagement />} />
         <Route path="/agent/careexecution" element={<CareExecution />} />
+        <Route path="/agent/agentearnings" element={<AgentEarnings />} />
       </Routes>
     </BrowserRouter>
   )

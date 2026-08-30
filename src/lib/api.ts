@@ -1663,3 +1663,104 @@ export async function endVisit(visitLogId: string, bookingId?: string) {
 
   return data
 }
+
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// Agent Earnings: completed-booking earnings, transactions, payouts
+//
+// bookings.payment_amount (status = 'completed') is the source of truth for
+// gross earnings. transactions is a separate, supplementary payment-record
+// table — its rows are never added to bookings.payment_amount, since doing
+// so could double-count the same money.
+// ─────────────────────────────────────────────────────────────────────────
+
+const COMPLETED_BOOKING_SELECT = `
+  id,
+  payment_amount,
+  status,
+  scheduled_date,
+  scheduled_time,
+  duration,
+  location,
+  created_at,
+  care_request:care_requests(id, title, service_type),
+  client:profiles!client_id(id, full_name)
+`
+
+export async function getMyCompletedBookings() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("bookings")
+    .select(COMPLETED_BOOKING_SELECT)
+    .eq("agent_id", user.id)
+    .eq("status", "completed")
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
+
+const TRANSACTION_SELECT = `
+  id,
+  booking_id,
+  amount,
+  currency,
+  method,
+  type,
+  status,
+  invoice_url,
+  created_at,
+  booking:bookings(id, scheduled_date, care_request:care_requests(title, service_type)),
+  client:profiles!client_id(id, full_name)
+`
+
+export async function getMyTransactions() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("transactions")
+    .select(TRANSACTION_SELECT)
+    .eq("agent_id", user.id)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
+
+// payouts.bank_account_id has no declared foreign key to bank_accounts in
+// the schema, so it cannot be embedded in this select — resolve it
+// separately (e.g. against getMyBankAccount()) if a bank label is needed.
+export async function getMyPayouts() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("payouts")
+    .select("*")
+    .eq("agent_id", user.id)
+    .order("requested_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
