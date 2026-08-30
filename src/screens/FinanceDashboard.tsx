@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -28,23 +29,6 @@ const PSTATUS: Record<string,{color:string;label:string}> = {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-const TRANSACTIONS = [
-  { id:'TXN-2026-001847', booking:'RP-2026-000184', client:'Mohamed Ihsan',   beneficiary:'Nimal Perera',      agent:'Kasun Perera',    method:'Card',  gross:8500,  fee:850,  net:7650, tax:765,  status:'paid',       date:'22 Jan 2026' },
-  { id:'TXN-2026-001846', booking:'RP-2026-000183', client:'Priya Fernando',  beneficiary:'Suresh Fernando',   agent:'Dilshan R.',      method:'Wallet',gross:6200,  fee:620,  net:5580, tax:558,  status:'paid',       date:'22 Jan 2026' },
-  { id:'TXN-2026-001845', booking:'RP-2026-000182', client:'Sampath J.',      beneficiary:'Kumari J.',         agent:'Ayesha M.',       method:'Card',  gross:9800,  fee:980,  net:8820, tax:882,  status:'processing', date:'21 Jan 2026' },
-  { id:'TXN-2026-001844', booking:'RP-2026-000181', client:'Chamara K.',      beneficiary:'Nanda K.',          agent:'Chamara W.',      method:'Bank',  gross:12000, fee:1200, net:10800,tax:1080, status:'pending',    date:'21 Jan 2026' },
-  { id:'TXN-2026-001843', booking:'RP-2026-000180', client:'Nirosha J.',      beneficiary:'Self',              agent:'Ranjith B.',      method:'Card',  gross:7400,  fee:740,  net:6660, tax:666,  status:'failed',     date:'20 Jan 2026' },
-  { id:'TXN-2026-001842', booking:'RP-2026-000179', client:'Mohamed Ihsan',   beneficiary:'Nimal Perera',      agent:'Kasun Perera',    method:'Card',  gross:8500,  fee:850,  net:7650, tax:765,  status:'refunded',   date:'19 Jan 2026' },
-  { id:'TXN-2026-001841', booking:'RP-2026-000178', client:'Priya Fernando',  beneficiary:'Amal Fernando',     agent:'Dilshan R.',      method:'Wallet',gross:5600,  fee:560,  net:5040, tax:504,  status:'disputed',   date:'18 Jan 2026' },
-]
-
-const AGENTS_PAYOUTS = [
-  { name:'Kasun Perera',     available:47650, pending:8500,  scheduled:47650, completed:284000, bank:'ComBank **4521', status:'approved'  },
-  { name:'Dilshan R.',       available:38420, pending:6200,  scheduled:38420, completed:218000, bank:'HNB **8834',     status:'approved'  },
-  { name:'Ayesha M.',        available:22100, pending:9800,  scheduled:0,     completed:142000, bank:'Sampath **2210', status:'pending'   },
-  { name:'Chamara W.',       available:15300, pending:12000, scheduled:0,     completed:98000,  bank:'NSB **7761',     status:'pending'   },
-  { name:'Ranjith B.',       available:61200, pending:0,     scheduled:61200, completed:387000, bank:'BOC **3345',     status:'approved'  },
-]
 
 const INVOICES = [
   { id:'INV-2026-00284', client:'Mohamed Ihsan',  date:'22 Jan 2026', due:'01 Feb 2026', paid:'-',           amount:8500,  status:'paid'     },
@@ -231,11 +215,10 @@ const HOME_KPIS = [
 ]
 const HOME_REV_TREND = [920,980,1050,1120,1180,1220,1245]
 const HOME_REV_MAX = Math.max(...HOME_REV_TREND)
-const HOME_RECENT_TXNS = TRANSACTIONS.slice(0,5)
 
-function FinanceHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function FinanceHome({ onNav, onToast, TRANSACTIONS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; TRANSACTIONS:any[] }) {
   const kpis = HOME_KPIS
-  const recentTxns = HOME_RECENT_TXNS
+  const recentTxns = TRANSACTIONS.slice(0,5)
   const revTrend = HOME_REV_TREND
   const maxR = HOME_REV_MAX
   return (
@@ -397,8 +380,7 @@ function FinancialKPIs() {
 }
 
 // ─── Payment Directory ────────────────────────────────────────────────────────
-function PaymentDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
-  const [q, setQ] = useState('')
+function PaymentDirectory({ onNav, onToast, TRANSACTIONS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; TRANSACTIONS:any[] }) {  const [q, setQ] = useState('')
   const [sf, setSf] = useState('all')
   const filtered = TRANSACTIONS.filter(t=>
     (sf==='all'||t.status===sf)&&
@@ -467,7 +449,7 @@ function PaymentDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:
 }
 
 // ─── Payment Details ──────────────────────────────────────────────────────────
-function PaymentDetails({ onToast }:{ onToast:(m:string)=>void }) {
+function PaymentDetails({ onToast, TRANSACTIONS }:{ onToast:(m:string)=>void; TRANSACTIONS:any[] }) {
   const txn = TRANSACTIONS[0]
   const timeline = [
     { l:'Payment Initiated',   d:'Client Mohamed Ihsan initiated payment',         time:'22 Jan 10:45', done:true  },
@@ -610,7 +592,7 @@ function ClientInvoices({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Agent Payouts ────────────────────────────────────────────────────────────
-function AgentPayouts({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function AgentPayouts({ onNav, onToast, AGENTS_PAYOUTS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; AGENTS_PAYOUTS:any[] }) {
   return (
     <div style={{ padding:'20px 24px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
@@ -1414,6 +1396,61 @@ function SuccessStates() {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function FinanceDashboard() {
+    const [TRANSACTIONS, setTRANSACTIONS] = useState<any[]>([])
+  const [AGENTS_PAYOUTS, setAGENTS_PAYOUTS] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadTransactions() {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          id, amount, method, status, created_at,
+          client:profiles!client_id(full_name),
+          agent:profiles!agent_id(full_name)
+        `)
+      if (error) { console.error(error); return }
+      const statusMap: Record<string, string> = {
+        pending: 'pending', completed: 'paid', failed: 'failed', refunded: 'refunded',
+      }
+      const mapped = (data || []).map((t: any) => ({
+        id: t.id,
+        booking: 'N/A',
+        client: t.client?.full_name || 'Unknown',
+        beneficiary: 'N/A',
+        agent: t.agent?.full_name || 'Unassigned',
+        method: t.method || 'N/A',
+        gross: t.amount,
+        fee: 0,
+        net: t.amount,
+        tax: 0,
+        status: statusMap[t.status] || t.status,
+        date: t.created_at ? new Date(t.created_at).toLocaleDateString() : 'N/A',
+      }))
+      setTRANSACTIONS(mapped)
+    }
+    async function loadPayouts() {
+      const { data, error } = await supabase
+        .from('payouts')
+        .select(`
+          amount, status,
+          agent:profiles!agent_id(full_name)
+        `)
+      if (error) { console.error(error); return }
+      const mapped = (data || []).map((p: any) => ({
+        name: p.agent?.full_name || 'Unknown',
+        available: p.status === 'pending' ? p.amount : 0,
+        pending: p.status === 'pending' ? p.amount : 0,
+        scheduled: p.status === 'processing' ? p.amount : 0,
+        completed: p.status === 'paid' ? p.amount : 0,
+        bank: 'N/A',
+        status: p.status === 'paid' ? 'approved' : 'pending',
+      }))
+      setAGENTS_PAYOUTS(mapped)
+    }
+    loadTransactions()
+    loadPayouts()
+  }, [])
+
   const [sub, setSub] = useState<SubView>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1422,12 +1459,12 @@ export default function FinanceDashboard() {
 
   const renderMain = () => {
     switch(sub) {
-      case 'home':           return <FinanceHome onNav={setSub} onToast={showToast} />
+      case 'home':           return <FinanceHome onNav={setSub} onToast={showToast} TRANSACTIONS={TRANSACTIONS} />
       case 'kpis':           return <FinancialKPIs />
-      case 'payments':       return <PaymentDirectory onNav={setSub} onToast={showToast} />
-      case 'paymentDetail':  return <PaymentDetails onToast={showToast} />
+      case 'payments':       return <PaymentDirectory onNav={setSub} onToast={showToast} TRANSACTIONS={TRANSACTIONS} />
+      case 'paymentDetail':  return <PaymentDetails onToast={showToast} TRANSACTIONS={TRANSACTIONS} />
       case 'invoices':       return <ClientInvoices onToast={showToast} />
-      case 'payouts':        return <AgentPayouts onNav={setSub} onToast={showToast} />
+      case 'payouts':        return <AgentPayouts onNav={setSub} onToast={showToast} AGENTS_PAYOUTS={AGENTS_PAYOUTS} />
       case 'payoutWorkflow': return <PayoutWorkflow onToast={showToast} />
       case 'refunds':        return <RefundManagement onToast={showToast} />
       case 'disputes':       return <DisputeCenter onToast={showToast} />

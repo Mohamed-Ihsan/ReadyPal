@@ -1,4 +1,5 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -246,16 +247,16 @@ function AdminHeader({ sub, onToast, onToggleSidebar }:{ sub:SubView; onToast:(m
 }
 
 // ─── Dashboard Home ───────────────────────────────────────────────────────────
-function DashboardHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function DashboardHome({ onNav, onToast, KPI_DATA }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; KPI_DATA:any }) {
   const kpis = [
-    { l:'Active Sessions',  v:42,     spark:[30,38,42,35,40,42], trend:'+8%',  c:C.primary,  icon:'🟢' },
-    { l:"Today's Bookings", v:128,    spark:[90,105,115,120,122,128], trend:'+12%', c:C.success, icon:'📅' },
-    { l:'Monthly Revenue',  v:'12.45M',spark:[10,10.8,11.2,11.9,12.1,12.45], trend:'+18%', c:C.info,    icon:'💰' },
-    { l:'Verified Agents',  v:684,    spark:[600,620,640,660,675,684], trend:'+4%',  c:C.accent,  icon:'👤' },
-    { l:'Registered Clients',v:2856,  spark:[2400,2550,2660,2730,2800,2856], trend:'+22%', c:C.warning, icon:'👥' },
-    { l:'Pending Verify',   v:18,     spark:[22,20,21,19,20,18], trend:'−10%', c:C.warning, icon:'⏳' },
-    { l:'Support Tickets',  v:11,     spark:[14,12,13,11,12,11], trend:'−8%',  c:C.muted,   icon:'🎫' },
-    { l:'Emergency Alerts', v:2,      spark:[1,0,2,1,0,2], trend:'⚠',       c:C.error,   icon:'🚨' },
+    { l:'Active Sessions',  v:KPI_DATA.activeSessions,      spark:[30,38,42,35,40,42], trend:'+8%',  c:C.primary,  icon:'🟢' },
+    { l:"Today's Bookings", v:KPI_DATA.todaysBookings,      spark:[90,105,115,120,122,128], trend:'+12%', c:C.success, icon:'📅' },
+    { l:'Monthly Revenue',  v:(KPI_DATA.monthlyRevenue/1000000).toFixed(2)+'M', spark:[10,10.8,11.2,11.9,12.1,12.45], trend:'+18%', c:C.info,    icon:'💰' },
+    { l:'Verified Agents',  v:KPI_DATA.verifiedAgents,      spark:[600,620,640,660,675,684], trend:'+4%',  c:C.accent,  icon:'👤' },
+    { l:'Registered Clients',v:KPI_DATA.registeredClients,  spark:[2400,2550,2660,2730,2800,2856], trend:'+22%', c:C.warning, icon:'👥' },
+    { l:'Pending Verify',   v:KPI_DATA.pendingVerify,       spark:[22,20,21,19,20,18], trend:'−10%', c:C.warning, icon:'⏳' },
+    { l:'Support Tickets',  v:KPI_DATA.supportTickets,      spark:[14,12,13,11,12,11], trend:'−8%',  c:C.muted,   icon:'🎫' },
+    { l:'Emergency Alerts', v:KPI_DATA.emergencyAlerts,     spark:[1,0,2,1,0,2], trend:'⚠',       c:C.error,   icon:'🚨' },
   ]
 
   const recentAlerts = [
@@ -1144,6 +1145,48 @@ function SuccessStates() {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function AdminDashboard() {
+    const [KPI_DATA, setKPI_DATA] = useState<any>({
+    activeSessions: 42,
+    todaysBookings: 0,
+    monthlyRevenue: 0,
+    verifiedAgents: 0,
+    registeredClients: 0,
+    pendingVerify: 0,
+    supportTickets: 0,
+    emergencyAlerts: 2,
+  })
+
+  useEffect(() => {
+    async function loadKpis() {
+      const today = new Date().toISOString().split('T')[0]
+
+      const { count: clientCount } = await supabase
+        .from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'client')
+      const { count: agentCount } = await supabase
+        .from('agent_details').select('*', { count: 'exact', head: true }).eq('verified', true)
+      const { count: bookingsToday } = await supabase
+        .from('bookings').select('*', { count: 'exact', head: true }).eq('scheduled_date', today)
+      const { count: pendingDocs } = await supabase
+        .from('verification_documents').select('*', { count: 'exact', head: true }).eq('status', 'pending')
+      const { count: openTickets } = await supabase
+        .from('support_tickets').select('*', { count: 'exact', head: true }).eq('status', 'open')
+      const { data: paidTxns } = await supabase
+        .from('transactions').select('amount').eq('status', 'completed')
+      const revenue = (paidTxns || []).reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0)
+
+      setKPI_DATA((prev: any) => ({
+        ...prev,
+        registeredClients: clientCount || 0,
+        verifiedAgents: agentCount || 0,
+        todaysBookings: bookingsToday || 0,
+        pendingVerify: pendingDocs || 0,
+        supportTickets: openTickets || 0,
+        monthlyRevenue: revenue,
+      }))
+    }
+    loadKpis()
+  }, [])
+
   const [sub, setSub] = useState<SubView>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1152,7 +1195,7 @@ export default function AdminDashboard() {
 
   const renderMain = () => {
     switch(sub) {
-      case 'home':            return <DashboardHome onNav={setSub} onToast={showToast} />
+      case 'home':            return <DashboardHome onNav={setSub} onToast={showToast} KPI_DATA={KPI_DATA} />
       case 'kpis':            return <PlatformKPIs />
       case 'liveMap':         return <LiveMap />
       case 'liveOps':         return <LiveOperations onToast={showToast} />

@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -55,16 +56,6 @@ const I: Record<string,ReactNode> = {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-const BOOKINGS = [
-  { id:'RP-2026-000184', client:'Mohamed Ihsan', beneficiary:'Nimal Perera',   agent:'Kasun Perera',    service:'Hospital Appointment Assistance', date:'22 Jan 2026', time:'09:00 – 13:00', location:'Colombo 03', status:'inprogress', priority:'high',   payment:'paid',    sla:'ok'    },
-  { id:'RP-2026-000185', client:'Priya Fernando', beneficiary:'Ananda F.',     agent:'Unassigned',      service:'Elderly Daily Care',              date:'22 Jan 2026', time:'10:00 – 14:00', location:'Kandy',      status:'pending',   priority:'medium', payment:'paid',    sla:'risk'  },
-  { id:'RP-2026-000186', client:'Chamari W.',     beneficiary:'Ruwan W.',      agent:'Dilshan R.',      service:'Post-Surgery Support',            date:'22 Jan 2026', time:'08:00 – 12:00', location:'Gampaha',    status:'travelling',priority:'high',   payment:'paid',    sla:'ok'    },
-  { id:'RP-2026-000187', client:'Suresh P.',      beneficiary:'Malini P.',     agent:'Unassigned',      service:'Therapy Assistance',              date:'22 Jan 2026', time:'14:00 – 16:00', location:'Colombo 07', status:'pending',   priority:'low',    payment:'pending', sla:'risk'  },
-  { id:'RP-2026-000188', client:'Dilrukshi N.',   beneficiary:'Sarath N.',     agent:'Ayesha M.',       service:'Companion Care',                  date:'22 Jan 2026', time:'11:00 – 15:00', location:'Nugegoda',   status:'accepted',  priority:'medium', payment:'paid',    sla:'ok'    },
-  { id:'RP-2026-000183', client:'Ranjith B.',     beneficiary:'Soma B.',       agent:'Amara S.',         service:'Medication Assistance',           date:'22 Jan 2026', time:'07:30 – 09:30', location:'Moratuwa',   status:'completed', priority:'low',    payment:'paid',    sla:'ok'    },
-  { id:'RP-2026-000180', client:'Thilina S.',     beneficiary:'Karuna S.',     agent:'Kasun Perera',    service:'Hospital Visit',                  date:'21 Jan 2026', time:'09:00 – 13:00', location:'Colombo 10', status:'delayed',   priority:'urgent', payment:'paid',    sla:'breach'},
-]
-
 const AGENTS = [
   { name:'Kasun Perera',    avail:true,  dist:'1.2 km', score:97, travel:'8 min',  status:'busy',    rating:4.9 },
   { name:'Dilshan R.',      avail:true,  dist:'2.8 km', score:89, travel:'14 min', status:'online',  rating:4.7 },
@@ -195,8 +186,7 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string; badge?:number }[
 ]
 
 // ─── Operations Dashboard ─────────────────────────────────────────────────────
-function OpsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
-  const kpis = [
+function OpsDashboard({ onNav, onToast, BOOKINGS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; BOOKINGS:any[] }) {  const kpis = [
     { l:"Today's Bookings", v:'47', e:'📋', c:C.primary, sub:'+8 vs yesterday' },
     { l:'Active Services',  v:'12', e:'⚡', c:C.success, sub:'Live right now'  },
     { l:'Upcoming (2h)',    v:'9',  e:'🕐', c:C.info,    sub:'Next 2 hours'    },
@@ -293,8 +283,7 @@ function OpsDashboard({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:s
 }
 
 // ─── Booking Directory ────────────────────────────────────────────────────────
-function BookingDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
-  const [q, setQ] = useState('')
+function BookingDirectory({ onNav, onToast, BOOKINGS }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void; BOOKINGS:any[] }) {  const [q, setQ] = useState('')
   const [statusF, setStatusF] = useState('all')
   const filtered = BOOKINGS.filter(b =>
     (statusF==='all'||b.status===statusF) &&
@@ -364,7 +353,7 @@ function BookingDirectory({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:
 }
 
 // ─── Booking Details ──────────────────────────────────────────────────────────
-function BookingDetails({ onToast }:{ onToast:(m:string)=>void }) {
+function BookingDetails({ onToast, BOOKINGS }:{ onToast:(m:string)=>void; BOOKINGS:any[] }) {
   const b = BOOKINGS[0]
   const steps = [
     { l:'Booking Created',      d:'Mohamed Ihsan created booking', time:'22 Jan 08:15', done:true  },
@@ -461,7 +450,7 @@ function BookingDetails({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Live Service Monitor ─────────────────────────────────────────────────────
-function LiveServiceMonitor({ onToast }:{ onToast:(m:string)=>void }) {
+function LiveServiceMonitor({ onToast, BOOKINGS }:{ onToast:(m:string)=>void; BOOKINGS:any[] }) {
   const live = BOOKINGS.filter(b=>['inprogress','travelling','checkin'].includes(b.status))
   return (
     <div style={{ padding:'20px 24px 60px' }}>
@@ -520,7 +509,7 @@ function LiveServiceMonitor({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Dispatch Center ──────────────────────────────────────────────────────────
-function DispatchCenter({ onToast }:{ onToast:(m:string)=>void }) {
+function DispatchCenter({ onToast, BOOKINGS }:{ onToast:(m:string)=>void; BOOKINGS:any[] }) {
   const unassigned = BOOKINGS.filter(b=>b.agent==='Unassigned')
   const [selected, setSelected] = useState<string|null>(null)
   return (
@@ -586,7 +575,7 @@ function DispatchCenter({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Assignment Management ────────────────────────────────────────────────────
-function AssignmentMgmt({ onToast }:{ onToast:(m:string)=>void }) {
+function AssignmentMgmt({ onToast, BOOKINGS }:{ onToast:(m:string)=>void; BOOKINGS:any[] }) {
   const statuses = [
     { k:'assigned',   l:'Assigned',   n:12, c:C.info    },
     { k:'pending',    l:'Pending',    n:5,  c:C.muted   },
@@ -1400,6 +1389,43 @@ function OpsSuccess() {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function OperationsCenter() {
+    const [BOOKINGS, setBOOKINGS] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadBookings() {
+      const { data, error } = await supabase
+        .from('bookings')
+        .select(`
+          id, status, scheduled_date, scheduled_time, priority, location,
+          client:profiles!client_id(full_name),
+          agent:profiles!agent_id(full_name),
+          beneficiary:beneficiaries!beneficiary_id(name),
+          care_request:care_requests!care_request_id(service_type)
+        `)
+      if (error) { console.error(error); return }
+      const statusMap: Record<string, string> = {
+        assigned: 'assigned', confirmed: 'accepted', in_progress: 'inprogress',
+        completed: 'completed', cancelled: 'cancelled', rescheduled: 'pending',
+      }
+      const mapped = (data || []).map((b: any) => ({
+        id: b.id,
+        client: b.client?.full_name || 'Unknown',
+        beneficiary: b.beneficiary?.name || 'N/A',
+        agent: b.agent?.full_name || 'Unassigned',
+        service: b.care_request?.service_type || 'N/A',
+        date: b.scheduled_date || 'N/A',
+        time: b.scheduled_time || 'N/A',
+        location: b.location || 'N/A',
+        status: statusMap[b.status] || b.status,
+        priority: b.priority || 'medium',
+        payment: 'N/A',
+        sla: 'ok',
+      }))
+      setBOOKINGS(mapped)
+    }
+    loadBookings()
+  }, [])
+
   const [sub, setSub] = useState<SubView>('dashboard')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1408,12 +1434,12 @@ export default function OperationsCenter() {
 
   const renderMain = () => {
     switch(sub) {
-      case 'dashboard':     return <OpsDashboard onNav={setSub} onToast={showToast} />
-      case 'directory':     return <BookingDirectory onNav={setSub} onToast={showToast} />
-      case 'bookingDetail': return <BookingDetails onToast={showToast} />
-      case 'liveMonitor':   return <LiveServiceMonitor onToast={showToast} />
-      case 'dispatch':      return <DispatchCenter onToast={showToast} />
-      case 'assignments':   return <AssignmentMgmt onToast={showToast} />
+      case 'dashboard':     return <OpsDashboard onNav={setSub} onToast={showToast} BOOKINGS={BOOKINGS} />
+      case 'directory':     return <BookingDirectory onNav={setSub} onToast={showToast} BOOKINGS={BOOKINGS} />
+      case 'bookingDetail': return <BookingDetails onToast={showToast} BOOKINGS={BOOKINGS} />
+      case 'liveMonitor':   return <LiveServiceMonitor onToast={showToast} BOOKINGS={BOOKINGS} />
+      case 'dispatch':      return <DispatchCenter onToast={showToast} BOOKINGS={BOOKINGS} />
+      case 'assignments':   return <AssignmentMgmt onToast={showToast} BOOKINGS={BOOKINGS} />
       case 'liveMap':       return <LiveMap onToast={showToast} />
       case 'emergency':     return <EmergencyOps onToast={showToast} />
       case 'scheduling':    return <SchedulingCenter onToast={showToast} />
