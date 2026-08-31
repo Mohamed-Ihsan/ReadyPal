@@ -1,13 +1,14 @@
+import { supabase } from '../lib/supabaseClient'
+
+
 import {
   useState, useRef, useEffect, useCallback,
   type ReactNode, type CSSProperties, type KeyboardEvent,
 } from 'react'
-
-import { signInUser, signUpUser, getMyProfile, getMyAgentDetails, updateMyProfile } from "../lib/api"
-
 import logoFull from '@/imports/20260723_170707.png'
 import logoWhite from '@/imports/20260723_165045.png'
 import logoIcon from '@/imports/20260723_164632.png'
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type AuthScreen =
@@ -505,55 +506,31 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
   const [error, setError] = useState('')
 
   const submit = async () => {
-    if (!email || !pass) {
-      setError('Please fill in all fields.')
-      return
-    }
+  if (!email || !pass) { setError('Please fill in all fields.'); return }
+  setError(''); setLoading(true)
 
-    try {
-      setError('')
-      setLoading(true)
+  const { data, error: authError } = await supabase.auth.signInWithPassword({
+    email,
+    password: pass,
+  })
 
-      const result = await signInUser(email, pass)
+  setLoading(false)
 
-      console.log('Supabase login successful:', result)
-
-      // Route by the real, stored role/application state — never by
-      // anything decided client-side at signup time. A stale/older
-      // account without a role recorded yet falls back to onboarding,
-      // matching this app's previous unconditional behaviour.
-      let destination = '/agent/onboarding'
-
-      try {
-        const profile = await getMyProfile()
-
-        if (profile?.role === 'client') {
-          destination = '/dashboard'
-        } else if (profile?.role === 'agent') {
-          const agentDetails = await getMyAgentDetails().catch(() => null)
-          destination = agentDetails?.application_status === 'approved'
-            ? '/agent/agentdashboard'
-            : '/agent/onboarding'
-        }
-        // role === 'admin' (or unset/unrecognised) keeps the existing
-        // pre-role-selection behaviour — admin routing is untouched here.
-      } catch (routingError) {
-        console.error('Failed to resolve role for post-login routing:', routingError)
-      }
-
-      window.location.href = destination
-    } catch (err) {
-      console.error('Supabase login failed:', err)
-
-      if (err instanceof Error) {
-        setError(err.message)
-      } else {
-      setError('Login failed. Please try again.')
-      }
-    } finally {
-      setLoading(false)
-    }
+  if (authError) {
+    setError(authError.message)
+    return
   }
+
+  // Check the user's role to route them correctly
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', data.user.id)
+    .single()
+
+  go(profile?.role === 'agent' ? 'agent-1' : 'client-1')
+  }
+
 
   return (
     <AuthShell left={
@@ -626,16 +603,16 @@ function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
     {
       key: 'client' as const,
       icon: <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="14" cy="10" r="5" stroke="currentColor" strokeWidth="1.8"/><path d="M3 26c0-6 4.5-10 11-10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/><path d="M22 20l2 2 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><circle cx="23" cy="21" r="7" stroke="currentColor" strokeWidth="1.4"/></svg>,
-      title:'I need care services',
-      desc:'Find trusted Care Agents for yourself or your family.',
+      title:'I am a Family Member',
+      desc:'I need to arrange trusted care for my elderly parent living in Sri Lanka.',
       benefits:['Post care requests', 'View verified agents', 'Real-time updates'],
       color: C.primary,
     },
     {
       key: 'agent' as const,
       icon: <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="10" r="5" stroke="currentColor" strokeWidth="1.8"/><path d="M6 26c0-5.52 4.48-10 10-10s10 4.48 10 10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/><path d="M23 2l1.5 3.1 3.5.5-2.5 2.3.6 3.2-3.1-1.6-3.1 1.6.6-3.2-2.5-2.3 3.5-.5L23 2z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/></svg>,
-      title:'I want to become a Care Agent',
-      desc:'Provide care services and find available care jobs.',
+      title:'I am a Care Agent',
+      desc:'I want to provide trusted care services to elderly people across Sri Lanka.',
       benefits:['Flexible hours', 'Reliable income', 'Meaningful work'],
       color: C.accent,
     },
@@ -651,8 +628,8 @@ function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
       <button onClick={() => go('welcome')} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.sub, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:600, marginBottom:24, padding:0 }}>
         {Ico.arrowL} Back
       </button>
-      <h1 style={{ fontSize:26, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:6 }}>How would you like to use ReadyPal?</h1>
-      <p style={{ fontSize:14, color:C.sub, marginBottom:28 }}>Select the option that best describes you.</p>
+      <h1 style={{ fontSize:26, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:6 }}>Who are you?</h1>
+      <p style={{ fontSize:14, color:C.sub, marginBottom:28 }}>Select the role that best describes you.</p>
 
       <div style={{ display:'flex', flexDirection:'column', gap:14, marginBottom:28 }}>
         {roles.map(r => (
@@ -691,47 +668,34 @@ function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
 function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
   const [f, setF] = useState({ firstName:'', lastName:'', email:'', phone:'', country:'', password:'', confirm:'' })
   const [showP, setShowP] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const up = (k: keyof typeof f) => (v: string) => setF(prev => ({ ...prev, [k]: v }))
   const countries = ['Australia','United Kingdom','Canada','United States','New Zealand','Germany','France','UAE','Singapore','Malaysia']
 
   const submit = async () => {
-    if (!f.firstName.trim() || !f.lastName.trim() || !f.email.trim() || !f.password) {
-      setError('Please fill in all required fields.')
+    if (f.password !== f.confirm) { setError('Passwords do not match.'); return }
+    if (!f.email || !f.password) { setError('Please fill in all required fields.'); return }
+    setError(''); setLoading(true)
+
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email: f.email,
+      password: f.password,
+      options: { data: { full_name: `${f.firstName} ${f.lastName}` } },
+    })
+
+    if (signUpError) {
+      setLoading(false)
+      setError(signUpError.message)
       return
     }
 
-    if (f.password !== f.confirm) {
-      setError('Passwords do not match.')
-      return
+    if (data.user) {
+      await supabase.from('profiles').update({ phone: f.phone, role: 'client' }).eq('id', data.user.id)
     }
 
-    try {
-      setError('')
-      setSubmitting(true)
-
-      // role is only ever this literal — 'client' — never state threaded
-      // in from elsewhere. public.profiles.role is set server-side by the
-      // handle_new_user() trigger from this signup metadata; no follow-up
-      // client-side write is needed or permitted.
-      const { session } = await signUpUser(
-        f.email.trim(), f.password, `${f.firstName.trim()} ${f.lastName.trim()}`, 'client'
-      )
-
-      if (session) {
-        window.location.href = '/dashboard'
-      } else {
-        // Email confirmation is required — no session yet. Account
-        // creation still succeeded; this is not a failure.
-        go('email-verify')
-      }
-    } catch (err) {
-      console.error('Client signup failed:', err)
-      setError(err instanceof Error ? err.message : 'Signup failed. Please try again.')
-    } finally {
-      setSubmitting(false)
-    }
+    setLoading(false)
+    go('client-2')
   }
 
   return (
@@ -739,7 +703,6 @@ function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
       <button onClick={() => go('role-select')} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.sub, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:600, marginBottom:24, padding:0 }}>{Ico.arrowL} Back</button>
       <StepBar current={1} total={5} label="Personal Information" />
       <h1 style={{ fontSize:22, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:20 }}>Personal Information</h1>
-      {error && <InlineAlert type="error" message={error} />}
       <div style={{ display:'flex', flexDirection:'column', gap:13 }}>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <FloatInput label="First Name" value={f.firstName} onChange={up('firstName')} />
@@ -753,7 +716,8 @@ function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
         <FloatInput label="Confirm Password" type={showP ? 'text' : 'password'} value={f.confirm} onChange={up('confirm')}
           icon={Ico.lock}
           error={f.confirm && f.confirm !== f.password ? 'Passwords do not match.' : undefined} />
-        <Btn variant="primary" size="lg" fullWidth onClick={submit} loading={submitting}>Continue {Ico.arrowR}</Btn>
+        {error && <InlineAlert type="error" message={error} />}
+        <Btn variant="primary" size="lg" fullWidth onClick={submit} loading={loading}>Continue {Ico.arrowR}</Btn>
       </div>
     </AuthShell>
   )
@@ -892,65 +856,24 @@ function ClientStep5({ go }: { go: (s: AuthScreen) => void }) {
 
 // ─── Agent Step 1 — Personal Info ────────────────────────────────────────────
 function AgentStep1({ go }: { go: (s: AuthScreen) => void }) {
-  const [f, setF] = useState({ name:'', email:'', password:'', confirm:'' })
-  const [showP, setShowP] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const [f, setF] = useState({ name:'', nic:'', dob:'', gender:'', phone:'', email:'', address:'' })
   const up = (k: keyof typeof f) => (v: string) => setF(p => ({ ...p, [k]: v }))
-
-  const submit = async () => {
-    if (!f.name.trim() || !f.email.trim() || !f.password) {
-      setError('Please fill in all required fields.')
-      return
-    }
-
-    if (f.password !== f.confirm) {
-      setError('Passwords do not match.')
-      return
-    }
-
-    try {
-      setError('')
-      setSubmitting(true)
-
-      // role is only ever this literal — 'agent' — never state threaded
-      // in from elsewhere. public.profiles.role is set server-side by the
-      // handle_new_user() trigger from this signup metadata; no follow-up
-      // client-side write is needed or permitted. Detailed application
-      // data (NIC, DOB, address, etc.) is collected once, for real, in
-      // CareAgentOnboarding.tsx, which this redirects straight into —
-      // not duplicated here.
-      const { session } = await signUpUser(f.email.trim(), f.password, f.name.trim(), 'agent')
-
-      if (session) {
-        window.location.href = '/agent/onboarding'
-      } else {
-        // Email confirmation is required — no session yet. Account
-        // creation still succeeded; this is not a failure.
-        go('email-verify')
-      }
-    } catch (err) {
-      console.error('Agent signup failed:', err)
-      setError(err instanceof Error ? err.message : 'Signup failed. Please try again.')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
   return (
     <AuthShell left={<LeftPanel icon={Ico.user} title="Start your application." desc="Join 2,400+ verified ReadyPal care agents and build a meaningful career helping Sri Lankan families." facts={['Free to apply','Verification in 3–5 days','Earn LKR 35,000–120,000/month']} />}>
       <button onClick={() => go('role-select')} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.sub, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:600, marginBottom:24, padding:0 }}>{Ico.arrowL} Back</button>
+      <StepBar current={1} total={8} label="Personal Information" />
       <h1 style={{ fontSize:22, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:20 }}>Personal Information</h1>
-      {error && <InlineAlert type="error" message={error} />}
       <div style={{ display:'flex', flexDirection:'column', gap:13 }}>
-        <FloatInput label="Full Name" value={f.name} onChange={up('name')} icon={Ico.user} hint="e.g. Chamari Dissanayake" />
+        <FloatInput label="Full Name (as on NIC)" value={f.name} onChange={up('name')} icon={Ico.user} hint="e.g. Chamari Dissanayake" />
+        <FloatInput label="NIC Number" value={f.nic} onChange={up('nic')} icon={Ico.doc} hint="12 digits or old 9V/X format" />
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <FloatInput label="Date of Birth" type="date" value={f.dob} onChange={up('dob')} icon={Ico.calendar} />
+          <Select label="Gender" value={f.gender} onChange={up('gender')} options={['Male','Female','Non-binary','Prefer not to say']} />
+        </div>
+        <FloatInput label="Mobile Number" type="tel" value={f.phone} onChange={up('phone')} icon={Ico.phone} hint="07X XXX XXXX" />
         <FloatInput label="Email Address" type="email" value={f.email} onChange={up('email')} icon={Ico.mail} />
-        <FloatInput label="Password" type={showP ? 'text' : 'password'} value={f.password} onChange={up('password')} icon={Ico.lock} iconRight={showP ? Ico.eyeOff : Ico.eye} onIconRight={() => setShowP(v => !v)} />
-        <PasswordStrength value={f.password} />
-        <FloatInput label="Confirm Password" type={showP ? 'text' : 'password'} value={f.confirm} onChange={up('confirm')}
-          icon={Ico.lock}
-          error={f.confirm && f.confirm !== f.password ? 'Passwords do not match.' : undefined} />
-        <Btn variant="primary" size="lg" fullWidth onClick={submit} loading={submitting}>Continue {Ico.arrowR}</Btn>
+        <FloatInput label="Full Home Address" value={f.address} onChange={up('address')} icon={Ico.home} hint="District, city, street — all required" />
+        <Btn variant="primary" size="lg" fullWidth onClick={() => go('agent-2')}>Continue {Ico.arrowR}</Btn>
       </div>
     </AuthShell>
   )
