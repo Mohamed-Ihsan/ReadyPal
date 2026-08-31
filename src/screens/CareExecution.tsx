@@ -1,4 +1,21 @@
 import { useState, useEffect, useRef, type ReactNode, type CSSProperties } from 'react'
+import {
+  getMyProfile,
+  getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  getMyActiveBooking,
+  getVisitLog,
+  startVisit as apiStartVisit,
+  updateVisitStatus,
+  updateVisitChecklist,
+  updateVisitMedication,
+  updateVisitVitals,
+  updateVisitNotes,
+  submitIncidentReport,
+  endVisit as apiEndVisit,
+  type VisitStatus,
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -116,19 +133,96 @@ function ElapsedTimer({ startMs }:{ startMs:number }) {
 }
 
 // ─── Status config ────────────────────────────────────────────────────────────
-const STATUS: Record<string,{color:string;label:string;emoji:string}> = {
-  travelling:    { color:C.warning,  label:'Travelling',      emoji:'🚗' },
-  arrived:       { color:C.primary,  label:'Arrived',         emoji:'📍' },
-  checkedIn:     { color:C.info,     label:'Checked In',      emoji:'✅' },
-  careInProgress:{ color:C.success,  label:'Care In Progress',emoji:'💊' },
-  waiting:       { color:'#8B5CF6',  label:'Waiting',         emoji:'⏳' },
-  completed:     { color:C.success,  label:'Completed',       emoji:'🎉' },
-  paused:        { color:C.muted,    label:'Paused',          emoji:'⏸️' },
-  emergency:     { color:C.error,    label:'Emergency',       emoji:'🚨' },
-  offline:       { color:C.muted,    label:'Offline',         emoji:'📵' },
+// Mirrors visit_logs.status exactly — that column only accepts these six
+// values, so no other status is ever shown as selectable or written back.
+const STATUS: Record<VisitStatus,{color:string;label:string;emoji:string}> = {
+  not_started: { color:C.muted,   label:'Not Started',      emoji:'⏳' },
+  en_route:    { color:C.warning, label:'En Route',         emoji:'🚗' },
+  checked_in:  { color:C.info,    label:'Checked In',       emoji:'✅' },
+  in_progress: { color:C.success, label:'Care In Progress', emoji:'💊' },
+  checked_out: { color:C.accent,  label:'Checked Out',      emoji:'📍' },
+  completed:   { color:C.success, label:'Completed',        emoji:'🎉' },
 }
 
-type LiveStatus = keyof typeof STATUS
+type LiveStatus = VisitStatus
+
+// ─── Real data shapes ─────────────────────────────────────────────────────────
+// These mirror the confirmed Supabase schema exactly. jsonb columns
+// (checklist/medication_log/vitals) have no fixed shape in the database —
+// the item shapes below are an application-level convention we control.
+type ChecklistItem = { id:string; label:string; done:boolean; note?:string }
+type MedicationItem = { id:string; name:string; quantity:string; pharmacy:string; purchased:boolean; collected:boolean }
+type VisitVitals = { bp?:string; hr?:string; temp?:string; o2?:string; sugar?:string; weight?:string; recorded_at?:string }
+
+type CareRequestInfo = {
+  id:string; title:string|null; service_type:string|null; duration:string|null
+  tasks:string[]|null; address1:string|null; address2:string|null; city:string|null; province:string|null
+} | null
+
+type ActiveBooking = {
+  id:string; status:string; scheduled_date:string|null; scheduled_time:string|null
+  duration:string|null; payment_amount:number|null; location:string|null
+  care_request:CareRequestInfo
+  client:{ id:string; full_name:string|null; avatar_url:string|null; phone:string|null } | null
+  beneficiary:{ id:string; name:string|null; preferred_name:string|null; age:number|null } | null
+}
+
+type VisitLog = {
+  id:string; booking_id:string; status:VisitStatus
+  check_in_time:string|null; check_out_time:string|null
+  gps_lat:number|null; gps_lng:number|null
+  checklist:ChecklistItem[]|null; medication_log:MedicationItem[]|null; vitals:VisitVitals|null
+  notes:string|null; media_urls:string[]|null; incident_report:string|null; client_signature_url:string|null
+}
+
+// ─── Real-data formatting helpers ──────────────────────────────────────────────
+// Never fabricate a value here — every branch either shows real data or an
+// honest "not recorded"/"not provided" label.
+function initials(name?:string|null):string {
+  if(!name) return '—'
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if(parts.length===0) return '—'
+  return (parts[0][0] + (parts[1]?.[0]??'')).toUpperCase()
+}
+
+function beneficiaryLabel(b:ActiveBooking['beneficiary']):string {
+  if(!b) return 'Beneficiary not provided'
+  const name = b.preferred_name || b.name
+  if(!name) return 'Beneficiary not provided'
+  return b.age!=null ? `${name} (${b.age})` : name
+}
+
+function clientLabel(c:ActiveBooking['client']):string {
+  return c?.full_name || 'Client not provided'
+}
+
+function serviceLabel(cr:CareRequestInfo):string {
+  return cr?.title || cr?.service_type || 'Service not specified'
+}
+
+function locationLabel(b:ActiveBooking|null):string {
+  if(!b) return 'Location not provided'
+  if(b.location) return b.location
+  const cr = b.care_request
+  const parts = [cr?.address1, cr?.address2, cr?.city, cr?.province].filter(Boolean)
+  return parts.length ? parts.join(', ') : 'Location not provided'
+}
+
+function formatClockTime(iso?:string|null):string {
+  if(!iso) return 'Not recorded'
+  const d = new Date(iso)
+  if(Number.isNaN(d.getTime())) return 'Not recorded'
+  return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})
+}
+
+function formatDurationBetween(startIso?:string|null, endIso?:string|null):string {
+  if(!startIso || !endIso) return 'Not available'
+  const start = new Date(startIso).getTime(), end = new Date(endIso).getTime()
+  if(Number.isNaN(start) || Number.isNaN(end) || end<start) return 'Not available'
+  const totalMin = Math.round((end-start)/60000)
+  const h = Math.floor(totalMin/60), m = totalMin%60
+  return h>0 ? `${h}h ${m}m` : `${m}m`
+}
 
 // ─── Sub-view type ────────────────────────────────────────────────────────────
 type SubView = 'dashboard'|'startVisit'|'liveStatus'|'gps'|'timeline'|'checklist'|'medication'|'vitals'|'notes'|'media'|'documents'|'incident'|'emergency'|'clientUpdates'|'signature'|'endVisit'|'summary'|'followup'|'notifications'|'statusBadges'|'empty'|'loading'|'error'|'success'
@@ -161,27 +255,30 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
 ]
 
 // ─── Live Dashboard ───────────────────────────────────────────────────────────
-function LiveDashboard({ status, onNav, onToast, startMs }:{ status:LiveStatus; onNav:(s:SubView)=>void; onToast:(m:string)=>void; startMs:number }) {
-  const now = useLiveClock()
-  const [progress, setProgress] = useState(35)
-  const [note, setNote] = useState('')
+function LiveDashboard({ booking, visitLog, onNav, onToast, onSaveNotes }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null; onNav:(s:SubView)=>void; onToast:(m:string)=>void
+  onSaveNotes:(notes:string)=>Promise<void>
+}) {
+  const status:LiveStatus = visitLog?.status ?? 'not_started'
   const st = STATUS[status]
+  const [note, setNote] = useState(visitLog?.notes ?? '')
+  useEffect(()=>{ setNote(visitLog?.notes ?? '') }, [visitLog?.notes])
 
-  const tasks = [
-    { l:'Meet Beneficiary',        done:true  },
-    { l:'Confirm Identity',        done:true  },
-    { l:'Review Care Plan',        done:true  },
-    { l:'Purchase Medication',     done:false },
-    { l:'Visit Hospital',          done:false },
-    { l:'Meet Doctor',             done:false },
-    { l:'Collect Reports',         done:false },
-    { l:'Assist Mobility',         done:false },
-    { l:'Return Home',             done:false },
-    { l:'Review Medication',       done:false },
-    { l:'Complete Documentation',  done:false },
-  ]
-  const done = tasks.filter(t=>t.done).length
-  const pct = Math.round((done/tasks.length)*100)
+  const checklist = visitLog?.checklist ?? []
+  const done = checklist.filter(t=>t.done).length
+  const pct = checklist.length ? Math.round((done/checklist.length)*100) : 0
+  const meds = visitLog?.medication_log ?? []
+
+  if(!booking) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:8 }}>No Active Booking</p>
+          <p style={{ fontSize:13, color:C.muted }}>You don't have an assigned, confirmed, or in-progress booking right now.</p>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div style={{ padding:'24px 28px 60px' }}>
@@ -196,10 +293,14 @@ function LiveDashboard({ status, onNav, onToast, startMs }:{ status:LiveStatus; 
                 {st.emoji} {st.label}
               </div>
             </div>
-            <h2 style={{ fontSize:22, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Hospital Appointment Assistance</h2>
-            <p style={{ fontSize:12, color:'rgba(255,255,255,0.75)', marginBottom:10 }}>Nimal Perera · National Hospital Colombo</p>
+            <h2 style={{ fontSize:22, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{serviceLabel(booking.care_request)}</h2>
+            <p style={{ fontSize:12, color:'rgba(255,255,255,0.75)', marginBottom:10 }}>{beneficiaryLabel(booking.beneficiary)} · {locationLabel(booking)}</p>
             <div style={{ display:'flex', gap:18, flexWrap:'wrap' as const }}>
-              {[{l:'Elapsed',v:<ElapsedTimer startMs={startMs}/>},{l:'Remaining',v:'~1h 45m'},{l:'Tasks',v:`${done}/${tasks.length}`}].map((s,i)=>(
+              {[
+                {l:'Elapsed',  v: visitLog?.check_in_time ? <ElapsedTimer startMs={new Date(visitLog.check_in_time).getTime()}/> : '—'},
+                {l:'Duration', v: booking.duration || 'Not specified'},
+                {l:'Tasks',    v: checklist.length ? `${done}/${checklist.length}` : '—'},
+              ].map((s,i)=>(
                 <div key={i}>
                   <p style={{ fontSize:10, color:'rgba(255,255,255,0.6)', marginBottom:2 }}>{s.l}</p>
                   <p style={{ fontSize:20, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{s.v}</p>
@@ -225,17 +326,17 @@ function LiveDashboard({ status, onNav, onToast, startMs }:{ status:LiveStatus; 
         </div>
       </Card>
 
-      {/* KPIs */}
+      {/* KPIs — real data only */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20 }} className="lce-4col">
         {[
-          {e:'🕐', l:'Started',    v:'9:32 AM', c:C.primary},
-          {e:'📍', l:'Distance',   v:'3.2 km',  c:C.info},
-          {e:'📋', l:'Completed',  v:`${done}/${tasks.length}`, c:C.success},
-          {e:'💊', l:'Medication', v:'2 items',  c:C.accent},
+          {e:'🕐', l:'Checked In', v: formatClockTime(visitLog?.check_in_time), c:C.primary},
+          {e:'📋', l:'Tasks Done', v: checklist.length ? `${done}/${checklist.length}` : 'No tasks yet', c:C.success},
+          {e:'💊', l:'Medication', v: meds.length ? `${meds.length} item${meds.length===1?'':'s'}` : 'None logged', c:C.accent},
+          {e:'📌', l:'Status',     v: st.label, c:st.color},
         ].map((k,i)=>(
           <Card key={i} style={{ padding:18 }}>
             <p style={{ fontSize:22, marginBottom:6 }}>{k.e}</p>
-            <p style={{ fontSize:20, fontWeight:900, color:k.c, fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:3 }}>{k.v}</p>
+            <p style={{ fontSize:16, fontWeight:900, color:k.c, fontFamily:'Manrope,sans-serif', lineHeight:1.2, marginBottom:3 }}>{k.v}</p>
             <p style={{ fontSize:11, color:C.muted }}>{k.l}</p>
           </Card>
         ))}
@@ -243,24 +344,27 @@ function LiveDashboard({ status, onNav, onToast, startMs }:{ status:LiveStatus; 
 
       <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:18 }} className="lce-main-split">
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          {/* Task checklist preview */}
+          {/* Task checklist preview — real */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Task Checklist" action="Full List" onAction={()=>onNav('checklist')} />
-            <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
-              {tasks.slice(0,6).map((t,i)=>(
-                <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'9px 12px', borderRadius:10, background:t.done?`${C.success}08`:C.bg, border:`1.5px solid ${t.done?C.success+'30':C.border}` }}>
-                  <div style={{ width:22, height:22, borderRadius:7, background:t.done?C.success:`${C.primary}10`, border:`2px solid ${t.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                    {t.done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.7)'}}>{I.check}</span>}
+            {checklist.length===0 ? (
+              <p style={{ fontSize:12, color:C.muted }}>No tasks recorded for this visit yet.</p>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+                {checklist.slice(0,6).map(t=>(
+                  <div key={t.id} style={{ display:'flex', gap:10, alignItems:'center', padding:'9px 12px', borderRadius:10, background:t.done?`${C.success}08`:C.bg, border:`1.5px solid ${t.done?C.success+'30':C.border}` }}>
+                    <div style={{ width:22, height:22, borderRadius:7, background:t.done?C.success:`${C.primary}10`, border:`2px solid ${t.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                      {t.done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.7)'}}>{I.check}</span>}
+                    </div>
+                    <p style={{ fontSize:12, fontWeight:t.done?500:600, color:t.done?C.muted:C.type, textDecoration:t.done?'line-through':undefined }}>{t.label}</p>
                   </div>
-                  <p style={{ fontSize:12, fontWeight:t.done?500:600, color:t.done?C.muted:C.type, textDecoration:t.done?'line-through':undefined }}>{t.l}</p>
-                  {i===done&&<Bdg label="Current" color={C.primary} />}
-                </div>
-              ))}
-            </div>
-            {tasks.length>6&&<button onClick={()=>onNav('checklist')} style={{ width:'100%', marginTop:8, padding:'8px', borderRadius:10, border:`1px dashed ${C.border}`, background:'transparent', cursor:'pointer', fontSize:11, fontWeight:700, color:C.muted, fontFamily:'Manrope,sans-serif' }}>+{tasks.length-6} more tasks</button>}
+                ))}
+              </div>
+            )}
+            {checklist.length>6&&<button onClick={()=>onNav('checklist')} style={{ width:'100%', marginTop:8, padding:'8px', borderRadius:10, border:`1px dashed ${C.border}`, background:'transparent', cursor:'pointer', fontSize:11, fontWeight:700, color:C.muted, fontFamily:'Manrope,sans-serif' }}>+{checklist.length-6} more tasks</button>}
           </Card>
 
-          {/* GPS map mini */}
+          {/* GPS map mini — left as-is: no route-history/ETA/traffic backend exists */}
           <Card style={{ overflow:'hidden' }}>
             <div style={{ height:160, background:`linear-gradient(135deg,${C.bg},#DCE8EA)`, position:'relative' as const, display:'flex', alignItems:'center', justifyContent:'center' }}>
               <svg style={{ position:'absolute', inset:0, width:'100%', height:'100%', opacity:0.08 }} preserveAspectRatio="none"><defs><pattern id="g" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M 28 0 L 0 0 0 28" fill="none" stroke={C.primary} strokeWidth="0.6"/></pattern></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>
@@ -289,27 +393,31 @@ function LiveDashboard({ status, onNav, onToast, startMs }:{ status:LiveStatus; 
 
         {/* Right col */}
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          {/* Quick notes */}
+          {/* Quick notes — real, bound to visit_logs.notes */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Quick Notes" action="Full Notes" onAction={()=>onNav('notes')} />
             <textarea value={note} onChange={e=>setNote(e.target.value)} rows={3} placeholder="Add a quick note about the current visit…"
+              disabled={!visitLog}
               style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#FAFAFA', outline:'none', resize:'none', boxSizing:'border-box' as const, lineHeight:1.6, marginBottom:8 }} />
-            <Btn label="Save Note" variant="secondary" small full onClick={()=>{ if(note) onToast('Note saved'); }} />
+            <Btn label="Save Note" variant="secondary" small full disabled={!visitLog} onClick={()=>{ onSaveNotes(note).catch(()=>{}) }} />
+            {!visitLog&&<p style={{ fontSize:11, color:C.muted, marginTop:6 }}>Start the visit to add notes.</p>}
           </Card>
 
-          {/* Medication */}
+          {/* Medication — real, bound to visit_logs.medication_log */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Medication" action="Tracker" onAction={()=>onNav('medication')} />
-            {[{n:'Paracetamol 500mg',qty:'2 tabs',done:true},{n:'Amoxicillin 250mg',qty:'1 pack',done:false}].map((m,i)=>(
-              <div key={i} style={{ display:'flex', gap:10, alignItems:'center', padding:'9px 0', borderBottom:i===0?`1px solid ${C.border}`:'none' }}>
-                <div style={{ width:8, height:8, borderRadius:'50%', background:m.done?C.success:C.warning, flexShrink:0 }} />
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{m.n}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{m.qty}</p>
+            {meds.length===0
+              ? <p style={{ fontSize:12, color:C.muted }}>No medication recorded for this visit.</p>
+              : meds.map((m,i)=>(
+                <div key={m.id} style={{ display:'flex', gap:10, alignItems:'center', padding:'9px 0', borderBottom:i<meds.length-1?`1px solid ${C.border}`:'none' }}>
+                  <div style={{ width:8, height:8, borderRadius:'50%', background:m.collected?C.success:C.warning, flexShrink:0 }} />
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{m.name}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>{m.quantity}</p>
+                  </div>
+                  <Bdg label={m.collected?'Collected':m.purchased?'Purchased':'Pending'} color={m.collected?C.success:m.purchased?C.primary:C.warning} />
                 </div>
-                <Bdg label={m.done?'Purchased':'Pending'} color={m.done?C.success:C.warning} />
-              </div>
-            ))}
+              ))}
           </Card>
 
           {/* Live updates */}
@@ -335,15 +443,82 @@ function LiveDashboard({ status, onNav, onToast, startMs }:{ status:LiveStatus; 
 }
 
 // ─── Start Visit ──────────────────────────────────────────────────────────────
-function StartVisit({ onToast, onStatusChange }:{ onToast:(m:string)=>void; onStatusChange:(s:LiveStatus)=>void }) {
+function requestGpsPosition(): Promise<{lat:number;lng:number}> {
+  return new Promise((resolve, reject) => {
+    if(!('geolocation' in navigator)) { reject(new Error('Geolocation is not supported on this device')); return }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      err => reject(new Error(err.message || 'Could not get your location')),
+      { enableHighAccuracy:true, timeout:10000 }
+    )
+  })
+}
+
+function StartVisit({ booking, visitLog, profile, starting, onStart, onNav }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null; profile:{ full_name:string|null }|null
+  starting:boolean; onStart:(gps:{lat:number;lng:number}|null)=>Promise<void>
+  onNav:(s:SubView)=>void
+}) {
   const [step, setStep] = useState<'arriving'|'arrived'|'confirm'>('arriving')
-  const [gpsOk, setGpsOk] = useState(false)
+  const [gpsCoords, setGpsCoords] = useState<{lat:number;lng:number}|null>(null)
+  const [gpsChecking, setGpsChecking] = useState(false)
+  const [gpsError, setGpsError] = useState<string|null>(null)
+  const [skipGps, setSkipGps] = useState(false)
   const now = useLiveClock()
+
+  if(!booking) {
+    return (
+      <div style={{ maxWidth:600, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:8 }}>No Active Booking</p>
+          <p style={{ fontSize:13, color:C.muted }}>There is no assigned or confirmed booking to start right now.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  if(visitLog?.status === 'completed') {
+    return (
+      <div style={{ maxWidth:600, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:8 }}>Visit Already Completed</p>
+          <p style={{ fontSize:13, color:C.muted, marginBottom:16 }}>This visit was completed at {formatClockTime(visitLog.check_out_time)}.</p>
+          <Btn label="Go to Dashboard" onClick={()=>onNav('dashboard')} />
+        </Card>
+      </div>
+    )
+  }
+
+  if(visitLog) {
+    return (
+      <div style={{ maxWidth:600, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:8 }}>Visit Already Started</p>
+          <p style={{ fontSize:13, color:C.muted, marginBottom:16 }}>This visit was checked in at {formatClockTime(visitLog.check_in_time)}.</p>
+          <Btn label="Go to Dashboard" onClick={()=>onNav('dashboard')} />
+        </Card>
+      </div>
+    )
+  }
+
+  async function handleVerifyGps() {
+    setGpsChecking(true); setGpsError(null)
+    try {
+      const coords = await requestGpsPosition()
+      setGpsCoords(coords)
+    } catch(e:any) {
+      setGpsError(e?.message || 'Could not get your location')
+    } finally {
+      setGpsChecking(false)
+    }
+  }
+
+  const gpsResolved = gpsCoords!=null || skipGps
 
   return (
     <div style={{ maxWidth:600, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Start Visit</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Hospital Appointment Assistance · Nimal Perera · National Hospital, Colombo</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{serviceLabel(booking.care_request)} · {beneficiaryLabel(booking.beneficiary)} · {locationLabel(booking)}</p>
 
       {/* Steps */}
       <div style={{ display:'flex', gap:0, marginBottom:24 }}>
@@ -369,12 +544,11 @@ function StartVisit({ onToast, onStatusChange }:{ onToast:(m:string)=>void; onSt
             <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
               <span style={{ fontSize:20 }}>🗺️</span>
               <div>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:3 }}>Navigate to National Hospital, Colombo</p>
-                <p style={{ fontSize:12, color:C.muted }}>Regent Street, Colombo 10 · ETA 22 min</p>
+                <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:3 }}>Navigate to {locationLabel(booking)}</p>
               </div>
             </div>
           </div>
-          <Btn label="I've Arrived" variant="primary" full onClick={()=>{ setStep('arrived'); onStatusChange('arrived') }} />
+          <Btn label="I've Arrived" variant="primary" full onClick={()=>setStep('arrived')} />
         </Card>
       )}
 
@@ -384,30 +558,37 @@ function StartVisit({ onToast, onStatusChange }:{ onToast:(m:string)=>void; onSt
           <div style={{ display:'flex', gap:10, alignItems:'center', padding:'14px', borderRadius:12, background:`${C.success}08`, border:`1.5px solid ${C.success}20`, marginBottom:16 }}>
             <span style={{ color:C.success, display:'flex', transform:'scale(1.3)' }}>{I.check}</span>
             <div>
-              <p style={{ fontSize:12, fontWeight:700, color:C.type }}>Arrival Time</p>
+              <p style={{ fontSize:12, fontWeight:700, color:C.type }}>Current Time</p>
               <p style={{ fontSize:18, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</p>
             </div>
           </div>
-          {/* GPS */}
-          <div style={{ padding:'14px', borderRadius:12, background:gpsOk?`${C.success}08`:C.bg, border:`1.5px solid ${gpsOk?C.success+'30':C.border}`, marginBottom:16 }}>
+          {/* GPS — real navigator.geolocation, no faked success */}
+          <div style={{ padding:'14px', borderRadius:12, background:gpsCoords?`${C.success}08`:gpsError?`${C.error}08`:C.bg, border:`1.5px solid ${gpsCoords?C.success+'30':gpsError?C.error+'30':C.border}`, marginBottom:16 }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
               <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                <span style={{ color:gpsOk?C.success:C.muted, display:'flex' }}>{I.pin}</span>
+                <span style={{ color:gpsCoords?C.success:gpsError?C.error:C.muted, display:'flex' }}>{I.pin}</span>
                 <div>
                   <p style={{ fontSize:12, fontWeight:700, color:C.type }}>GPS Check-in</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{gpsOk?'Location confirmed':'Verifying location…'}</p>
+                  <p style={{ fontSize:11, color:C.muted }}>
+                    {gpsChecking?'Requesting location…':gpsCoords?'Location captured':gpsError?gpsError:'Not yet requested'}
+                  </p>
                 </div>
               </div>
-              <Btn label={gpsOk?'Verified ✓':'Verify'} variant={gpsOk?'success':'secondary'} small onClick={()=>setGpsOk(true)} />
+              <Btn label={gpsCoords?'Captured ✓':gpsChecking?'Requesting…':'Get Location'} variant={gpsCoords?'success':'secondary'} small disabled={gpsChecking} onClick={handleVerifyGps} />
             </div>
+            {gpsError&&!skipGps&&(
+              <div style={{ marginTop:10 }}>
+                <Btn label="Continue Without GPS" variant="ghost" small onClick={()=>setSkipGps(true)} />
+              </div>
+            )}
           </div>
-          {/* Selfie placeholder */}
+          {/* Selfie placeholder — no camera/upload pipeline exists yet */}
           <div style={{ padding:'16px', borderRadius:12, background:C.bg, border:`2px dashed ${C.border}`, marginBottom:16, textAlign:'center' as const }}>
             <p style={{ fontSize:24, marginBottom:8 }}>📷</p>
             <p style={{ fontSize:12, fontWeight:700, color:C.type, marginBottom:4 }}>Selfie Verification</p>
             <p style={{ fontSize:11, color:C.muted }}>Camera feature coming soon</p>
           </div>
-          <Btn label="Confirm & Proceed" variant="primary" full disabled={!gpsOk} onClick={()=>setStep('confirm')} />
+          <Btn label="Confirm & Proceed" variant="primary" full disabled={!gpsResolved} onClick={()=>setStep('confirm')} />
         </Card>
       )}
 
@@ -416,16 +597,23 @@ function StartVisit({ onToast, onStatusChange }:{ onToast:(m:string)=>void; onSt
           <div style={{ textAlign:'center' as const, paddingBottom:16, borderBottom:`1px solid ${C.border}`, marginBottom:16 }}>
             <div style={{ fontSize:52, marginBottom:10 }}>🏥</div>
             <h3 style={{ fontSize:18, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Ready to Begin</h3>
-            <p style={{ fontSize:13, color:C.muted }}>You are checked in at National Hospital, Colombo</p>
+            <p style={{ fontSize:13, color:C.muted }}>You are about to check in at {locationLabel(booking)}</p>
           </div>
-          {[{l:'Agent',v:'Kasun Perera'},{l:'Beneficiary',v:'Nimal Perera (74)'},{l:'Client',v:'Mohamed Ihsan'},{l:'Start Time',v:now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})},{l:'Service',v:'Hospital Appointment Assistance'},{l:'Duration',v:'3 hours'}].map((r,i)=>(
+          {[
+            {l:'Agent',v:profile?.full_name || 'Not provided'},
+            {l:'Beneficiary',v:beneficiaryLabel(booking.beneficiary)},
+            {l:'Client',v:clientLabel(booking.client)},
+            {l:'Start Time',v:now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})},
+            {l:'Service',v:serviceLabel(booking.care_request)},
+            {l:'Duration',v:booking.duration || 'Not specified'},
+          ].map((r,i)=>(
             <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0', borderBottom:`1px solid ${C.border}` }}>
               <p style={{ fontSize:12, color:C.muted }}>{r.l}</p>
               <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{r.v}</p>
             </div>
           ))}
           <div style={{ marginTop:16 }}>
-            <Btn label="Start Visit Now" variant="success" full onClick={()=>{ onToast('Visit started! Mohamed Ihsan has been notified.'); onStatusChange('checkedIn') }} />
+            <Btn label={starting?'Starting…':'Start Visit Now'} variant="success" full disabled={starting} onClick={()=>onStart(gpsCoords)} />
           </div>
         </Card>
       )}
@@ -434,24 +622,59 @@ function StartVisit({ onToast, onStatusChange }:{ onToast:(m:string)=>void; onSt
 }
 
 // ─── Live Status ──────────────────────────────────────────────────────────────
-function LiveStatusView({ current, onToast }:{ current:LiveStatus; onToast:(m:string)=>void }) {
+// "completed" is intentionally excluded from this grid — it is only ever
+// set by the End Visit flow (handleEndVisit), which validates checklist
+// completion and also sets check_out_time and booking.status together.
+// Exposing it here would let it be set without any of that, so a completed
+// visit's status can no longer be changed from this screen at all.
+function LiveStatusView({ visitLog, onSetStatus }:{
+  visitLog:VisitLog|null; onSetStatus:(s:VisitStatus)=>Promise<void>
+}) {
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Live Status</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>Start the visit before setting a live status.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  const current = visitLog.status
+  const isCompleted = current === 'completed'
+  const selectableStatuses = (Object.keys(STATUS) as VisitStatus[]).filter(k => k !== 'completed')
+
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Live Status</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Current status is visible to Mohamed Ihsan in real time.</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>
+        {isCompleted ? 'This visit is completed — its status can no longer be changed here.' : 'Sets visit_logs.status for this visit.'}
+      </p>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12 }} className="lce-3col">
-        {(Object.entries(STATUS) as [LiveStatus, typeof STATUS[LiveStatus]][]).map(([k,s])=>(
-          <Card key={k} hover style={{ padding:20, border:`2px solid ${current===k?s.color+'50':C.border}`, background:current===k?`${s.color}08`:C.surface }}
-            onClick={()=>onToast(`Status updated to ${s.label}`)}>
-            <div style={{ display:'flex', gap:3, marginBottom:8, alignItems:'center' }}>
-              <div style={{ width:10, height:10, borderRadius:'50%', background:s.color, flexShrink:0, boxShadow:current===k?`0 0 0 4px ${s.color}25`:undefined }} />
-              {current===k&&<Bdg label="Active" color={s.color} />}
-            </div>
-            <p style={{ fontSize:20, marginBottom:6 }}>{s.emoji}</p>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.label}</p>
-          </Card>
-        ))}
+        {selectableStatuses.map(k=>{
+          const s = STATUS[k]
+          return (
+            <Card key={k} hover={!isCompleted} style={{ padding:20, border:`2px solid ${current===k?s.color+'50':C.border}`, background:current===k?`${s.color}08`:C.surface, opacity:isCompleted?0.5:1, cursor:isCompleted?'not-allowed':'pointer' }}
+              onClick={()=>{ if(isCompleted) return; onSetStatus(k).catch(()=>{}) }}>
+              <div style={{ display:'flex', gap:3, marginBottom:8, alignItems:'center' }}>
+                <div style={{ width:10, height:10, borderRadius:'50%', background:s.color, flexShrink:0, boxShadow:current===k?`0 0 0 4px ${s.color}25`:undefined }} />
+                {current===k&&<Bdg label="Active" color={s.color} />}
+              </div>
+              <p style={{ fontSize:20, marginBottom:6 }}>{s.emoji}</p>
+              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.label}</p>
+            </Card>
+          )
+        })}
       </div>
+      {isCompleted&&(
+        <Card style={{ padding:16, marginTop:14, background:`${C.success}08`, border:`1.5px solid ${C.success}20` }}>
+          <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+            <div style={{ width:10, height:10, borderRadius:'50%', background:STATUS.completed.color }} />
+            <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{STATUS.completed.emoji} {STATUS.completed.label}</p>
+          </div>
+        </Card>
+      )}
     </div>
   )
 }
@@ -562,118 +785,223 @@ function LiveTimeline() {
 }
 
 // ─── Task Checklist ───────────────────────────────────────────────────────────
-function TaskChecklist({ onToast }:{ onToast:(m:string)=>void }) {
-  const taskDefs = [
-    { l:'Meet Beneficiary',       sub:'Greet Nimal Perera and confirm care plan',       cat:'prep'  },
-    { l:'Confirm Identity',       sub:'Verify ID with Mohamed Ihsan',                   cat:'prep'  },
-    { l:'Review Care Plan',       sub:'Review all instructions from client',             cat:'prep'  },
-    { l:'Purchase Medication',    sub:'Paracetamol 500mg, Amoxicillin 250mg',           cat:'task'  },
-    { l:'Visit Hospital',         sub:'Navigate to National Hospital OPD, Room 4B',     cat:'task'  },
-    { l:'Meet Doctor',            sub:'Dr. K. Silva — Appointment at 10:45 AM',         cat:'task'  },
-    { l:'Collect Reports',        sub:'Lab results from reception counter',              cat:'task'  },
-    { l:'Assist Mobility',        sub:'Help Nimal navigate hospital corridors',          cat:'task'  },
-    { l:'Return Home',            sub:"Safely return Nimal to his home",               cat:'travel'},
-    { l:'Review Medication',      sub:'Confirm medication dosage and storage',          cat:'close' },
-    { l:'Complete Documentation', sub:'Upload reports and complete visit notes',         cat:'close' },
-  ]
-  const [checked, setChecked] = useState<Set<number>>(new Set([0,1,2]))
-  const [notes, setNotes] = useState<Record<number,string>>({})
-  const [expand, setExpand] = useState<number|null>(null)
-  const pct = Math.round((checked.size/taskDefs.length)*100)
-  const catColor: Record<string,string> = { prep:C.info, task:C.primary, travel:C.accent, close:C.success }
-  const catLabel: Record<string,string> = { prep:'Preparation', task:'Task', travel:'Travel', close:'Closeout' }
+// Loads visit_logs.checklist if it already has entries; otherwise seeds a
+// draft checklist from the real care_request.tasks array. Never falls back
+// to a fabricated task list.
+function initChecklist(booking:ActiveBooking|null, visitLog:VisitLog|null):ChecklistItem[] {
+  if(visitLog?.checklist && visitLog.checklist.length) return visitLog.checklist
+  const tasks = booking?.care_request?.tasks
+  if(tasks && tasks.length) return tasks.map((label,i)=>({ id:String(i), label, done:false }))
+  return []
+}
+
+function TaskChecklist({ booking, visitLog, onSaveChecklist }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null
+  onSaveChecklist:(checklist:ChecklistItem[], successMessage?:string)=>Promise<void>
+}) {
+  const [checklist, setChecklist] = useState<ChecklistItem[]>(()=>initChecklist(booking, visitLog))
+  useEffect(()=>{ setChecklist(initChecklist(booking, visitLog)) }, [visitLog?.id])
+  const [expand, setExpand] = useState<string|null>(null)
+  const [noteDraft, setNoteDraft] = useState<Record<string,string>>({})
+
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Task Checklist</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted, marginBottom:checklist.length?16:0 }}>Start the visit to begin tracking tasks.</p>
+          {checklist.length>0&&(
+            <div style={{ display:'flex', flexDirection:'column', gap:6, textAlign:'left' as const }}>
+              {checklist.map(t=><p key={t.id} style={{ fontSize:12, color:C.type }}>• {t.label}</p>)}
+            </div>
+          )}
+        </Card>
+      </div>
+    )
+  }
+
+  const done = checklist.filter(t=>t.done).length
+  const pct = checklist.length ? Math.round((done/checklist.length)*100) : 0
+
+  async function persist(next:ChecklistItem[], successMessage?:string) {
+    const prev = checklist
+    setChecklist(next)
+    try {
+      await onSaveChecklist(next, successMessage)
+    } catch(e) {
+      setChecklist(prev)
+      throw e
+    }
+  }
+
+  async function toggle(id:string) {
+    const next = checklist.map(t=>t.id===id?{...t, done:!t.done}:t)
+    const item = next.find(t=>t.id===id)
+    try {
+      await persist(next, item?.done ? `✓ ${item.label}` : undefined)
+    } catch {
+      // error toast already shown by root; local state already reverted by persist
+    }
+  }
+
+  async function saveNote(id:string) {
+    const next = checklist.map(t=>t.id===id?{...t, note:noteDraft[id]??t.note}:t)
+    try {
+      await persist(next, 'Note saved')
+      setExpand(null)
+    } catch {
+      // keep the note editor open so the agent can retry
+    }
+  }
 
   return (
     <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Task Checklist</h2>
-      <Card style={{ padding:22, marginBottom:18, background:`linear-gradient(135deg,${C.primary}05,${C.surface})`, border:`1.5px solid ${C.primary}20` }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-          <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Overall Progress</p>
-          <p style={{ fontSize:24, fontWeight:900, color:pct===100?C.success:C.primary, fontFamily:'Manrope,sans-serif' }}>{pct}%</p>
-        </div>
-        <div style={{ height:10, borderRadius:99, background:`${C.primary}10`, overflow:'hidden', marginBottom:6 }}>
-          <div style={{ width:`${pct}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
-        </div>
-        <p style={{ fontSize:11, color:C.muted }}>{checked.size} of {taskDefs.length} tasks complete</p>
-      </Card>
-      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {taskDefs.map((t,i)=>{
-          const done = checked.has(i)
-          const cur = !done && i===taskDefs.findIndex((_,j)=>!checked.has(j))
-          const col = catColor[t.cat]
-          return (
-            <Card key={i} style={{ border:`1.5px solid ${done?col+'30':cur?C.primary+'30':C.border}`, background:done?`${col}05`:cur?`${C.primary}04`:C.surface }}>
-              <div style={{ padding:'14px 16px' }}>
-                <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-                  <button onClick={()=>setChecked(s=>{ const n=new Set(s); done?n.delete(i):n.add(i); if(!done) onToast(`✓ ${t.l}`); return n })}
-                    style={{ width:28, height:28, borderRadius:9, background:done?col:`${col}15`, border:`2px solid ${done?col:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, cursor:'pointer', transition:'all 0.15s', marginTop:2 }}>
-                    {done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.8)'}}>{I.check}</span>}
-                  </button>
-                  <div style={{ flex:1 }}>
-                    <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:3, flexWrap:'wrap' as const }}>
-                      <p style={{ fontSize:13, fontWeight:done?500:700, color:done?C.muted:C.type, textDecoration:done?'line-through':undefined }}>{t.l}</p>
-                      {cur&&<Bdg label="Current" color={C.primary} dot />}
-                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 7px', borderRadius:99, background:`${col}10`, color:col }}>{catLabel[t.cat]}</span>
+      {checklist.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No tasks have been defined for this care request yet.</p>
+        </Card>
+      ) : (
+        <>
+          <Card style={{ padding:22, marginBottom:18, background:`linear-gradient(135deg,${C.primary}05,${C.surface})`, border:`1.5px solid ${C.primary}20` }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Overall Progress</p>
+              <p style={{ fontSize:24, fontWeight:900, color:pct===100?C.success:C.primary, fontFamily:'Manrope,sans-serif' }}>{pct}%</p>
+            </div>
+            <div style={{ height:10, borderRadius:99, background:`${C.primary}10`, overflow:'hidden', marginBottom:6 }}>
+              <div style={{ width:`${pct}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
+            </div>
+            <p style={{ fontSize:11, color:C.muted }}>{done} of {checklist.length} tasks complete</p>
+          </Card>
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {checklist.map(t=>(
+              <Card key={t.id} style={{ border:`1.5px solid ${t.done?C.success+'30':C.border}`, background:t.done?`${C.success}05`:C.surface }}>
+                <div style={{ padding:'14px 16px' }}>
+                  <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                    <button onClick={()=>toggle(t.id)}
+                      style={{ width:28, height:28, borderRadius:9, background:t.done?C.success:`${C.success}15`, border:`2px solid ${t.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, cursor:'pointer', transition:'all 0.15s', marginTop:2 }}>
+                      {t.done&&<span style={{display:'flex',color:'#fff',transform:'scale(0.8)'}}>{I.check}</span>}
+                    </button>
+                    <div style={{ flex:1 }}>
+                      <p style={{ fontSize:13, fontWeight:t.done?500:700, color:t.done?C.muted:C.type, textDecoration:t.done?'line-through':undefined }}>{t.label}</p>
+                      {t.note&&<p style={{ fontSize:11, color:C.muted, marginTop:3 }}>{t.note}</p>}
                     </div>
-                    <p style={{ fontSize:11, color:C.muted }}>{t.sub}</p>
+                    <button onClick={()=>{ setExpand(expand===t.id?null:t.id); setNoteDraft(d=>({...d,[t.id]:t.note??''})) }} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex', padding:4 }}>
+                      <span style={{ display:'flex', transform:expand===t.id?'rotate(90deg)':'none', transition:'transform 0.15s' }}>{I.chevR}</span>
+                    </button>
                   </div>
-                  <button onClick={()=>setExpand(expand===i?null:i)} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex', padding:4 }}>
-                    <span style={{ display:'flex', transform:expand===i?'rotate(90deg)':'none', transition:'transform 0.15s' }}>{I.chevR}</span>
-                  </button>
+                  {expand===t.id&&(
+                    <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
+                      <textarea value={noteDraft[t.id]??''} onChange={e=>setNoteDraft(d=>({...d,[t.id]:e.target.value}))} rows={2}
+                        placeholder="Add notes for this task…"
+                        style={{ width:'100%', padding:'8px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:C.bg, outline:'none', resize:'none', boxSizing:'border-box' as const }} />
+                      <div style={{ display:'flex', gap:6, marginTop:8 }}>
+                        <Btn label="Save" variant="secondary" small onClick={()=>saveNote(t.id)} />
+                      </div>
+                    </div>
+                  )}
                 </div>
-                {expand===i&&(
-                  <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
-                    <textarea value={notes[i]||''} onChange={e=>setNotes(s=>({...s,[i]:e.target.value}))} rows={2}
-                      placeholder="Add notes for this task…"
-                      style={{ width:'100%', padding:'8px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:C.bg, outline:'none', resize:'none', boxSizing:'border-box' as const }} />
-                    <div style={{ display:'flex', gap:6, marginTop:8 }}>
-                      <Btn label="Add Photo" variant="ghost" small icon={I.camera} onClick={()=>onToast('Camera opening…')} />
-                      <Btn label="Save" variant="secondary" small onClick={()=>{ onToast('Note saved'); setExpand(null) }} />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </Card>
-          )
-        })}
-      </div>
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
 // ─── Medication Tracker ───────────────────────────────────────────────────────
-function MedicationTracker({ onToast }:{ onToast:(m:string)=>void }) {
-  const meds = [
-    { name:'Paracetamol 500mg', qty:'2 tablets', pharmacy:'Osusala Pharmacy, Col 03', purchased:true,  collected:true,  receipt:true,  prescription:true  },
-    { name:'Amoxicillin 250mg', qty:'1 pack',    pharmacy:'Osusala Pharmacy, Col 03', purchased:false, collected:false, receipt:false, prescription:true  },
-    { name:'Metformin 500mg',   qty:'1 strip',   pharmacy:'Nawaloka Pharmacy, Col 02',purchased:false, collected:false, receipt:false, prescription:false },
-  ]
+// Backed entirely by visit_logs.medication_log — there is no source of real
+// prescribed-medication names, so every entry is one the agent adds here.
+function MedicationTracker({ visitLog, onSaveMedication }:{
+  visitLog:VisitLog|null; onSaveMedication:(meds:MedicationItem[], successMessage?:string)=>Promise<void>
+}) {
+  const [meds, setMeds] = useState<MedicationItem[]>(visitLog?.medication_log ?? [])
+  useEffect(()=>{ setMeds(visitLog?.medication_log ?? []) }, [visitLog?.id])
+  const [name, setName] = useState('')
+  const [quantity, setQuantity] = useState('')
+  const [pharmacy, setPharmacy] = useState('')
+
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Medication Tracker</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>Start the visit to begin tracking medication.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  async function persist(next:MedicationItem[], successMessage?:string) {
+    const prev = meds
+    setMeds(next)
+    try {
+      await onSaveMedication(next, successMessage)
+    } catch(e) {
+      setMeds(prev)
+      throw e
+    }
+  }
+
+  async function addMedication() {
+    if(!name.trim()) return
+    const item:MedicationItem = { id:`${Date.now()}`, name:name.trim(), quantity:quantity.trim(), pharmacy:pharmacy.trim(), purchased:false, collected:false }
+    try {
+      await persist([...meds, item], 'Medication added')
+      setName(''); setQuantity(''); setPharmacy('')
+    } catch {
+      // error toast already shown by root; local state already reverted by persist
+    }
+  }
+
+  async function toggleFlag(id:string, field:'purchased'|'collected') {
+    try {
+      await persist(meds.map(m=>m.id===id?{ ...m, [field]:!m[field] }:m))
+    } catch {
+      // error toast already shown by root; local state already reverted by persist
+    }
+  }
+
   return (
     <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Medication Tracker</h2>
-      {meds.map((m,i)=>(
-        <Card key={i} style={{ padding:22, marginBottom:14 }}>
+
+      <Card style={{ padding:22, marginBottom:18 }}>
+        <SectionTitle title="Add Medication" />
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10, marginBottom:12 }} className="lce-3col">
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Medication name"
+            style={{ padding:'10px 12px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#FAFAFA', outline:'none' }} />
+          <input value={quantity} onChange={e=>setQuantity(e.target.value)} placeholder="Quantity"
+            style={{ padding:'10px 12px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#FAFAFA', outline:'none' }} />
+          <input value={pharmacy} onChange={e=>setPharmacy(e.target.value)} placeholder="Pharmacy"
+            style={{ padding:'10px 12px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#FAFAFA', outline:'none' }} />
+        </div>
+        <Btn label="Add Medication" onClick={addMedication} disabled={!name.trim()} />
+      </Card>
+
+      {meds.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No medication recorded for this visit.</p>
+        </Card>
+      ) : meds.map(m=>(
+        <Card key={m.id} style={{ padding:22, marginBottom:14 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
             <div>
               <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{m.name}</p>
-              <p style={{ fontSize:12, color:C.muted }}>{m.qty} · {m.pharmacy}</p>
+              <p style={{ fontSize:12, color:C.muted }}>{[m.quantity, m.pharmacy].filter(Boolean).join(' · ') || 'No further details'}</p>
             </div>
             <Bdg label={m.collected?'Collected':m.purchased?'Purchased':'Pending'} color={m.collected?C.success:m.purchased?C.primary:C.warning} dot />
           </div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:14 }}>
-            {[{l:'Purchased',done:m.purchased},{l:'Collected',done:m.collected},{l:'Prescription',done:m.prescription},{l:'Receipt',done:m.receipt}].map((s,j)=>(
-              <div key={j} style={{ textAlign:'center' as const, padding:'10px 8px', borderRadius:10, background:s.done?`${C.success}08`:C.bg, border:`1px solid ${s.done?C.success+'30':C.border}` }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:8 }}>
+            {[{l:'Purchased',done:m.purchased,field:'purchased' as const},{l:'Collected',done:m.collected,field:'collected' as const}].map(s=>(
+              <button key={s.l} onClick={()=>toggleFlag(m.id, s.field)} style={{ textAlign:'center' as const, padding:'10px 8px', borderRadius:10, background:s.done?`${C.success}08`:C.bg, border:`1px solid ${s.done?C.success+'30':C.border}`, cursor:'pointer' }}>
                 <div style={{ width:22, height:22, borderRadius:8, background:s.done?C.success:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 6px' }}>
                   {s.done?<span style={{display:'flex',color:'#fff',transform:'scale(0.7)'}}>{I.check}</span>:<div style={{width:6,height:6,borderRadius:2,background:C.border}}/>}
                 </div>
                 <p style={{ fontSize:10, fontWeight:700, color:s.done?C.success:C.muted }}>{s.l}</p>
-              </div>
+              </button>
             ))}
-          </div>
-          <div style={{ display:'flex', gap:8 }}>
-            {!m.purchased&&<Btn label="Mark Purchased" variant="primary" small onClick={()=>onToast(`${m.name} marked as purchased`)} />}
-            {m.purchased&&!m.collected&&<Btn label="Mark Collected" variant="success" small onClick={()=>onToast(`${m.name} marked as collected`)} />}
-            <Btn label="Upload Receipt" variant="ghost" small icon={I.upload} onClick={()=>onToast('Opening camera…')} />
           </div>
         </Card>
       ))}
@@ -682,47 +1010,75 @@ function MedicationTracker({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Vital Signs ──────────────────────────────────────────────────────────────
-function VitalSigns({ onToast }:{ onToast:(m:string)=>void }) {
-  const [reading, setReading] = useState({ bp:'120/80', hr:'78', temp:'36.8', o2:'97', sugar:'', weight:'' })
-  const vitals = [
-    {k:'bp',    l:'Blood Pressure',   unit:'mmHg',  val:reading.bp,    icon:'❤️', normal:'120/80',    col:C.success},
-    {k:'hr',    l:'Heart Rate',       unit:'bpm',   val:reading.hr,    icon:'💓', normal:'60-100',    col:C.success},
-    {k:'temp',  l:'Temperature',      unit:'°C',    val:reading.temp,  icon:'🌡️', normal:'36.1-37.2', col:C.success},
-    {k:'o2',    l:'Oxygen Saturation',unit:'%',     val:reading.o2,    icon:'💨', normal:'95-100',    col:C.success},
-    {k:'sugar', l:'Blood Sugar',      unit:'mg/dL', val:reading.sugar, icon:'🩸', normal:'70-140',    col:C.muted,  placeholder:true},
-    {k:'weight',l:'Weight',           unit:'kg',    val:reading.weight,icon:'⚖️', normal:'—',         col:C.muted,  placeholder:true},
-  ]
+// Backed by visit_logs.vitals — no demo defaults; every field starts empty
+// unless it was actually saved.
+const VITAL_FIELDS: { k:keyof VisitVitals; l:string; unit:string; icon:string; normal:string }[] = [
+  {k:'bp',     l:'Blood Pressure',    unit:'mmHg',  icon:'❤️', normal:'120/80'},
+  {k:'hr',     l:'Heart Rate',        unit:'bpm',   icon:'💓', normal:'60-100'},
+  {k:'temp',   l:'Temperature',       unit:'°C',    icon:'🌡️', normal:'36.1-37.2'},
+  {k:'o2',     l:'Oxygen Saturation', unit:'%',     icon:'💨', normal:'95-100'},
+  {k:'sugar',  l:'Blood Sugar',       unit:'mg/dL', icon:'🩸', normal:'70-140'},
+  {k:'weight', l:'Weight',            unit:'kg',    icon:'⚖️', normal:'—'},
+]
+
+function VitalSigns({ booking, visitLog, onSaveVitals }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null; onSaveVitals:(vitals:VisitVitals)=>Promise<void>
+}) {
+  const [reading, setReading] = useState<VisitVitals>(visitLog?.vitals ?? {})
+  useEffect(()=>{ setReading(visitLog?.vitals ?? {}) }, [visitLog?.id])
+
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Vital Signs</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>Start the visit to begin recording vitals.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  async function save() {
+    try {
+      await onSaveVitals({ ...reading, recorded_at:new Date().toISOString() })
+    } catch {
+      // error toast already shown by root
+    }
+  }
+
   return (
     <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>Vital Signs</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Manual entry · Nimal Perera · Recorded today at 9:42 AM</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Manual entry · {beneficiaryLabel(booking?.beneficiary ?? null)} · {visitLog.vitals?.recorded_at ? `Recorded ${formatClockTime(visitLog.vitals.recorded_at)}` : 'Not yet recorded'}</p>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14, marginBottom:18 }} className="lce-3col">
-        {vitals.map((v,i)=>(
-          <Card key={i} style={{ padding:18, background:(v as any).placeholder?C.bg:C.surface, border:(v as any).placeholder?`1.5px dashed ${C.border}`:undefined }}>
-            <p style={{ fontSize:22, marginBottom:8 }}>{v.icon}</p>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>{v.l}</p>
-            {v.val
-              ? <p style={{ fontSize:22, fontWeight:900, color:v.col, fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:3 }}>{v.val}<span style={{ fontSize:11, fontWeight:500, color:C.muted }}> {v.unit}</span></p>
-              : <p style={{ fontSize:13, color:C.muted, fontStyle:'italic' as const, marginBottom:3 }}>{(v as any).placeholder?'Coming soon':'Not recorded'}</p>
-            }
-            <p style={{ fontSize:10, color:C.muted }}>Normal: {v.normal}</p>
-          </Card>
-        ))}
+        {VITAL_FIELDS.map(v=>{
+          const val = reading[v.k]
+          return (
+            <Card key={v.k} style={{ padding:18 }}>
+              <p style={{ fontSize:22, marginBottom:8 }}>{v.icon}</p>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>{v.l}</p>
+              {val
+                ? <p style={{ fontSize:22, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif', lineHeight:1, marginBottom:3 }}>{val}<span style={{ fontSize:11, fontWeight:500, color:C.muted }}> {v.unit}</span></p>
+                : <p style={{ fontSize:13, color:C.muted, fontStyle:'italic' as const, marginBottom:3 }}>Not recorded</p>
+              }
+              <p style={{ fontSize:10, color:C.muted }}>Normal: {v.normal}</p>
+            </Card>
+          )
+        })}
       </div>
       <Card style={{ padding:22 }}>
         <SectionTitle title="Manual Entry" />
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="lce-2col">
-          {[{k:'bp',l:'Blood Pressure (mmHg)'},{k:'hr',l:'Heart Rate (bpm)'},{k:'temp',l:'Temperature (°C)'},{k:'o2',l:'O₂ Saturation (%)'}].map(f=>(
+          {VITAL_FIELDS.map(f=>(
             <div key={f.k}>
-              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:5 }}>{f.l}</p>
-              <input value={(reading as any)[f.k]} onChange={e=>setReading(r=>({...r,[f.k]:e.target.value}))}
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:5 }}>{f.l} ({f.unit})</p>
+              <input value={reading[f.k]??''} onChange={e=>setReading(r=>({...r,[f.k]:e.target.value}))}
                 style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', boxSizing:'border-box' as const }} />
             </div>
           ))}
         </div>
         <div style={{ marginTop:14, display:'flex', gap:8 }}>
-          <Btn label="Save Readings" onClick={()=>onToast('Vital signs recorded')} />
-          <p style={{ fontSize:11, color:C.muted, alignSelf:'center' }}>{new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</p>
+          <Btn label="Save Readings" onClick={save} />
         </div>
       </Card>
     </div>
@@ -730,66 +1086,43 @@ function VitalSigns({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Care Notes ───────────────────────────────────────────────────────────────
-function CareNotes({ onToast }:{ onToast:(m:string)=>void }) {
-  const [note, setNote] = useState('')
-  const [recording, setRecording] = useState(false)
-  const [pinned, setPinned] = useState<string[]>(['Nimal moves slowly — always wait. Blood sugar biscuits in bag.','Dr. Silva room 4B, bring prescription file.'])
+// visit_logs.notes is a single text column — one editable field, no
+// fabricated note history. Template buttons just insert canned text locally.
+function CareNotes({ visitLog, onSaveNotes }:{
+  visitLog:VisitLog|null; onSaveNotes:(notes:string)=>Promise<void>
+}) {
+  const [note, setNote] = useState(visitLog?.notes ?? '')
+  useEffect(()=>{ setNote(visitLog?.notes ?? '') }, [visitLog?.id])
   const templates = ['Beneficiary is comfortable and cooperative.','Medication administered as prescribed.','Patient showed mild discomfort, will monitor.','All tasks completed without incident.']
+
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Care Notes</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>Start the visit to begin adding notes.</p>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div style={{ maxWidth:720, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Care Notes</h2>
-      {/* Pinned */}
-      <Card style={{ padding:22, marginBottom:18, border:`1.5px solid ${C.warning}30`, background:`${C.warning}04` }}>
-        <SectionTitle title="📌 Pinned Notes" />
-        {pinned.map((p,i)=>(
-          <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'10px 12px', borderRadius:10, background:`${C.warning}08`, marginBottom:8 }}>
-            <p style={{ flex:1, fontSize:12, color:C.type, lineHeight:1.6 }}>{p}</p>
-            <button onClick={()=>setPinned(s=>s.filter((_,j)=>j!==i))} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex', flexShrink:0 }}><span style={{display:'flex'}}>{I.close}</span></button>
-          </div>
-        ))}
-      </Card>
-      {/* Editor */}
-      <Card style={{ padding:22, marginBottom:18 }}>
-        <SectionTitle title="Add Note" />
+      <Card style={{ padding:22 }}>
+        <SectionTitle title="Visit Notes" />
         <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const, marginBottom:12 }}>
           {templates.map((t,i)=>(
-            <button key={i} onClick={()=>setNote(t)}
+            <button key={i} onClick={()=>setNote(n=>n?`${n}\n${t}`:t)}
               style={{ padding:'5px 11px', borderRadius:99, border:`1px solid ${C.border}`, background:C.bg, cursor:'pointer', fontSize:11, fontWeight:600, color:C.sub, fontFamily:'Manrope,sans-serif', textAlign:'left' as const }}>
               {t.substring(0,30)}…
             </button>
           ))}
         </div>
-        <textarea value={note} onChange={e=>setNote(e.target.value)} rows={4}
+        <textarea value={note} onChange={e=>setNote(e.target.value)} rows={10}
           placeholder="Write care notes here. Be specific — families read these updates."
           style={{ width:'100%', padding:'12px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.7, marginBottom:12 }} />
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <Btn label="Save Note" onClick={()=>{ if(note){ onToast('Note saved'); setNote('') } }} />
-          <Btn label="Pin Note" variant="secondary" small onClick={()=>{ if(note){ setPinned(s=>[...s,note]); setNote(''); onToast('Note pinned') } }} />
-          <button onClick={()=>{ setRecording(v=>!v); onToast(recording?'Recording stopped':'Recording…') }}
-            style={{ display:'flex', gap:5, alignItems:'center', padding:'8px 14px', borderRadius:10, border:`1.5px solid ${recording?C.error:C.border}`, background:recording?`${C.error}08`:C.bg, cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:recording?C.error:C.sub }}>
-            <span style={{ display:'flex', color:recording?C.error:C.muted, animation:recording?'pulse-dot 1s ease-in-out infinite':undefined }}>{I.mic}</span>
-            {recording?'Stop':'Voice'}
-          </button>
-          <Btn label="Important" variant="ghost" small icon={I.alert} onClick={()=>onToast('Flagged as important')} />
-        </div>
-      </Card>
-      {/* Previous */}
-      <Card style={{ padding:22 }}>
-        <SectionTitle title="Previous Notes" />
-        {[
-          {t:'Nimal ate biscuits at 9:40 AM. Blood sugar stable.',time:'9:40 AM',flag:false},
-          {t:'Confirmed OPD appointment — Room 4B with Dr. Silva.',time:'9:38 AM',flag:true},
-          {t:'Arrived at National Hospital. GPS check-in done.',time:'9:32 AM',flag:false},
-        ].map((n,i)=>(
-          <div key={i} style={{ padding:'12px 0', borderBottom:i<2?`1px solid ${C.border}`:'none' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-              <p style={{ fontSize:11, color:C.muted }}>{n.time}</p>
-              {n.flag&&<Bdg label="Important" color={C.error} />}
-            </div>
-            <p style={{ fontSize:12, color:C.type, lineHeight:1.6 }}>{n.t}</p>
-          </div>
-        ))}
+        <Btn label="Save Note" onClick={()=>{ onSaveNotes(note).catch(()=>{}) }} />
       </Card>
     </div>
   )
@@ -875,7 +1208,12 @@ function DocumentCenter({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Incident Reporting ───────────────────────────────────────────────────────
-function IncidentReporting({ onToast }:{ onToast:(m:string)=>void }) {
+// visit_logs.incident_report is a single text column — type and severity
+// have no columns of their own, so the selection is folded into the saved
+// text as a "[SEVERITY - TYPE]" prefix rather than invented as new columns.
+function IncidentReporting({ booking, visitLog, onSubmitIncident }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null; onSubmitIncident:(text:string)=>Promise<void>
+}) {
   const [selected, setSelected] = useState<string|null>(null)
   const [severity, setSeverity] = useState<'low'|'medium'|'high'>('medium')
   const [desc, setDesc] = useState('')
@@ -888,10 +1226,39 @@ function IncidentReporting({ onToast }:{ onToast:(m:string)=>void }) {
     {k:'traffic',   l:'Traffic Delay',             e:'🚗', col:C.info},
     {k:'other',     l:'Other',                     e:'📝', col:C.sub},
   ]
+
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Incident Report</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>Start the visit to file an incident report.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  async function submit() {
+    if(!selected || !desc) return
+    const typeLabel = types.find(t=>t.k===selected)?.l ?? 'Other'
+    try {
+      await onSubmitIncident(`[${severity.toUpperCase()} - ${typeLabel.toUpperCase()}] ${desc}`)
+      setSelected(null); setDesc('')
+    } catch {
+      // error toast already shown by root; keep the form open so the agent can retry
+    }
+  }
+
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Incident Report</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>Reports are sent to Mohamed Ihsan and ReadyPal Support.</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:22 }}>This report is saved with the visit record.</p>
+      {visitLog.incident_report&&(
+        <Card style={{ padding:18, marginBottom:18, background:`${C.warning}06`, border:`1.5px solid ${C.warning}20` }}>
+          <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:6 }}>Current report on file</p>
+          <p style={{ fontSize:12, color:C.type, lineHeight:1.6 }}>{visitLog.incident_report}</p>
+        </Card>
+      )}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }} className="lce-4col">
         {types.map(t=>(
           <button key={t.k} onClick={()=>setSelected(t.k)}
@@ -925,16 +1292,11 @@ function IncidentReporting({ onToast }:{ onToast:(m:string)=>void }) {
               placeholder="Describe what happened, when, and what action you took…"
               style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none', resize:'vertical' as const, boxSizing:'border-box' as const, lineHeight:1.6 }} />
           </div>
-          <div style={{ display:'flex', gap:8 }}>
-            <Btn label="Add Photo" variant="secondary" small icon={I.camera} onClick={()=>onToast('Camera opening…')} />
-            <div style={{ fontSize:11, color:C.muted, display:'flex', alignItems:'center', gap:4 }}>
-              <span style={{display:'flex'}}>{I.pin}</span>
-              National Hospital, Colombo · {new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}
-            </div>
+          <div style={{ fontSize:11, color:C.muted, display:'flex', alignItems:'center', gap:4, marginBottom:16 }}>
+            <span style={{display:'flex'}}>{I.pin}</span>
+            {locationLabel(booking)} · {new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}
           </div>
-          <div style={{ marginTop:16 }}>
-            <Btn label="Submit Report" variant="danger" full disabled={!desc} onClick={()=>{ onToast('Incident report submitted'); setSelected(null); setDesc('') }} />
-          </div>
+          <Btn label="Submit Report" variant="danger" full disabled={!desc} onClick={submit} />
         </Card>
       )}
     </div>
@@ -1131,43 +1493,104 @@ function DigitalSignature({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── End Visit ────────────────────────────────────────────────────────────────
-function EndVisit({ onToast, onNav }:{ onToast:(m:string)=>void; onNav:(s:SubView)=>void }) {
-  const [checks, setChecks] = useState<Set<number>>(new Set())
-  const steps = ['All checklist tasks marked complete','Final photos uploaded','Hospital reports uploaded','Visit notes completed','Duration confirmed — 2h 58m','GPS checkout confirmed']
-  const ready = checks.size === steps.length
+// Readiness is driven by the real visit_logs.checklist state — no fabricated
+// six-step meta-checklist and no fake GPS-checkout confirmation. The
+// care_request.tasks count is the source of truth: a visit with real tasks
+// is only ready once the checklist has exactly that many items and every
+// one of them is done — a checklist that is empty, short, or partially
+// loaded is never treated as "nothing to do".
+function EndVisit({ booking, visitLog, ending, onEndVisit }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null; ending:boolean; onEndVisit:()=>void
+}) {
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>End Visit</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>The visit has not been started yet.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  if(visitLog.status === 'completed') {
+    return (
+      <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>End Visit</h2>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>This visit was already completed at {formatClockTime(visitLog.check_out_time)}.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  const expectedTasks = booking?.care_request?.tasks?.length ?? 0
+  const checklist = visitLog.checklist ?? []
+  const done = checklist.filter(t=>t.done).length
+  const hasRealTasks = expectedTasks > 0
+  const ready = hasRealTasks
+    ? (checklist.length === expectedTasks && done === expectedTasks)
+    : true
+
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>End Visit</h2>
       <Card style={{ padding:22, marginBottom:18 }}>
-        <SectionTitle title="Pre-Completion Checklist" />
-        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-          {steps.map((s,i)=>(
-            <button key={i} onClick={()=>setChecks(c=>{ const n=new Set(c); c.has(i)?n.delete(i):n.add(i); return n })}
-              style={{ display:'flex', gap:12, alignItems:'center', padding:'12px 14px', borderRadius:12, border:`1.5px solid ${checks.has(i)?C.success+'40':C.border}`, background:checks.has(i)?`${C.success}06`:C.bg, cursor:'pointer', textAlign:'left' as const, transition:'all 0.15s' }}>
-              <div style={{ width:24, height:24, borderRadius:8, background:checks.has(i)?C.success:`${C.success}15`, border:`2px solid ${checks.has(i)?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                {checks.has(i)&&<span style={{display:'flex',color:'#fff',transform:'scale(0.7)'}}>{I.check}</span>}
-              </div>
-              <p style={{ fontSize:12, fontWeight:checks.has(i)?500:600, color:checks.has(i)?C.muted:C.type, textDecoration:checks.has(i)?'line-through':undefined }}>{s}</p>
-            </button>
-          ))}
-        </div>
-        <div style={{ marginTop:18, padding:'12px', borderRadius:12, background:C.bg, display:'flex', gap:12, alignItems:'center', marginBottom:16 }}>
-          <span style={{ fontSize:22 }}>📍</span>
+        <SectionTitle title="Checklist Status" />
+        {!hasRealTasks ? (
+          <p style={{ fontSize:13, color:C.muted, marginBottom:16 }}>No tasks were defined for this visit — nothing to complete.</p>
+        ) : checklist.length!==expectedTasks ? (
+          <p style={{ fontSize:13, color:C.warning, marginBottom:16 }}>
+            Task Checklist has {checklist.length} of {expectedTasks} care request tasks loaded. Open Task Checklist to load and complete all {expectedTasks} tasks before finishing.
+          </p>
+        ) : (
+          <>
+            <div style={{ height:10, borderRadius:99, background:`${C.primary}10`, overflow:'hidden', marginBottom:8 }}>
+              <div style={{ width:`${Math.round((done/expectedTasks)*100)}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99 }} />
+            </div>
+            <p style={{ fontSize:12, color:C.muted, marginBottom:16 }}>{done} of {expectedTasks} tasks complete</p>
+          </>
+        )}
+        <div style={{ padding:'12px', borderRadius:12, background:C.bg, display:'flex', gap:12, alignItems:'center', marginBottom:16 }}>
+          <span style={{ fontSize:22 }}>🕐</span>
           <div>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted }}>GPS Checkout</p>
-            <p style={{ fontSize:12, color:C.type }}>National Hospital, Colombo — 12:30 PM</p>
+            <p style={{ fontSize:11, fontWeight:700, color:C.muted }}>Checked In</p>
+            <p style={{ fontSize:12, color:C.type }}>{formatClockTime(visitLog.check_in_time)}</p>
           </div>
-          <Bdg label="Confirmed" color={C.success} />
         </div>
-        <Btn label={ready?'Finish Visit':'Complete All Steps First'} variant={ready?'success':'secondary'} full disabled={!ready}
-          onClick={()=>{ onToast('Visit completed! Summary generating…'); setTimeout(()=>onNav('summary'),800) }} />
+        <Btn label={ending?'Finishing…':ready?'Finish Visit':'Complete All Tasks First'} variant={ready?'success':'secondary'} full disabled={!ready||ending}
+          onClick={onEndVisit} />
       </Card>
     </div>
   )
 }
 
 // ─── Visit Summary ────────────────────────────────────────────────────────────
-function VisitSummary({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+// Built entirely from real booking/visit_logs fields. No distance, no fee
+// percentage, no invented net-pay math — payment_amount is shown as-is or
+// not at all.
+function VisitSummary({ booking, visitLog, profile, onNav, onToast }:{
+  booking:ActiveBooking|null; visitLog:VisitLog|null; profile:{ full_name:string|null }|null
+  onNav:(s:SubView)=>void; onToast:(m:string)=>void
+}) {
+  if(!visitLog) {
+    return (
+      <div style={{ maxWidth:740, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:8 }}>No Visit Data Available</p>
+          <p style={{ fontSize:13, color:C.muted }}>This visit hasn't been started or completed yet.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  const checklist = visitLog.checklist ?? []
+  const done = checklist.filter(t=>t.done).length
+  const meds = visitLog.medication_log ?? []
+  const mediaCount = visitLog.media_urls?.length ?? 0
+  const durationStr = formatDurationBetween(visitLog.check_in_time, visitLog.check_out_time)
+  const pctComplete = checklist.length ? `${Math.round((done/checklist.length)*100)}%` : '—'
+
   return (
     <div style={{ maxWidth:740, margin:'0 auto', padding:'24px 28px 60px' }}>
       {/* Hero */}
@@ -1175,9 +1598,14 @@ function VisitSummary({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:s
         <div style={{ textAlign:'center' as const }}>
           <div style={{ fontSize:60, marginBottom:10 }}>🎉</div>
           <h2 style={{ fontSize:26, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Visit Completed!</h2>
-          <p style={{ fontSize:14, color:'rgba(255,255,255,0.8)', marginBottom:20 }}>Hospital Appointment Assistance · Nimal Perera</p>
+          <p style={{ fontSize:14, color:'rgba(255,255,255,0.8)', marginBottom:20 }}>{serviceLabel(booking?.care_request ?? null)} · {beneficiaryLabel(booking?.beneficiary ?? null)}</p>
           <div style={{ display:'flex', justifyContent:'center', gap:28 }}>
-            {[{v:'2h 58m',l:'Duration'},{v:'4',l:'Tasks'},{v:'3',l:'Docs'},{v:'100%',l:'Complete'}].map((s,i)=>(
+            {[
+              {v:durationStr, l:'Duration'},
+              {v: checklist.length ? `${done}/${checklist.length}` : '—', l:'Tasks'},
+              {v: String(mediaCount), l:'Media'},
+              {v:pctComplete, l:'Complete'},
+            ].map((s,i)=>(
               <div key={i} style={{ textAlign:'center' as const }}>
                 <p style={{ fontSize:24, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{s.v}</p>
                 <p style={{ fontSize:10, color:'rgba(255,255,255,0.65)' }}>{s.l}</p>
@@ -1191,7 +1619,16 @@ function VisitSummary({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:s
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           <Card style={{ padding:22 }}>
             <SectionTitle title="Service Summary" />
-            {[{l:'Agent',v:'Kasun Perera'},{l:'Beneficiary',v:'Nimal Perera, 74'},{l:'Client',v:'Mohamed Ihsan'},{l:'Service',v:'Hospital Appointment Assistance'},{l:'Location',v:'National Hospital, Colombo'},{l:'Started',v:'9:32 AM'},{l:'Completed',v:'12:30 PM'},{l:'Duration',v:'2h 58m'},{l:'Distance',v:'8.4 km round trip'}].map((r,i)=>(
+            {[
+              {l:'Agent',v:profile?.full_name || 'Not provided'},
+              {l:'Beneficiary',v:beneficiaryLabel(booking?.beneficiary ?? null)},
+              {l:'Client',v:clientLabel(booking?.client ?? null)},
+              {l:'Service',v:serviceLabel(booking?.care_request ?? null)},
+              {l:'Location',v:locationLabel(booking)},
+              {l:'Started',v:formatClockTime(visitLog.check_in_time)},
+              {l:'Completed',v:formatClockTime(visitLog.check_out_time)},
+              {l:'Duration',v:durationStr},
+            ].map((r,i)=>(
               <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0', borderBottom:`1px solid ${C.border}` }}>
                 <p style={{ fontSize:12, color:C.muted }}>{r.l}</p>
                 <p style={{ fontSize:12, fontWeight:600, color:C.type }}>{r.v}</p>
@@ -1200,40 +1637,50 @@ function VisitSummary({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:s
           </Card>
           <Card style={{ padding:22 }}>
             <SectionTitle title="Medication Summary" />
-            {[{n:'Paracetamol 500mg',v:'Purchased & Delivered'},{n:'Amoxicillin 250mg',v:'Purchased & Delivered'}].map((m,i)=>(
-              <div key={i} style={{ display:'flex', gap:8, alignItems:'center', padding:'8px 0', borderBottom:i===0?`1px solid ${C.border}`:'none' }}>
-                <div style={{ width:7, height:7, borderRadius:'50%', background:C.success }} />
-                <p style={{ flex:1, fontSize:12, color:C.type }}>{m.n}</p>
-                <Bdg label={m.v} color={C.success} />
-              </div>
-            ))}
+            {meds.length===0
+              ? <p style={{ fontSize:12, color:C.muted }}>No medication recorded.</p>
+              : meds.map((m,i)=>(
+                <div key={m.id} style={{ display:'flex', gap:8, alignItems:'center', padding:'8px 0', borderBottom:i<meds.length-1?`1px solid ${C.border}`:'none' }}>
+                  <div style={{ width:7, height:7, borderRadius:'50%', background:m.collected?C.success:C.warning }} />
+                  <p style={{ flex:1, fontSize:12, color:C.type }}>{m.name}</p>
+                  <Bdg label={m.collected?'Collected':m.purchased?'Purchased':'Pending'} color={m.collected?C.success:m.purchased?C.primary:C.warning} />
+                </div>
+              ))}
           </Card>
         </div>
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           <Card style={{ padding:22 }}>
             <SectionTitle title="Tasks Completed" />
-            {['Met & confirmed beneficiary identity','Purchased all medications','Hospital OPD visit completed','Met Dr. K. Silva — consultation done','Lab reports collected','Nimal returned home safely'].map((t,i)=>(
-              <div key={i} style={{ display:'flex', gap:8, padding:'6px 0' }}>
-                <span style={{ display:'flex', color:C.success, flexShrink:0, marginTop:1 }}>{I.check}</span>
-                <p style={{ fontSize:12, color:C.type }}>{t}</p>
-              </div>
-            ))}
+            {checklist.filter(t=>t.done).length===0
+              ? <p style={{ fontSize:12, color:C.muted }}>No completed tasks recorded.</p>
+              : checklist.filter(t=>t.done).map(t=>(
+                <div key={t.id} style={{ display:'flex', gap:8, padding:'6px 0' }}>
+                  <span style={{ display:'flex', color:C.success, flexShrink:0, marginTop:1 }}>{I.check}</span>
+                  <p style={{ fontSize:12, color:C.type }}>{t.label}</p>
+                </div>
+              ))}
           </Card>
           <Card style={{ padding:22 }}>
             <SectionTitle title="Payment" />
-            {[{l:'Service Fee',v:'LKR 6,000'},{l:'Platform Fee (8%)',v:'LKR 480'},{l:'Your Net Pay',v:'LKR 5,520',bold:true}].map((r,i)=>(
-              <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:i<2?`1px solid ${C.border}`:'none' }}>
-                <p style={{ fontSize:12, color:C.sub }}>{r.l}</p>
-                <p style={{ fontSize:12, fontWeight:(r as any).bold?900:600, color:(r as any).bold?C.success:C.type, fontFamily:(r as any).bold?'Manrope,sans-serif':undefined }}>{r.v}</p>
-              </div>
-            ))}
+            {booking?.payment_amount!=null
+              ? (
+                <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0' }}>
+                  <p style={{ fontSize:12, color:C.sub }}>Payment Amount</p>
+                  <p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{booking.payment_amount}</p>
+                </div>
+              )
+              : <p style={{ fontSize:12, color:C.muted }}>Not available.</p>}
           </Card>
           <Card style={{ padding:22, background:`${C.warning}06`, border:`1.5px solid ${C.warning}20` }}>
             <SectionTitle title="Incident Summary" />
-            <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-              <span style={{ fontSize:22 }}>✅</span>
-              <p style={{ fontSize:12, color:C.type }}>No incidents reported during this visit.</p>
-            </div>
+            {visitLog.incident_report
+              ? <p style={{ fontSize:12, color:C.type, lineHeight:1.6 }}>{visitLog.incident_report}</p>
+              : (
+                <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+                  <span style={{ fontSize:22 }}>✅</span>
+                  <p style={{ fontSize:12, color:C.type }}>No incidents reported during this visit.</p>
+                </div>
+              )}
           </Card>
         </div>
       </div>
@@ -1273,39 +1720,56 @@ function Followup({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
-function Notifications() {
-  const items = [
-    {e:'🔔', t:'Task Reminder',        b:'Purchase medication now — you are near Osusala Pharmacy.',          col:C.warning, read:false},
-    {e:'💊', t:'Medication Reminder',  b:"Administer Paracetamol at 2:00 PM — don't forget Nimal's afternoon dose.", col:C.accent, read:false},
-    {e:'💬', t:'Client Message',       b:'Mohamed Ihsan: "How is Nimal doing? Did you get the reports?"',   col:C.primary, read:false},
-    {e:'🚨', t:'Emergency Alert',      b:'ReadyPal Support: Emergency protocol activated in your area.',    col:C.error,   read:true },
-    {e:'📡', t:'GPS Signal Lost',      b:"Your GPS signal was lost for 2 minutes. Please reconnect.",       col:C.muted,   read:true },
-    {e:'🔋', t:'Battery Low',          b:'Your phone battery is at 18%. Please charge soon.',               col:C.warning, read:true },
-  ]
+// Backed by getMyNotifications() / markNotificationRead() / markAllNotificationsRead().
+type NotificationRow = { id:string; type:string|null; title:string|null; body:string|null; read:boolean; action_url:string|null; created_at:string }
+
+function Notifications({ notifications, onMarkRead, onMarkAllRead }:{
+  notifications:NotificationRow[]|null; onMarkRead:(id:string)=>void; onMarkAllRead:()=>void
+}) {
+  if(notifications===null) {
+    return (
+      <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <p style={{ fontSize:13, color:C.muted }}>Loading notifications…</p>
+      </div>
+    )
+  }
+
+  const unread = notifications.filter(n=>!n.read).length
+
   return (
     <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
-        <Bdg label={`${items.filter(n=>!n.read).length} new`} color={C.primary} dot />
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+          {unread>0&&<Bdg label={`${unread} new`} color={C.primary} dot />}
+          {unread>0&&<Btn label="Mark All Read" variant="ghost" small onClick={onMarkAllRead} />}
+        </div>
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-        {items.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.col}04`, border:`1px solid ${n.read?C.border:n.col+'25'}` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:42, height:42, borderRadius:12, background:`${n.col}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>{n.e}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.t}</p>
-                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.col }}/>}
+      {notifications.length===0 ? (
+        <Card style={{ padding:40, textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No notifications yet.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+          {notifications.map(n=>(
+            <Card key={n.id} hover onClick={()=>{ if(!n.read) onMarkRead(n.id) }} style={{ padding:18, background:n.read?C.surface:`${C.primary}04`, border:`1px solid ${n.read?C.border:C.primary+'25'}` }}>
+              <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                <div style={{ width:42, height:42, borderRadius:12, background:`${C.primary}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>🔔</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3, gap:8 }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title || 'Notification'}</p>
+                      {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:C.primary }}/>}
+                    </div>
+                    <p style={{ fontSize:10, color:C.muted, whiteSpace:'nowrap' as const }}>{formatClockTime(n.created_at)}</p>
                   </div>
+                  <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body || ''}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.b}</p>
               </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1316,7 +1780,7 @@ function StatusBadgesView() {
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Status Badges</h2>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-        {(Object.entries(STATUS) as [string, typeof STATUS[string]][]).map(([k,s])=>(
+        {(Object.entries(STATUS) as [VisitStatus, typeof STATUS[VisitStatus]][]).map(([k,s])=>(
           <Card key={k} style={{ padding:20 }}>
             <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
               <div style={{ width:10, height:10, borderRadius:'50%', background:s.color }} />
@@ -1413,12 +1877,179 @@ function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareExecution() {
   const [sub, setSub] = useState<SubView>('dashboard')
-  const [liveStatus, setLiveStatus] = useState<LiveStatus>('checkedIn')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const startMs = useRef(Date.now() - 78 * 60 * 1000).current
+
+  const [profile, setProfile] = useState<{ full_name:string|null }|null>(null)
+  const [booking, setBooking] = useState<ActiveBooking|null>(null)
+  const [visitLog, setVisitLog] = useState<VisitLog|null>(null)
+  const [notifications, setNotifications] = useState<NotificationRow[]|null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string|null>(null)
+  const [starting, setStarting] = useState(false)
+  const [ending, setEnding] = useState(false)
 
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
+
+  // Loads real profile/booking/visit-log/notification data once on mount.
+  // Nothing here is mocked — a failure surfaces as loadError rather than
+  // falling back to demo content.
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const [profileData, bookingData, notifData] = await Promise.all([
+          getMyProfile(),
+          getMyActiveBooking(),
+          getMyNotifications(),
+        ])
+        if(cancelled) return
+        setProfile(profileData)
+        setBooking(bookingData as ActiveBooking|null)
+        setNotifications(notifData as NotificationRow[])
+        if(bookingData) {
+          const v = await getVisitLog(bookingData.id)
+          if(!cancelled) setVisitLog(v as VisitLog|null)
+        }
+      } catch(e:any) {
+        if(!cancelled) setLoadError(e?.message || 'Failed to load visit data')
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  async function handleStartVisit(gps:{lat:number;lng:number}|null) {
+    if(!booking) return
+    setStarting(true)
+    try {
+      const v = await apiStartVisit(booking.id, gps)
+      setVisitLog(v as VisitLog)
+      setBooking(b => b ? { ...b, status:'in_progress' } : b)
+      showToast('Visit started')
+      setSub('dashboard')
+    } catch(e:any) {
+      showToast(e?.message || 'Could not start visit')
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  // The six handlers below own ALL success/error feedback for their
+  // operation: on success they update visitLog state and show a toast; on
+  // failure they show an error toast and rethrow, so a component that
+  // awaits the call never runs its own "it worked" logic after a failed
+  // write.
+  async function handleSetStatus(status:VisitStatus) {
+    if(!visitLog) return
+    try {
+      const v = await updateVisitStatus(visitLog.id, status)
+      setVisitLog(v as VisitLog)
+      showToast(`Status updated to ${STATUS[status].label}`)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update status')
+      throw e
+    }
+  }
+
+  async function handleSaveChecklist(checklist:ChecklistItem[], successMessage?:string) {
+    if(!visitLog) return
+    try {
+      const v = await updateVisitChecklist(visitLog.id, checklist)
+      setVisitLog(v as VisitLog)
+      if(successMessage) showToast(successMessage)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not save checklist')
+      throw e
+    }
+  }
+
+  async function handleSaveMedication(meds:MedicationItem[], successMessage?:string) {
+    if(!visitLog) return
+    try {
+      const v = await updateVisitMedication(visitLog.id, meds)
+      setVisitLog(v as VisitLog)
+      if(successMessage) showToast(successMessage)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not save medication')
+      throw e
+    }
+  }
+
+  async function handleSaveVitals(vitals:VisitVitals) {
+    if(!visitLog) return
+    try {
+      const v = await updateVisitVitals(visitLog.id, vitals)
+      setVisitLog(v as VisitLog)
+      showToast('Vital signs recorded')
+    } catch(e:any) {
+      showToast(e?.message || 'Could not save vitals')
+      throw e
+    }
+  }
+
+  async function handleSaveNotes(notes:string) {
+    if(!visitLog) return
+    try {
+      const v = await updateVisitNotes(visitLog.id, notes)
+      setVisitLog(v as VisitLog)
+      showToast('Note saved')
+    } catch(e:any) {
+      showToast(e?.message || 'Could not save notes')
+      throw e
+    }
+  }
+
+  async function handleSubmitIncident(text:string) {
+    if(!visitLog) return
+    try {
+      const v = await submitIncidentReport(visitLog.id, text)
+      setVisitLog(v as VisitLog)
+      showToast('Incident report submitted')
+    } catch(e:any) {
+      showToast(e?.message || 'Could not submit report')
+      throw e
+    }
+  }
+
+  async function handleEndVisit() {
+    if(!visitLog || visitLog.status === 'completed') return
+    setEnding(true)
+    try {
+      const v = await apiEndVisit(visitLog.id, booking?.id)
+      setVisitLog(v as VisitLog)
+      setBooking(b => b ? { ...b, status:'completed' } : b)
+      showToast('Visit completed')
+      setSub('summary')
+    } catch(e:any) {
+      showToast(e?.message || 'Could not end visit')
+    } finally {
+      setEnding(false)
+    }
+  }
+
+  async function handleMarkRead(id:string) {
+    try {
+      await markNotificationRead(id)
+      setNotifications(ns => ns ? ns.map(n=>n.id===id?{ ...n, read:true }:n) : ns)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update notification')
+    }
+  }
+
+  async function handleMarkAllRead() {
+    try {
+      await markAllNotificationsRead()
+      setNotifications(ns => ns ? ns.map(n=>({ ...n, read:true })) : ns)
+    } catch(e:any) {
+      showToast(e?.message || 'Could not update notifications')
+    }
+  }
+
+  const currentStatus:LiveStatus = visitLog?.status ?? 'not_started'
+  const unreadCount = notifications?.filter(n=>!n.read).length ?? 0
   const groups = [...new Set(NAV_ITEMS.map(n=>n.group))]
   const msg: Record<string,string> = {
     dashboard:'Live Dashboard', startVisit:'Start Visit', liveStatus:'Live Status', gps:'GPS Tracking',
@@ -1431,26 +2062,32 @@ export default function CareExecution() {
   }
 
   const renderContent = () => {
+    if(loading) {
+      return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.muted }}>Loading your visit…</p></div>
+    }
+    if(loadError) {
+      return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.error }}>{loadError}</p></div>
+    }
     switch(sub) {
-      case 'dashboard':     return <LiveDashboard status={liveStatus} onNav={setSub} onToast={showToast} startMs={startMs} />
-      case 'startVisit':    return <StartVisit onToast={showToast} onStatusChange={s=>{setLiveStatus(s);showToast(`Status → ${STATUS[s].label}`)}} />
-      case 'liveStatus':    return <LiveStatusView current={liveStatus} onToast={showToast} />
+      case 'dashboard':     return <LiveDashboard booking={booking} visitLog={visitLog} onNav={setSub} onToast={showToast} onSaveNotes={handleSaveNotes} />
+      case 'startVisit':    return <StartVisit booking={booking} visitLog={visitLog} profile={profile} starting={starting} onStart={handleStartVisit} onNav={setSub} />
+      case 'liveStatus':    return <LiveStatusView visitLog={visitLog} onSetStatus={handleSetStatus} />
       case 'gps':           return <GPSTracking onToast={showToast} />
       case 'timeline':      return <LiveTimeline />
-      case 'checklist':     return <TaskChecklist onToast={showToast} />
-      case 'medication':    return <MedicationTracker onToast={showToast} />
-      case 'vitals':        return <VitalSigns onToast={showToast} />
-      case 'notes':         return <CareNotes onToast={showToast} />
+      case 'checklist':     return <TaskChecklist booking={booking} visitLog={visitLog} onSaveChecklist={handleSaveChecklist} />
+      case 'medication':    return <MedicationTracker visitLog={visitLog} onSaveMedication={handleSaveMedication} />
+      case 'vitals':        return <VitalSigns booking={booking} visitLog={visitLog} onSaveVitals={handleSaveVitals} />
+      case 'notes':         return <CareNotes visitLog={visitLog} onSaveNotes={handleSaveNotes} />
       case 'media':         return <PhotoMedia onToast={showToast} />
       case 'documents':     return <DocumentCenter onToast={showToast} />
-      case 'incident':      return <IncidentReporting onToast={showToast} />
+      case 'incident':      return <IncidentReporting booking={booking} visitLog={visitLog} onSubmitIncident={handleSubmitIncident} />
       case 'emergency':     return <EmergencyMode onToast={showToast} />
       case 'clientUpdates': return <ClientLiveUpdates onToast={showToast} />
       case 'signature':     return <DigitalSignature onToast={showToast} />
-      case 'endVisit':      return <EndVisit onToast={showToast} onNav={setSub} />
-      case 'summary':       return <VisitSummary onNav={setSub} onToast={showToast} />
+      case 'endVisit':      return <EndVisit booking={booking} visitLog={visitLog} ending={ending} onEndVisit={handleEndVisit} />
+      case 'summary':       return <VisitSummary booking={booking} visitLog={visitLog} profile={profile} onNav={setSub} onToast={showToast} />
       case 'followup':      return <Followup onToast={showToast} />
-      case 'notifications': return <Notifications />
+      case 'notifications': return <Notifications notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
       case 'statusBadges':  return <StatusBadgesView />
       case 'empty':         return <EmptyStates />
       case 'loading':       return <LoadingStates />
@@ -1466,12 +2103,12 @@ export default function CareExecution() {
       <div className="lce-sidebar" style={{ width:224, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-            <Avatar initials="KP" size={36} />
+            <Avatar initials={initials(profile?.full_name)} size={36} />
             <div>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
+              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{profile?.full_name || 'Agent'}</p>
               <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                <div style={{ width:7, height:7, borderRadius:'50%', background:STATUS[liveStatus].color, animation:'pulse-dot 2s ease-in-out infinite' }} />
-                <p style={{ fontSize:11, fontWeight:700, color:STATUS[liveStatus].color }}>{STATUS[liveStatus].emoji} {STATUS[liveStatus].label}</p>
+                <div style={{ width:7, height:7, borderRadius:'50%', background:STATUS[currentStatus].color, animation:'pulse-dot 2s ease-in-out infinite' }} />
+                <p style={{ fontSize:11, fontWeight:700, color:STATUS[currentStatus].color }}>{STATUS[currentStatus].emoji} {STATUS[currentStatus].label}</p>
               </div>
             </div>
           </div>
@@ -1486,7 +2123,7 @@ export default function CareExecution() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${n.k==='emergency'?C.error:C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?(n.k==='emergency'?C.error:C.primary):C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${n.k==='emergency'?C.error:C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?(n.k==='emergency'?C.error:C.primary):C.muted }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='notifications'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>3</div>}
+                  {n.k==='notifications'&&unreadCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{unreadCount}</div>}
                   {n.k==='emergency'&&<div style={{ marginLeft:'auto', width:8, height:8, borderRadius:'50%', background:C.error, animation:'pulse-dot 1.5s ease-in-out infinite' }}/>}
                 </button>
               )

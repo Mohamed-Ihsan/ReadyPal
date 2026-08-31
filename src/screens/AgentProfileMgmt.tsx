@@ -1,4 +1,10 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import {
+  getCurrentUser,
+  getMyProfile,
+  getMyAgentDetails,
+  saveMyAgentDetails,
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -111,19 +117,48 @@ function ProgressRing({ pct, color=C.primary, size=70, label='', sub='' }:{ pct:
 }
 
 // ─── Avatar ───────────────────────────────────────────────────────────────────
-function KasunAvatar({ size=52, ring=false }:{ size?:number; ring?:boolean }) {
+// Renders the authenticated agent's real avatar_url when set, falling back
+// to initials derived from their real name (see getInitials below) — never
+// a fabricated photo or placeholder initials.
+function AgentAvatar({ initials='', avatarUrl, size=52, ring=false }:{ initials?:string; avatarUrl?:string|null; size?:number; ring?:boolean }) {
   return (
     <div style={{ position:'relative' as const, display:'inline-flex', flexShrink:0 }}>
-      <div style={{ width:size, height:size, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:size*0.32, border:ring?`3px solid ${C.primary}`:undefined, boxShadow:ring?`0 0 0 3px white, 0 4px 16px ${C.primary}40`:undefined }}>
-        KP
+      <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:avatarUrl?C.bg:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:size*0.32, border:ring?`3px solid ${C.primary}`:undefined, boxShadow:ring?`0 0 0 3px white, 0 4px 16px ${C.primary}40`:undefined }}>
+        {avatarUrl ? <img src={avatarUrl} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' as const }} /> : initials}
       </div>
       {ring&&<div style={{ position:'absolute', bottom:2, right:2, width:12, height:12, borderRadius:'50%', background:C.success, border:'2px solid white' }}/>}
     </div>
   )
 }
 
+// ─── Real profile display helpers ──────────────────────────────────────────
+// Small helpers over the authenticated agent's real `profiles`/`agent_details`
+// rows (fetched once at the AgentProfileMgmt root — see below). Kept
+// file-local rather than shared, matching the existing per-screen helper
+// convention already used elsewhere (e.g. formatRelativeTime is duplicated
+// in CareAgentDashboard.tsx/BrowseJobs.tsx rather than centralised).
+function getDisplayName(profile:any): string {
+  return profile?.preferred_name?.trim() || profile?.full_name?.trim() || 'Care Agent'
+}
+
+function getInitials(profile:any): string {
+  const name = (profile?.preferred_name?.trim() || profile?.full_name?.trim() || '')
+  if(!name) return ''
+  const parts = name.split(/\s+/).filter(Boolean)
+  if(parts.length===1) return parts[0].slice(0,2).toUpperCase()
+  return (parts[0][0] + parts[parts.length-1][0]).toUpperCase()
+}
+
+function formatLocation(profile:any): string {
+  const parts = [profile?.city, profile?.district, profile?.province]
+    .map((p:any) => (p ?? '').toString().trim())
+    .filter(Boolean)
+  const unique = parts.filter((p,i) => parts.indexOf(p)===i)
+  return unique.length>0 ? unique.slice(0,2).join(', ') : 'Location not set'
+}
+
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'home'|'publicProfile'|'experience'|'services'|'skills'|'certifications'|'portfolio'|'reviews'|'availability'|'serviceAreas'|'pricing'|'languages'|'achievements'|'insights'|'learning'|'settings'|'preview'|'documents'|'notifications'|'statusBadges'|'empty'|'loading'|'error'|'success'
+type SubView = 'home'|'publicProfile'|'experience'|'services'|'skills'|'certifications'|'portfolio'|'reviews'|'availability'|'serviceAreas'|'pricing'|'languages'|'achievements'|'insights'|'learning'|'settings'|'preview'|'documents'|'notifications'
 
 const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'home',          l:'Profile Home',        icon:I.user,      group:'Profile'      },
@@ -132,28 +167,26 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'services',      l:'Services Offered',     icon:I.shield,    group:'Profile'      },
   { k:'skills',        l:'Skills',               icon:I.bolt,      group:'Profile'      },
   { k:'certifications',l:'Certifications',       icon:I.shield,    group:'Profile'      },
+  { k:'documents',     l:'Document Center',      icon:I.shield,    group:'Profile'      },
   { k:'portfolio',     l:'Portfolio',            icon:I.camera,    group:'Profile'      },
   { k:'reviews',       l:'Reviews',              icon:I.star,      group:'Profile'      },
   { k:'availability',  l:'Availability',         icon:I.calendar,  group:'Management'   },
   { k:'serviceAreas',  l:'Service Areas',        icon:I.map,       group:'Management'   },
   { k:'pricing',       l:'Pricing',              icon:I.trending,  group:'Management'   },
   { k:'languages',     l:'Languages',            icon:I.lang,      group:'Management'   },
+  { k:'notifications', l:'Notifications',        icon:I.bolt,      group:'Management'   },
   { k:'achievements',  l:'Achievements',         icon:I.award,     group:'Growth'       },
   { k:'insights',      l:'Career Insights',      icon:I.trending,  group:'Growth'       },
   { k:'learning',      l:'Learning & Dev',       icon:I.book,      group:'Growth'       },
   { k:'settings',      l:'Profile Settings',     icon:I.settings,  group:'Growth'       },
   { k:'preview',       l:'Profile Preview',      icon:I.eye,       group:'Growth'       },
-  { k:'documents',     l:'Document Center',      icon:I.shield,    group:'Dev'          },
-  { k:'notifications', l:'Notifications',        icon:I.bolt,      group:'Dev'          },
-  { k:'statusBadges',  l:'Status Badges',        icon:I.check,     group:'Dev'          },
-  { k:'empty',         l:'Empty States',         icon:I.trash,     group:'Dev'          },
-  { k:'loading',       l:'Loading States',       icon:I.refresh,   group:'Dev'          },
-  { k:'error',         l:'Error States',         icon:I.bolt,      group:'Dev'          },
-  { k:'success',       l:'Success States',       icon:I.check,     group:'Dev'          },
 ]
 
 // ─── Profile Home ──────────────────────────────────────────────────────────
-function ProfileHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function ProfileHome({ onNav, onToast, profile, agentDetails, loading, error }:{
+  onNav:(s:SubView)=>void; onToast:(m:string)=>void
+  profile:any; agentDetails:any; loading:boolean; error:string
+}) {
   const quickActions = [
     {e:'👤',l:'Edit Profile',         cb:()=>onNav('publicProfile')},
     {e:'📅',l:'Availability',          cb:()=>onNav('availability')},
@@ -164,6 +197,35 @@ function ProfileHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:st
     {e:'📚',l:'Learning',              cb:()=>onNav('learning')},
     {e:'⚙️',l:'Settings',              cb:()=>onNav('settings')},
   ]
+  if(loading) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your profile…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
+  const displayName = getDisplayName(profile)
+  const initials = getInitials(profile)
+  const avatarUrl = profile?.avatar_url || null
+  const headline = agentDetails?.professional_headline?.trim() || 'Add a professional headline'
+  const location = formatLocation(profile)
+  const realBadges: string[] = Array.isArray(agentDetails?.badges) ? agentDetails.badges : []
+  const stats = [
+    { e:'⭐', v: agentDetails?.rating!=null ? Number(agentDetails.rating).toFixed(1) : '—', l:'Rating' },
+    { e:'🎯', v: String(agentDetails?.jobs_completed ?? 0), l:'Services' },
+    { e:'📅', v: agentDetails?.experience_years!=null ? `${agentDetails.experience_years} yrs` : '—', l:'Experience' },
+    { e:'💬', v: agentDetails?.response_time || '—', l:'Response' },
+  ]
+
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       {/* Hero */}
@@ -176,8 +238,8 @@ function ProfileHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:st
         </div>
         <div style={{ padding:'0 28px 24px' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end', marginTop:-32 }}>
-            <div style={{ position:'relative' as const }}>
-              <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:26, border:'4px solid white', boxShadow:`0 4px 16px ${C.primary}40` }}>KP</div>
+            <div style={{ position:'relative' as const, border:'4px solid white', borderRadius:'50%' }}>
+              <AgentAvatar initials={initials} avatarUrl={avatarUrl} size={80} />
               <button onClick={()=>onToast('Upload photo')} style={{ position:'absolute', bottom:2, right:2, width:26, height:26, borderRadius:'50%', background:C.primary, border:'2px solid white', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'#fff' }}>
                 <span style={{display:'flex',transform:'scale(0.75)'}}>{I.camera}</span>
               </button>
@@ -189,14 +251,13 @@ function ProfileHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:st
           </div>
           <div style={{ marginTop:12 }}>
             <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' as const, marginBottom:4 }}>
-              <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>Kasun Perera</h2>
-              <Bdg label="Verified" color={C.primary} dot />
-              <Bdg label="Top Rated" color={C.warning} dot />
-              <Bdg label="Available Now" color={C.success} dot />
+              <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{displayName}</h2>
+              {agentDetails?.verified===true && <Bdg label="Verified" color={C.primary} dot />}
+              {realBadges.map((b,i) => <Bdg key={i} label={b} color={C.warning} dot />)}
             </div>
-            <p style={{ fontSize:13, color:C.sub, marginBottom:6 }}>Certified Elderly Care Specialist · Colombo</p>
+            <p style={{ fontSize:13, color:C.sub, marginBottom:6 }}>{headline}{location!=='Location not set' && ` · ${location}`}</p>
             <div style={{ display:'flex', gap:16, flexWrap:'wrap' as const }}>
-              {[{e:'⭐',v:'4.9',l:'Rating'},{e:'🎯',v:'652',l:'Services'},{e:'📅',v:'8 yrs',l:'Experience'},{e:'💬',v:'4 min',l:'Response'}].map((s,i)=>(
+              {stats.map((s,i)=>(
                 <div key={i} style={{ display:'flex', gap:5, alignItems:'center' }}>
                   <span>{s.e}</span>
                   <span style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{s.v}</span>
@@ -208,7 +269,9 @@ function ProfileHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:st
         </div>
       </Card>
 
-      {/* KPI row */}
+      {/* KPI row — Profile Completion/Strength/Views/Bookings are out of
+          scope for this phase (no confirmed data source / reuses onboarding
+          completion logic, which this task must not touch) and stay mock. */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:20 }} className="ap-4col">
         {[{l:'Profile Completion',v:'87%',c:C.primary,prog:87},{l:'Profile Strength',v:'Strong',c:C.success,prog:82},{l:'Profile Views (30d)',v:'234',c:C.info,prog:null},{l:'Booking Requests',v:'18',c:C.accent,prog:null}].map((s,i)=>(
           <Card key={i} style={{ padding:20 }}>
@@ -284,8 +347,67 @@ function ProfileHome({ onNav, onToast }:{ onNav:(s:SubView)=>void; onToast:(m:st
 }
 
 // ─── Public Profile ───────────────────────────────────────────────────────────
-function PublicProfile({ onToast }:{ onToast:(m:string)=>void }) {
-  const [editing, setEditing] = useState<string|null>(null)
+function PublicProfile({ onToast, profile, agentDetails, loading, error, onAgentDetailsSaved }:{
+  onToast:(m:string)=>void
+  profile:any; agentDetails:any; loading:boolean; error:string
+  onAgentDetailsSaved:(updated:any)=>void
+}) {
+  const [editingBio, setEditingBio] = useState(false)
+  const [bioDraft, setBioDraft] = useState('')
+  const [savingBio, setSavingBio] = useState(false)
+  const [bioError, setBioError] = useState('')
+
+  if(loading) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Public Profile</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your profile…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Public Profile</h2>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
+  const displayName = getDisplayName(profile)
+  const initials = getInitials(profile)
+  const avatarUrl = profile?.avatar_url || null
+  const headline = agentDetails?.professional_headline?.trim() || 'Add a professional headline'
+  const location = formatLocation(profile)
+  const realBadges: string[] = Array.isArray(agentDetails?.badges) ? agentDetails.badges : []
+  const stats = [
+    { v: agentDetails?.rating!=null ? `${Number(agentDetails.rating).toFixed(1)}★` : '—', l:'Rating' },
+    { v: String(agentDetails?.jobs_completed ?? 0), l:'Services' },
+    { v: agentDetails?.experience_years!=null ? `${agentDetails.experience_years} yrs` : '—', l:'Experience' },
+    { v: agentDetails?.response_time || '—', l:'Response' },
+  ]
+  const languagesLabel = Array.isArray(agentDetails?.languages) && agentDetails.languages.length>0
+    ? agentDetails.languages.join(', ')
+    : 'Not specified'
+
+  const startEditingBio = () => { setBioDraft(agentDetails?.bio ?? ''); setBioError(''); setEditingBio(true) }
+  const saveBio = async () => {
+    setSavingBio(true)
+    setBioError('')
+    try {
+      const updated = await saveMyAgentDetails({ bio: bioDraft.trim() })
+      onAgentDetailsSaved(updated)
+      setEditingBio(false)
+      onToast('Bio saved')
+    } catch(err) {
+      console.error('Failed to save bio:', err)
+      setBioError("Couldn't save your bio. Please try again.")
+    } finally {
+      setSavingBio(false)
+    }
+  }
+
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Public Profile</h2>
@@ -298,19 +420,17 @@ function PublicProfile({ onToast }:{ onToast:(m:string)=>void }) {
             </div>
             <div style={{ padding:'0 22px 22px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end', marginTop:-28 }}>
-                <div style={{ width:64, height:64, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:20, border:'3px solid white' }}>KP</div>
-                <Btn label="Edit" small icon={I.edit} onClick={()=>setEditing('bio')} />
+                <div style={{ border:'3px solid white', borderRadius:'50%' }}><AgentAvatar initials={initials} avatarUrl={avatarUrl} size={64} /></div>
+                <Btn label="Edit" small icon={I.edit} onClick={startEditingBio} />
               </div>
-              <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:10, marginBottom:3 }}>Kasun Perera</h2>
-              <p style={{ fontSize:13, fontWeight:700, color:C.sub, marginBottom:8 }}>Certified Elderly Care Specialist</p>
+              <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:10, marginBottom:3 }}>{displayName}</h2>
+              <p style={{ fontSize:13, fontWeight:700, color:C.sub, marginBottom:8 }}>{headline}</p>
               <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const, marginBottom:14 }}>
-                <Bdg label="Verified" color={C.primary} dot />
-                <Bdg label="Top Rated" color={C.warning} dot />
-                <Bdg label="Premium Agent" color={C.accent} dot />
-                <Bdg label="Available Now" color={C.success} dot />
+                {agentDetails?.verified===true && <Bdg label="Verified" color={C.primary} dot />}
+                {realBadges.map((b,i) => <Bdg key={i} label={b} color={C.warning} dot />)}
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:16 }}>
-                {[{v:'4.9★',l:'Rating'},{v:'652',l:'Services'},{v:'8 yrs',l:'Experience'},{v:'4 min',l:'Response'}].map((s,i)=>(
+                {stats.map((s,i)=>(
                   <div key={i} style={{ textAlign:'center' as const, padding:'10px', borderRadius:10, background:C.bg }}>
                     <p style={{ fontSize:15, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{s.v}</p>
                     <p style={{ fontSize:10, color:C.muted }}>{s.l}</p>
@@ -318,10 +438,21 @@ function PublicProfile({ onToast }:{ onToast:(m:string)=>void }) {
                 ))}
               </div>
               <div style={{ padding:'14px', borderRadius:12, background:C.bg, marginBottom:14, position:'relative' as const }}>
-                <p style={{ fontSize:12, color:C.type, lineHeight:1.7 }}>Dedicated and compassionate care professional with over 8 years of experience supporting elderly patients and individuals with special needs in Colombo and surrounding districts. Fluent in English, Sinhala, and Tamil. Specialised in post-surgical recovery, dementia support, and hospital accompaniment. Committed to delivering dignified, empathetic care to every client.</p>
-                {editing==='bio'&&<button onClick={()=>setEditing(null)} style={{ marginTop:10, background:'none', border:'none', cursor:'pointer', color:C.primary, fontFamily:'Manrope,sans-serif', fontSize:11, fontWeight:700 }}>Save changes</button>}
+                {editingBio ? (
+                  <div>
+                    <textarea value={bioDraft} onChange={e=>setBioDraft(e.target.value)} rows={5}
+                      style={{ width:'100%', padding:'10px', borderRadius:8, border:`1px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#fff', outline:'none', resize:'vertical' as const }} />
+                    {bioError && <p style={{ fontSize:11, color:C.error, marginTop:6 }}>{bioError}</p>}
+                    <div style={{ display:'flex', gap:8, marginTop:10 }}>
+                      <Btn label={savingBio?'Saving…':'Save changes'} variant="primary" small disabled={savingBio} onClick={saveBio} />
+                      <Btn label="Cancel" variant="ghost" small disabled={savingBio} onClick={()=>{ setEditingBio(false); setBioError('') }} />
+                    </div>
+                  </div>
+                ) : (
+                  <p style={{ fontSize:12, color:C.type, lineHeight:1.7 }}>{agentDetails?.bio?.trim() || 'Add a short bio to introduce yourself to clients.'}</p>
+                )}
               </div>
-              {[{icon:I.map,v:'Colombo, Sri Lanka · 25 km radius'},{icon:I.lang,v:'English, Sinhala, Tamil'},{icon:I.calendar,v:'Available · Mon–Sat, 6 AM–8 PM'}].map((r,i)=>(
+              {[{icon:I.map,v:location},{icon:I.lang,v:languagesLabel},{icon:I.calendar,v:'Available · Mon–Sat, 6 AM–8 PM'}].map((r,i)=>(
                 <div key={i} style={{ display:'flex', gap:8, alignItems:'center', marginBottom:8 }}>
                   <span style={{ display:'flex', color:C.muted }}>{r.icon}</span>
                   <p style={{ fontSize:12, color:C.sub }}>{r.v}</p>
@@ -772,8 +903,59 @@ function Availability({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Service Areas ────────────────────────────────────────────────────────────
-function ServiceAreas({ onToast }:{ onToast:(m:string)=>void }) {
-  const districts = ['Colombo','Dehiwala-Mount Lavinia','Sri Jayawardenepura Kotte','Kaduwela','Maharagama']
+// Reads/writes agent_details.service_areas. Travel Radius lives in
+// agent_availability.max_travel_distance_km and is handled elsewhere — the
+// "Travel Settings" card below stays untouched/mock for this phase.
+function ServiceAreas({ onToast, agentDetails, loading, error, onAgentDetailsSaved }:{
+  onToast:(m:string)=>void
+  agentDetails:any; loading:boolean; error:string
+  onAgentDetailsSaved:(updated:any)=>void
+}) {
+  const [newArea, setNewArea] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  if(loading) {
+    return (
+      <div style={{ maxWidth:780, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Service Areas</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your service areas…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ maxWidth:780, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Service Areas</h2>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
+  const districts: string[] = Array.isArray(agentDetails?.service_areas) ? agentDetails.service_areas : []
+
+  const persist = async (updated:string[]) => {
+    setSaving(true)
+    try {
+      const saved = await saveMyAgentDetails({ service_areas: updated })
+      onAgentDetailsSaved(saved)
+    } catch(err) {
+      console.error('Failed to save service areas:', err)
+      onToast("Couldn't save — please try again")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeDistrict = (d:string) => persist(districts.filter(x => x!==d))
+  const addDistrict = () => {
+    const trimmed = newArea.trim()
+    if(!trimmed) return
+    if(districts.some(d => d.toLowerCase()===trimmed.toLowerCase())) { setNewArea(''); return }
+    persist([...districts, trimmed])
+    setNewArea('')
+  }
+
   return (
     <div style={{ maxWidth:780, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Service Areas</h2>
@@ -804,16 +986,22 @@ function ServiceAreas({ onToast }:{ onToast:(m:string)=>void }) {
       </Card>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
         <Card style={{ padding:22 }}>
-          <SectionTitle title="Preferred Districts" action="Add District" onAction={()=>onToast('Add district')} />
+          <SectionTitle title="Preferred Districts" />
+          {districts.length===0 && <p style={{ fontSize:12, color:C.muted, marginBottom:10 }}>No service areas added yet.</p>}
           {districts.map((d,i)=>(
             <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 0', borderBottom:i<districts.length-1?`1px solid ${C.border}`:'none' }}>
               <div style={{ display:'flex', gap:8, alignItems:'center' }}>
                 <span style={{ display:'flex', color:C.primary }}>{I.map}</span>
                 <p style={{ fontSize:12, color:C.type }}>{d}</p>
               </div>
-              <button onClick={()=>onToast('Remove district')} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.trash}</span></button>
+              <button onClick={()=>removeDistrict(d)} disabled={saving} style={{ background:'none', border:'none', cursor:saving?'not-allowed':'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.trash}</span></button>
             </div>
           ))}
+          <div style={{ display:'flex', gap:8, marginTop:12 }}>
+            <input value={newArea} onChange={e=>setNewArea(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); addDistrict() } }} placeholder="Add a district…"
+              style={{ flex:1, padding:'8px 12px', borderRadius:8, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#FAFAFA', outline:'none' }} />
+            <Btn label={saving?'Saving…':'Add'} variant="secondary" small disabled={saving} onClick={addDistrict} />
+          </div>
         </Card>
         <Card style={{ padding:22 }}>
           <SectionTitle title="Travel Settings" />
@@ -831,31 +1019,85 @@ function ServiceAreas({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Pricing Preferences ──────────────────────────────────────────────────────
-function Pricing({ onToast }:{ onToast:(m:string)=>void }) {
-  const rates = [
-    {l:'Standard Hourly Rate',      v:'LKR 1,800/hr', icon:'⏰', c:C.primary},
-    {l:'Full Day Rate',              v:'LKR 12,000/day',icon:'📅', c:C.success},
-    {l:'Emergency / Same-Day Rate', v:'LKR 2,500/hr',  icon:'⚡', c:C.error},
-    {l:'Weekend Rate',               v:'LKR 2,200/hr',  icon:'🗓️', c:C.info},
-    {l:'Public Holiday Rate',        v:'LKR 2,800/hr',  icon:'🎉', c:C.accent},
-    {l:'Travel Charges',             v:'LKR 50/km',     icon:'🚗', c:C.warning},
-  ]
+// Only agent_details.hourly_rate and agent_details.max_rate have a real
+// schema column — the other rate categories from the original mock (Full
+// Day/Emergency/Weekend/Public Holiday/Travel Charges) had no backing field,
+// so they're removed rather than shown as invented numbers.
+function Pricing({ onToast, agentDetails, loading, error, onAgentDetailsSaved }:{
+  onToast:(m:string)=>void
+  agentDetails:any; loading:boolean; error:string
+  onAgentDetailsSaved:(updated:any)=>void
+}) {
+  const [hourlyRate, setHourlyRate] = useState('')
+  const [maxRate, setMaxRate] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  useEffect(() => {
+    if(!agentDetails) return
+    setHourlyRate(agentDetails.hourly_rate!=null ? String(agentDetails.hourly_rate) : '')
+    setMaxRate(agentDetails.max_rate!=null ? String(agentDetails.max_rate) : '')
+  }, [agentDetails])
+
+  if(loading) {
+    return (
+      <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Pricing Preferences</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your pricing…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Pricing Preferences</h2>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
+  const handleSave = async () => {
+    setSaveError('')
+    const hourly = hourlyRate.trim()==='' ? undefined : Number(hourlyRate)
+    const max = maxRate.trim()==='' ? undefined : Number(maxRate)
+    if(hourly!=null && (Number.isNaN(hourly) || hourly<0)) { setSaveError('Hourly rate must not be negative.'); return }
+    if(max!=null && (Number.isNaN(max) || max<0)) { setSaveError('Maximum rate must not be negative.'); return }
+    if(hourly!=null && max!=null && max<hourly) { setSaveError('Maximum rate cannot be lower than hourly rate.'); return }
+
+    setSaving(true)
+    try {
+      const saved = await saveMyAgentDetails({ hourly_rate:hourly, max_rate:max })
+      onAgentDetailsSaved(saved)
+      onToast('Pricing saved!')
+    } catch(err) {
+      console.error('Failed to save pricing:', err)
+      setSaveError("Couldn't save your pricing. Please try again.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Pricing Preferences</h2>
-        <Btn label="Save Pricing" onClick={()=>onToast('Pricing saved!')} />
+        <Btn label={saving?'Saving…':'Save Pricing'} disabled={saving} onClick={handleSave} />
       </div>
+      {saveError && <p style={{ fontSize:12, color:C.error, marginBottom:14 }}>{saveError}</p>}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:18 }} className="ap-2col">
-        {rates.map((r,i)=>(
-          <Card key={i} hover style={{ padding:22 }}>
+        {[
+          { l:'Hourly Rate (LKR)', icon:'⏰', c:C.primary, value:hourlyRate, set:setHourlyRate },
+          { l:'Maximum Rate (LKR)', icon:'📈', c:C.success, value:maxRate, set:setMaxRate },
+        ].map((r,i)=>(
+          <Card key={i} style={{ padding:22 }}>
             <div style={{ display:'flex', gap:12, alignItems:'center' }}>
               <div style={{ width:48, height:48, borderRadius:14, background:`${r.c}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{r.icon}</div>
               <div style={{ flex:1 }}>
-                <p style={{ fontSize:11, color:C.muted, marginBottom:2 }}>{r.l}</p>
-                <p style={{ fontSize:16, fontWeight:900, color:r.c, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{r.v}</p>
+                <p style={{ fontSize:11, color:C.muted, marginBottom:4 }}>{r.l}</p>
+                <input type="number" min={0} value={r.value} onChange={e=>r.set(e.target.value)} placeholder="Not set"
+                  style={{ width:'100%', padding:'6px 8px', borderRadius:8, border:`1px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:16, fontWeight:900, color:r.c, background:'#FAFAFA', outline:'none' }} />
               </div>
-              <button onClick={()=>onToast('Edit rate')} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.edit}</span></button>
             </div>
           </Card>
         ))}
@@ -872,34 +1114,80 @@ function Pricing({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Languages ────────────────────────────────────────────────────────────────
-function Languages({ onToast }:{ onToast:(m:string)=>void }) {
-  const langs = [{l:'English',flag:'🇬🇧',lvl:'Fluent',pct:92},{l:'Sinhala',flag:'🇱🇰',lvl:'Native',pct:100},{l:'Tamil',flag:'🇱🇰',lvl:'Proficient',pct:78}]
+// agent_details.languages is a plain string[] — no per-language proficiency
+// level/percentage/flag column exists, so those fabricated details from the
+// original mock are dropped rather than invented.
+function Languages({ onToast, agentDetails, loading, error, onAgentDetailsSaved }:{
+  onToast:(m:string)=>void
+  agentDetails:any; loading:boolean; error:string
+  onAgentDetailsSaved:(updated:any)=>void
+}) {
+  const [newLang, setNewLang] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  if(loading) {
+    return (
+      <div style={{ maxWidth:580, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Languages</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your languages…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ maxWidth:580, margin:'0 auto', padding:'24px 28px 60px' }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Languages</h2>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
+  const langs: string[] = Array.isArray(agentDetails?.languages) ? agentDetails.languages : []
+
+  const persist = async (updated:string[]) => {
+    setSaving(true)
+    try {
+      const saved = await saveMyAgentDetails({ languages: updated })
+      onAgentDetailsSaved(saved)
+    } catch(err) {
+      console.error('Failed to save languages:', err)
+      onToast("Couldn't save — please try again")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeLang = (l:string) => persist(langs.filter(x => x!==l))
+  const addLang = () => {
+    const trimmed = newLang.trim()
+    if(!trimmed) return
+    if(langs.some(l => l.toLowerCase()===trimmed.toLowerCase())) { setNewLang(''); return }
+    persist([...langs, trimmed])
+    setNewLang('')
+  }
+
   return (
     <div style={{ maxWidth:580, margin:'0 auto', padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Languages</h2>
-        <Btn label="Add Language" small icon={I.plus} onClick={()=>onToast('Add language')} />
       </div>
-      {langs.map((lg,i)=>(
-        <Card key={i} style={{ padding:22, marginBottom:12 }}>
+      {langs.length===0 && <p style={{ fontSize:13, color:C.muted, marginBottom:14 }}>No languages added yet.</p>}
+      {langs.map((l,i)=>(
+        <Card key={i} style={{ padding:18, marginBottom:10 }}>
           <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-            <div style={{ fontSize:38, flexShrink:0 }}>{lg.flag}</div>
             <div style={{ flex:1 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{lg.l}</p>
-                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                  <Bdg label={lg.lvl} color={C.primary} />
-                  <button onClick={()=>onToast('Edit language')} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.edit}</span></button>
-                </div>
-              </div>
-              <div style={{ height:6, borderRadius:99, background:`${C.primary}12` }}>
-                <div style={{ width:`${lg.pct}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.accent})`, borderRadius:99 }} />
-              </div>
-              <p style={{ fontSize:10, color:C.muted, marginTop:3 }}>{lg.pct}% proficiency</p>
+              <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{l}</p>
             </div>
+            <button onClick={()=>removeLang(l)} disabled={saving} style={{ background:'none', border:'none', cursor:saving?'not-allowed':'pointer', color:C.muted, display:'flex' }}><span style={{display:'flex'}}>{I.trash}</span></button>
           </div>
         </Card>
       ))}
+      <div style={{ display:'flex', gap:8, marginTop:8 }}>
+        <input value={newLang} onChange={e=>setNewLang(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); addLang() } }} placeholder="Add a language…"
+          style={{ flex:1, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, background:'#FAFAFA', outline:'none' }} />
+        <Btn label={saving?'Saving…':'Add'} icon={I.plus} small disabled={saving} onClick={addLang} />
+      </div>
     </div>
   )
 }
@@ -1087,9 +1375,39 @@ function ProfileSettings({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Profile Preview ──────────────────────────────────────────────────────────
-function ProfilePreview() {
+// Uses the same real profile/agentDetails state as the other Phase 1
+// sections (see AgentProfileMgmt root) — no separate hardcoded preview data.
+function ProfilePreview({ profile, agentDetails, loading, error }:{ profile:any; agentDetails:any; loading:boolean; error:string }) {
   const [device, setDevice] = useState<'desktop'|'tablet'|'mobile'>('desktop')
   const widths = { desktop:780, tablet:480, mobile:320 }
+
+  if(loading) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <p style={{ fontSize:13, color:C.muted }}>Loading preview…</p>
+      </div>
+    )
+  }
+  if(error) {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
+  const displayName = getDisplayName(profile)
+  const initials = getInitials(profile)
+  const avatarUrl = profile?.avatar_url || null
+  const headline = agentDetails?.professional_headline?.trim() || 'Add a professional headline'
+  const realBadges: string[] = Array.isArray(agentDetails?.badges) ? agentDetails.badges : []
+  const stats = [
+    { v: agentDetails?.rating!=null ? `${Number(agentDetails.rating).toFixed(1)}★` : '—', l:'Rating' },
+    { v: String(agentDetails?.jobs_completed ?? 0), l:'Services' },
+    { v: agentDetails?.experience_years!=null ? `${agentDetails.experience_years} yrs` : '—', l:'Exp' },
+    { v: agentDetails?.response_time || '—', l:'Response' },
+  ]
+
   return (
     <div style={{ padding:'24px 28px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
@@ -1108,17 +1426,17 @@ function ProfilePreview() {
           <div style={{ height:80, background:`linear-gradient(135deg,${C.primary},#004D52)` }}/>
           <div style={{ padding:'0 20px 20px' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-end', marginTop:-22 }}>
-              <div style={{ width:52, height:52, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:16, border:'3px solid white' }}>KP</div>
+              <div style={{ border:'3px solid white', borderRadius:'50%' }}><AgentAvatar initials={initials} avatarUrl={avatarUrl} size={52} /></div>
               <div style={{ padding:'5px 14px', background:C.primary, borderRadius:8, color:'#fff', fontFamily:'Manrope,sans-serif', fontSize:11, fontWeight:700, marginTop:14 }}>Book Now</div>
             </div>
-            <h3 style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:8, marginBottom:2 }}>Kasun Perera</h3>
-            <p style={{ fontSize:12, color:C.sub, marginBottom:8 }}>Certified Elderly Care Specialist</p>
+            <h3 style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:8, marginBottom:2 }}>{displayName}</h3>
+            <p style={{ fontSize:12, color:C.sub, marginBottom:8 }}>{headline}</p>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' as const, marginBottom:12 }}>
-              <Bdg label="Verified" color={C.primary} dot />
-              <Bdg label="Top Rated" color={C.warning} dot />
+              {agentDetails?.verified===true && <Bdg label="Verified" color={C.primary} dot />}
+              {realBadges.map((b,i) => <Bdg key={i} label={b} color={C.warning} dot />)}
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8 }}>
-              {[{v:'4.9★',l:'Rating'},{v:'652',l:'Services'},{v:'8 yrs',l:'Exp'},{v:'4 min',l:'Response'}].map((s,i)=>(
+              {stats.map((s,i)=>(
                 <div key={i} style={{ textAlign:'center' as const, padding:'8px', borderRadius:8, background:C.bg }}>
                   <p style={{ fontSize:12, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{s.v}</p>
                   <p style={{ fontSize:9, color:C.muted }}>{s.l}</p>
@@ -1203,103 +1521,6 @@ function ProfileNotifications() {
   )
 }
 
-// ─── Status Badges ────────────────────────────────────────────────────────────
-function StatusBadgesView() {
-  const badges = [{l:'Verified',c:C.primary},{l:'Premium Agent',c:C.accent},{l:'Top Rated',c:C.warning},{l:'New Agent',c:C.info},{l:'Experienced',c:C.success},{l:'Available Now',c:C.success},{l:'Busy',c:C.warning},{l:'Vacation',c:C.muted}]
-  return (
-    <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Status Badges</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }} className="ap-4col">
-        {badges.map((b,i)=>(
-          <Card key={i} style={{ padding:22, textAlign:'center' as const }}>
-            <div style={{ width:12, height:12, borderRadius:'50%', background:b.c, margin:'0 auto 10px' }} />
-            <Bdg label={b.l} color={b.c} dot />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Empty / Loading / Error / Success ───────────────────────────────────────
-function EmptyStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-        {[{e:'⭐',t:'No Reviews',       d:"You haven't received any reviews yet. Complete your first job to get started."},{e:'🖼️',t:'No Portfolio',    d:'Add case studies, photos, and testimonials to showcase your expertise.'},{e:'📜',t:'No Certificates', d:'Upload your professional certificates to build client trust.'},{e:'⚡',t:'No Skills',       d:'Add your care skills to increase visibility in search results.'},{e:'🏆',t:'No Achievements', d:'Complete services and maintain high ratings to unlock achievement badges.'}].map((s,i)=>(
-          <Card key={i} style={{ padding:'38px 22px', textAlign:'center' as const }}>
-            <p style={{ fontSize:48, marginBottom:14 }}>{s.e}</p>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:8 }}>{s.t}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7 }}>{s.d}</p>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LoadingStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-        {['Loading Profile','Loading Calendar','Loading Portfolio','Loading Insights'].map((l,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:14 }}>{l}</p>
-            <div style={{ display:'flex', gap:12, marginBottom:14 }}>
-              <div style={{ width:52, height:52, borderRadius:'50%', background:'#E4E8EA', flexShrink:0 }} />
-              <div style={{ flex:1 }}><Shimmer h={16} /><div style={{height:6}}/><Shimmer h={11} w="70%" /></div>
-            </div>
-            {[...Array(4)].map((_,j)=><div key={j} style={{marginBottom:9}}><Shimmer h={13} w={`${55+j*12}%`}/></div>)}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      {[{e:'📝',t:'Profile Update Failed', d:'Changes could not be saved. Please try again.',col:C.error},{e:'📁',t:'Upload Failed',          d:'File could not be uploaded. Check format and size (max 10 MB).',col:C.warning},{e:'📅',t:'Calendar Error',          d:'Availability could not be loaded. Please refresh.',col:C.error},{e:'📶',t:'Connection Lost',         d:'No internet connection. Check your network and retry.',col:C.muted}].map((er,i)=>(
-        <Card key={i} style={{ padding:22, marginBottom:12, border:`1.5px solid ${er.col}30`, background:`${er.col}04` }}>
-          <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${er.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{er.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:800, color:er.col, marginBottom:4 }}>{er.t}</p>
-              <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:10 }}>{er.d}</p>
-              <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={()=>onToast('Retrying…')} />
-            </div>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
-function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
-  void onToast
-  return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      {[{e:'✅',t:'Profile Updated',       d:'Your profile has been updated and is now visible to clients.',    col:C.success},{e:'📅',t:'Availability Saved',    d:'Your schedule has been updated. Clients can now see your availability.', col:C.primary},{e:'📜',t:'Certificate Uploaded', d:'Your certificate has been verified and added to your profile.',        col:C.success},{e:'🏆',t:'Achievement Unlocked!', d:"You've earned the 500 Services milestone badge. Congratulations!",    col:C.accent}].map((s,i)=>(
-        <Card key={i} style={{ padding:20, marginBottom:10, border:`1.5px solid ${s.col}30`, background:`${s.col}04` }}>
-          <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${s.col}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:s.col, marginBottom:2 }}>{s.t}</p>
-              <p style={{ fontSize:12, color:C.sub }}>{s.d}</p>
-            </div>
-            <span style={{ color:s.col, display:'flex', transform:'scale(1.2)' }}>{I.check}</span>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function AgentProfileMgmt() {
   const [sub, setSub] = useState<SubView>('home')
@@ -1308,10 +1529,54 @@ export default function AgentProfileMgmt() {
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
   const groups = [...new Set(NAV.map(n=>n.group))]
 
+  // ─── Real profile / agent details — single source of truth for every
+  // Phase 1 section (Profile Home, Public Profile, Service Areas, Pricing,
+  // Languages, Profile Preview) so they never drift from one another.
+  const [profile, setProfile] = useState<any>(null)
+  const [agentDetails, setAgentDetails] = useState<any>(null)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [profileError, setProfileError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setProfileLoading(true)
+        setProfileError('')
+        const user = await getCurrentUser()
+        if(!user) {
+          if(!cancelled) { setProfileError("You're not signed in.") }
+          return
+        }
+        const [profileResult, agentDetailsResult] = await Promise.allSettled([
+          getMyProfile(),
+          getMyAgentDetails(),
+        ])
+        if(cancelled) return
+        if(profileResult.status==='fulfilled') setProfile(profileResult.value)
+        else console.error('Failed to load profile:', profileResult.reason)
+        if(agentDetailsResult.status==='fulfilled') setAgentDetails(agentDetailsResult.value)
+        else console.error('Failed to load agent details:', agentDetailsResult.reason)
+        if(profileResult.status==='rejected' && agentDetailsResult.status==='rejected') {
+          setProfileError("We couldn't load your profile. Please try again.")
+        }
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load profile data:', err)
+        setProfileError("We couldn't load your profile. Please try again.")
+      } finally {
+        if(!cancelled) setProfileLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
   const renderMain = () => {
+    const profileProps = { profile, agentDetails, loading:profileLoading, error:profileError }
     switch(sub) {
-      case 'home':          return <ProfileHome onNav={setSub} onToast={showToast} />
-      case 'publicProfile': return <PublicProfile onToast={showToast} />
+      case 'home':          return <ProfileHome onNav={setSub} onToast={showToast} {...profileProps} />
+      case 'publicProfile': return <PublicProfile onToast={showToast} {...profileProps} onAgentDetailsSaved={setAgentDetails} />
       case 'experience':    return <Experience onToast={showToast} />
       case 'services':      return <ServicesOffered onToast={showToast} />
       case 'skills':        return <Skills onToast={showToast} />
@@ -1319,33 +1584,33 @@ export default function AgentProfileMgmt() {
       case 'portfolio':     return <Portfolio onToast={showToast} />
       case 'reviews':       return <Reviews />
       case 'availability':  return <Availability onToast={showToast} />
-      case 'serviceAreas':  return <ServiceAreas onToast={showToast} />
-      case 'pricing':       return <Pricing onToast={showToast} />
-      case 'languages':     return <Languages onToast={showToast} />
+      case 'serviceAreas':  return <ServiceAreas onToast={showToast} agentDetails={agentDetails} loading={profileLoading} error={profileError} onAgentDetailsSaved={setAgentDetails} />
+      case 'pricing':       return <Pricing onToast={showToast} agentDetails={agentDetails} loading={profileLoading} error={profileError} onAgentDetailsSaved={setAgentDetails} />
+      case 'languages':     return <Languages onToast={showToast} agentDetails={agentDetails} loading={profileLoading} error={profileError} onAgentDetailsSaved={setAgentDetails} />
       case 'achievements':  return <Achievements />
       case 'insights':      return <CareerInsights />
       case 'learning':      return <LearningDev onToast={showToast} />
       case 'settings':      return <ProfileSettings onToast={showToast} />
-      case 'preview':       return <ProfilePreview />
+      case 'preview':       return <ProfilePreview {...profileProps} />
       case 'documents':     return <DocumentCenter onToast={showToast} />
       case 'notifications': return <ProfileNotifications />
-      case 'statusBadges':  return <StatusBadgesView />
-      case 'empty':         return <EmptyStates />
-      case 'loading':       return <LoadingStates />
-      case 'error':         return <ErrorStates onToast={showToast} />
-      case 'success':       return <SuccessStates onToast={showToast} />
       default: return null
     }
   }
+
+  const sidebarName = profileLoading ? 'Loading…' : getDisplayName(profile)
+  const sidebarHeadline = profileLoading ? '' : (agentDetails?.professional_headline?.trim() || 'Care Agent')
+  const sidebarInitials = getInitials(profile)
+  const sidebarAvatarUrl = profile?.avatar_url || null
 
   return (
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
       {/* Sidebar */}
       <div className="ap-sidebar" style={{ width:218, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
-          <KasunAvatar size={42} ring />
-          <p style={{ fontSize:13, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:10, marginBottom:2 }}>Kasun Perera</p>
-          <p style={{ fontSize:11, color:C.muted }}>Certified Elderly Care Specialist</p>
+          <AgentAvatar initials={sidebarInitials} avatarUrl={sidebarAvatarUrl} size={42} ring />
+          <p style={{ fontSize:13, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:10, marginBottom:2 }}>{sidebarName}</p>
+          <p style={{ fontSize:11, color:C.muted }}>{sidebarHeadline}</p>
         </div>
         {groups.map(group=>(
           <div key={group}>
@@ -1369,8 +1634,8 @@ export default function AgentProfileMgmt() {
         <div style={{ position:'fixed', inset:0, zIndex:50, background:'rgba(0,0,0,0.4)' }} onClick={()=>setSidebarOpen(false)}>
           <div onClick={e=>e.stopPropagation()} style={{ width:240, height:'100%', background:C.surface, overflowY:'auto' }}>
             <div style={{ padding:'16px 18px', borderBottom:`1px solid ${C.border}`, display:'flex', gap:10, alignItems:'center' }}>
-              <KasunAvatar size={36} ring />
-              <div><p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p><p style={{ fontSize:10, color:C.muted }}>Care Agent</p></div>
+              <AgentAvatar initials={sidebarInitials} avatarUrl={sidebarAvatarUrl} size={36} ring />
+              <div><p style={{ fontSize:13, fontWeight:800, color:C.type }}>{sidebarName}</p><p style={{ fontSize:10, color:C.muted }}>Care Agent</p></div>
             </div>
             {NAV.map(n=>(
               <button key={n.k} onClick={()=>{ setSub(n.k); setSidebarOpen(false) }}
@@ -1385,7 +1650,7 @@ export default function AgentProfileMgmt() {
       {/* Mobile top bar */}
       <div className="ap-mobile-nav" style={{ display:'none', position:'fixed', top:0, left:0, right:0, zIndex:40, background:C.surface, borderBottom:`1px solid ${C.border}`, padding:'11px 18px', alignItems:'center', justifyContent:'space-between' }}>
         <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-          <KasunAvatar size={30} />
+          <AgentAvatar initials={sidebarInitials} avatarUrl={sidebarAvatarUrl} size={30} />
           <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{NAV.find(n=>n.k===sub)?.l??'Profile'}</p>
         </div>
         <button onClick={()=>setSidebarOpen(v=>!v)} style={{ background:'none', border:'none', cursor:'pointer', color:C.type, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Menu</button>

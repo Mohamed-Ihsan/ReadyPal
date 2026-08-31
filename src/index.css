@@ -17,4 +17,40 @@
     min-height: 100vh;
     font-family: 'Manrope', sans-serif;
   }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+}
+
+/* ─── Care Agent Onboarding: responsive layout ─────────────────────────── */
+.cao-container {
+  width: 100%;
+  box-sizing: border-box;
+  padding-left: 36px;
+  padding-right: 36px;
+}
+
+@media (max-width: 1024px) {
+  .cao-2col {
+    grid-template-columns: 1fr !important;
+  }
+
+  .cao-sidebar {
+    display: none !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .cao-container {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+}
+
+@media (max-width: 480px) {
+  .cao-container {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
 }

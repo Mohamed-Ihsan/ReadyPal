@@ -1,4 +1,24 @@
-import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+﻿import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  getCurrentUser,
+  getMyProfile,
+  getMyAgentDetails,
+  getMyAgentSkills,
+  getMyCertifications,
+  getMyIdentityDocuments,
+  getMyBankAccount,
+  getMyAvailability,
+  saveMyAvailability,
+  getMyEquipmentTransport,
+  getMyReferences,
+  getMyAgreements,
+  getMyNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  getMyApplications,
+} from '../lib/api'
+import { computeOnboardingCompletion, type OnboardingStepStatus } from '../lib/onboardingCompletion'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -78,8 +98,51 @@ function Bdg({ label, color=C.primary, dot=false }:{ label:string; color?:string
   </span>
 }
 
-function Avatar({ initials='KP', color=C.primary, size=40 }:{ initials?:string; color?:string; size?:number }) {
+function Avatar({ initials='', color=C.primary, size=40 }:{ initials?:string; color?:string; size?:number }) {
   return <div style={{ width:size, height:size, borderRadius:'50%', background:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>{initials}</div>
+}
+
+// Derives display initials from a real full name — never a fabricated
+// placeholder. "Kavindu Kavishka" -> "KK"; single-word names use their
+// first two letters; empty/missing names return '' (safe neutral fallback,
+// Avatar just renders a blank circle).
+function getInitials(fullName?:string|null): string {
+  const trimmed = (fullName ?? '').trim()
+  if(!trimmed) return ''
+  const parts = trimmed.split(/\s+/).filter(Boolean)
+  if(parts.length === 1) return parts[0].slice(0,2).toUpperCase()
+  return (parts[0][0] + parts[parts.length-1][0]).toUpperCase()
+}
+
+// Relative time for real notification timestamps (created_at), mirroring
+// the same formatting already proven in BrowseJobs.tsx.
+function formatRelativeTime(iso:string|null|undefined):string {
+  if(!iso) return ''
+  const then = new Date(iso).getTime()
+  if(Number.isNaN(then)) return ''
+  const minutes = Math.round((Date.now()-then)/60000)
+  if(minutes<1) return 'Just now'
+  if(minutes<60) return `${minutes} min ago`
+  const hours = Math.round(minutes/60)
+  if(hours<24) return `${hours} hr${hours===1?'':'s'} ago`
+  const days = Math.round(hours/24)
+  if(days<7) return `${days} day${days===1?'':'s'} ago`
+  return new Date(iso).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' })
+}
+
+// Best-effort icon/color per notification `type` — the real enum isn't
+// confirmed against every possible value, so this stays a small map with a
+// safe generic fallback rather than assuming, matching BrowseJobs.tsx.
+const NOTIF_TYPE_META: Record<string,{ icon:string; color:string }> = {
+  new_job:            { icon:'💼', color:C.accent },
+  application_viewed: { icon:'👁', color:C.primary },
+  shortlisted:        { icon:'🏆', color:C.warning },
+  counter_offer:       { icon:'💰', color:C.info },
+  application_accepted:{ icon:'✅', color:C.success },
+  job_closed:          { icon:'❌', color:C.error },
+}
+function notifTypeMeta(type:string) {
+  return NOTIF_TYPE_META[type] ?? { icon:'🔔', color:C.primary }
 }
 
 function KPICard({ label, value, sub, trend, icon, color=C.primary, accent=false }:{ label:string; value:string; sub?:string; trend?:string; icon:ReactNode; color?:string; accent?:boolean }) {
@@ -142,12 +205,60 @@ const STATUS_CONFIG = {
 } as const
 type Status = keyof typeof STATUS_CONFIG
 
-// ─── JOBS DATA ────────────────────────────────────────────────────────────────
-const JOBS = [
-  { id:'J001', client:'Mohamed Ihsan',     beneficiary:'Nimal Perera',     service:'Hospital Appointment',  time:'9:00 AM', duration:'3 hrs', location:'Colombo National Hospital', status:'active',    amount:3750 },
-  { id:'J002', client:'Priya Fernando',    beneficiary:'Rukmini Fernando',  service:'Home Care',             time:'2:00 PM', duration:'4 hrs', location:'Dehiwela',                  status:'upcoming',  amount:4800 },
-  { id:'J003', client:'Arjuna Wijesinghe', beneficiary:'Lalitha Wijesinghe',service:'Medication Collection', time:'5:30 PM', duration:'1.5 hrs',location:'Liberty Plaza, Colombo 03',status:'upcoming',  amount:1500 },
-]
+// ─── Scheduled jobs (real data) ────────────────────────────────────────────────
+// A `ScheduledJob` is a UI-shaped projection of a real `applications` row
+// joined to its `care_requests` row (see getMyApplications in lib/api.ts).
+// There is no `active`/`upcoming` application-status distinction in the
+// database yet, so a job is only ever labelled by its scheduled date
+// (Today / Upcoming / Date to be confirmed) — never a fabricated progress
+// state.
+type ScheduledJob = {
+  id: string
+  title: string
+  service: string
+  client: string
+  beneficiary: string
+  time: string
+  duration: string
+  location: string
+  amount: number | null
+  currency: string
+  scheduledDate: string | null
+}
+
+function formatTimeLabel(time?: string | null): string {
+  if(!time) return ''
+  const [hStr, mStr] = time.split(':')
+  const h = Number(hStr)
+  if(Number.isNaN(h)) return time
+  const period = h>=12 ? 'PM' : 'AM'
+  const h12 = h%12===0 ? 12 : h%12
+  return `${h12}:${(mStr??'00').slice(0,2)} ${period}`
+}
+
+function scheduledJobFromApplication(a:any): ScheduledJob {
+  const cr = a.care_request ?? {}
+  const amount = a.price ?? a.original_price ?? null
+  return {
+    id: a.id,
+    title: cr.title ?? cr.service_type ?? 'Care job',
+    service: cr.service_type ?? cr.title ?? 'Care Service',
+    client: cr.client?.full_name ?? 'Client',
+    beneficiary: cr.beneficiary?.preferred_name ?? cr.beneficiary?.name ?? '',
+    time: formatTimeLabel(cr.scheduled_time),
+    duration: cr.duration ?? a.duration ?? '',
+    location: [cr.address1, cr.address2].filter(Boolean).join(', ') || cr.city || '',
+    amount,
+    currency: cr.currency ?? 'LKR',
+    scheduledDate: cr.scheduled_date ?? null,
+  }
+}
+
+function isSameDate(iso: string | null, date: Date): boolean {
+  if(!iso) return false
+  const d = new Date(iso)
+  return d.getFullYear()===date.getFullYear() && d.getMonth()===date.getMonth() && d.getDate()===date.getDate()
+}
 
 const INVITATIONS = [
   { id:'I001', client:'Chamari Dissanayake', beneficiary:'Siripala Dissanayake', service:'Post-Surgery Care', date:'Tomorrow, 9 AM', location:'Malay Street, Colombo 02', amount:5500, distance:'3.2 km', timer:'2h 14m remaining' },
@@ -160,23 +271,23 @@ const MESSAGES = [
   { name:'Arjuna Wijesinghe', initials:'AW', msg:"Job confirmed for 5:30 PM.",                           time:'Mon',       unread:0 },
 ]
 
-const NOTIFS = [
-  { icon:'💼', title:'New Job Invitation',    body:'Post-Surgery Care from Chamari Dissanayake',     time:'2 min ago',  color:C.accent,  read:false },
-  { icon:'💰', title:'Payment Received',      body:'LKR 3,750 for Hospital Appointment — Ihsan',    time:'1 hr ago',   color:C.success, read:false },
-  { icon:'⭐', title:'New Review',            body:'Mohamed Ihsan left you 5 stars',                 time:'3 hrs ago',  color:C.warning, read:false },
-  { icon:'✅', title:'Certificate Approved',  body:'Your First Aid certificate has been verified',  time:'Yesterday',  color:C.primary, read:true  },
-  { icon:'📋', title:'Task Reminder',         body:"Home Care for Rukmini at 2 PM today",            time:'9:00 AM',    color:C.info,    read:true  },
-  { icon:'📢', title:'Platform Update',       body:'ReadyPal v2.3 is now available',                 time:'Mon',        color:C.muted,   read:true  },
-]
-
 // ─── Dashboard Home ───────────────────────────────────────────────────────────
-function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; setStatus:(s:Status)=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void }) {
+function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInitials, agentSubtitle, notifications, notifLoading, notifError, onMarkNotifRead, todaysJobs, jobsLoading, jobsError }:{
+  status:Status; setStatus:(s:Status)=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void
+  agentName:string; agentInitials:string; agentSubtitle:string
+  notifications:any[]; notifLoading:boolean; notifError:string; onMarkNotifRead:(id:string)=>void
+  todaysJobs:ScheduledJob[]; jobsLoading:boolean; jobsError:string
+}) {
   const [online, setOnline] = useState(true)
+  // Monthly Earnings, Average Rating, and Completion Rate have no backing
+  // Supabase table/status lifecycle yet (see Phase 1B audit) — rather than
+  // fabricate numbers, those three KPI cards show an honest "coming soon"
+  // placeholder. Today's Jobs is real, from getMyApplications().
   const kpis = [
-    { label:"Today's Jobs",     value:'3',         sub:'2 upcoming, 1 active',  trend:'↑ 1 vs yesterday', icon:I.calendar, color:C.primary, accent:true },
-    { label:'Monthly Earnings', value:'LKR 145K',  sub:'LKR 24,500 this week',  trend:'↑ 12% vs last month',icon:I.wallet,  color:C.success },
-    { label:'Average Rating',   value:'4.9★',      sub:'From 142 reviews',      trend:'↑ 0.1 this month', icon:I.star,     color:C.warning },
-    { label:'Completion Rate',  value:'98%',       sub:'2 cancellations',       trend:'Top 5% of agents', icon:I.target,   color:C.info },
+    { label:"Today's Jobs",     value:jobsLoading?'…':String(todaysJobs.length), sub:jobsLoading?'Loading…':jobsError?'Could not load':`${todaysJobs.length} job${todaysJobs.length===1?'':'s'} scheduled`, icon:I.calendar, color:C.primary, accent:true },
+    { label:'Monthly Earnings', value:'—', sub:'Earnings tracking coming soon', icon:I.wallet,  color:C.success },
+    { label:'Average Rating',   value:'—', sub:'Reviews coming soon',           icon:I.star,     color:C.warning },
+    { label:'Completion Rate',  value:'—', sub:'Coming soon',                   icon:I.target,   color:C.info },
   ]
   const quickActions = [
     { icon:I.calendar,label:'My Schedule',   k:'schedule'   as SubView },
@@ -194,15 +305,15 @@ function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; se
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:16 }}>
           <div style={{ display:'flex', gap:14, alignItems:'center' }}>
             <div style={{ position:'relative' as const }}>
-              <div style={{ width:52, height:52, borderRadius:'50%', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:20, color:'#fff', fontFamily:'Manrope,sans-serif' }}>KP</div>
+              <div style={{ width:52, height:52, borderRadius:'50%', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:20, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{agentInitials}</div>
               <div style={{ position:'absolute', bottom:1, right:1, width:13, height:13, borderRadius:'50%', background:online?C.success:C.muted, border:'2px solid #fff' }} />
             </div>
             <div>
               <p style={{ fontSize:13, color:'rgba(255,255,255,0.7)', marginBottom:2 }}>Good morning 👋</p>
-              <h2 style={{ fontSize:20, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Kasun Perera</h2>
+              <h2 style={{ fontSize:20, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:4 }}>{agentName}</h2>
               <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' as const }}>
                 <span style={{ padding:'3px 10px', borderRadius:99, background:'rgba(255,255,255,0.2)', fontSize:11, fontWeight:700, color:'#fff' }}>{STATUS_CONFIG[status].label}</span>
-                <span style={{ fontSize:11, color:'rgba(255,255,255,0.65)' }}>Hospital Companion · Colombo</span>
+                <span style={{ fontSize:11, color:'rgba(255,255,255,0.65)' }}>{agentSubtitle}</span>
               </div>
             </div>
           </div>
@@ -231,81 +342,57 @@ function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; se
         <div>
           <Card style={{ padding:22, marginBottom:14 }}>
             <SectionTitle title="Today's Schedule" action="Full Calendar" onAction={()=>onNav('calendar')} />
-            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-              {JOBS.map((job,i)=>{
-                const col = job.status==='active'?C.primary:job.status==='upcoming'?C.info:C.success
-                return (
-                  <div key={job.id} style={{ display:'flex', gap:14, paddingBottom:i<JOBS.length-1?16:0 }}>
+            {jobsLoading ? (
+              <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>Loading today's schedule…</p>
+            ) : jobsError ? (
+              <p style={{ fontSize:12, color:C.error, padding:'8px 0' }}>{jobsError}</p>
+            ) : todaysJobs.length===0 ? (
+              <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>No jobs scheduled for today.</p>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+                {todaysJobs.map((job,i)=>(
+                  <div key={job.id} style={{ display:'flex', gap:14, paddingBottom:i<todaysJobs.length-1?16:0 }}>
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-                      <div style={{ width:10, height:10, borderRadius:'50%', background:col, border:`2px solid ${col}`, marginTop:4 }} />
-                      {i<JOBS.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
+                      <div style={{ width:10, height:10, borderRadius:'50%', background:C.info, border:`2px solid ${C.info}`, marginTop:4 }} />
+                      {i<todaysJobs.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
                     </div>
-                    <div style={{ flex:1, paddingBottom:i<JOBS.length-1?6:0 }}>
+                    <div style={{ flex:1, paddingBottom:i<todaysJobs.length-1?6:0 }}>
                       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4 }}>
                         <div>
                           <div style={{ display:'flex', gap:7, alignItems:'center', marginBottom:2 }}>
                             <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{job.service}</p>
-                            {job.status==='active'&&<Bdg label="Active" color={C.primary} dot />}
                           </div>
-                          <p style={{ fontSize:11, color:C.muted }}>{job.time} · {job.duration} · {job.client}</p>
-                          <div style={{ display:'flex', gap:4, alignItems:'center', marginTop:2 }}>
+                          <p style={{ fontSize:11, color:C.muted }}>{[job.time, job.duration, job.client].filter(Boolean).join(' · ')}</p>
+                          {job.location&&<div style={{ display:'flex', gap:4, alignItems:'center', marginTop:2 }}>
                             <span style={{color:C.muted,display:'flex',transform:'scale(0.85)'}}>{I.pin}</span>
                             <p style={{ fontSize:11, color:C.muted }}>{job.location}</p>
-                          </div>
+                          </div>}
                         </div>
                         <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-                          <p style={{ fontSize:12, fontWeight:800, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {job.amount.toLocaleString()}</p>
+                          {job.amount!=null&&<p style={{ fontSize:12, fontWeight:800, color:C.success, fontFamily:'Manrope,sans-serif' }}>{job.currency} {job.amount.toLocaleString()}</p>}
                         </div>
                       </div>
                       <div style={{ display:'flex', gap:8 }}>
-                        {job.status==='active'&&<Btn label="Continue Task" variant="primary" small icon={I.play} onClick={()=>onNav('activeTask')} />}
-                        {job.status==='upcoming'&&<Btn label="View Details" variant="secondary" small onClick={()=>onNav('schedule')} />}
+                        <Btn label="View Details" variant="secondary" small onClick={()=>onNav('schedule')} />
                         <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening maps…')} />
                       </div>
                     </div>
                   </div>
-                )
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </Card>
 
-          {/* Active task highlight */}
+          {/* Active task tracking depends on an application-status lifecycle
+              (accepted/in-progress/completed) that doesn't exist in the
+              database yet — see Phase 1B audit. Rather than fabricate a
+              live task/checklist, this stays an honest coming-soon note. */}
           <Card style={{ padding:22, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1.5px solid ${C.primary}20` }}>
-            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:14 }}>
-              <div style={{ width:8, height:8, borderRadius:'50%', background:C.primary, animation:'pulse-dot 1.5s ease-in-out infinite' }} />
+            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
+              <div style={{ width:8, height:8, borderRadius:'50%', background:C.muted }} />
               <p style={{ fontSize:12, fontWeight:800, color:C.primary, textTransform:'uppercase' as const, letterSpacing:'0.07em' }}>Active Task</p>
             </div>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:14 }}>
-              <div>
-                <h3 style={{ fontSize:16, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Hospital Appointment</h3>
-                <p style={{ fontSize:12, color:C.muted }}>Nimal Perera · Colombo National Hospital</p>
-              </div>
-              <div style={{ textAlign:'right' as const }}>
-                <p style={{ fontSize:11, color:C.muted }}>Time remaining</p>
-                <p style={{ fontSize:18, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>1h 42m</p>
-              </div>
-            </div>
-            {/* Checklist progress */}
-            <div style={{ display:'flex', flexDirection:'column', gap:7, marginBottom:14 }}>
-              {[{l:'Arrived at client location',done:true},{l:'Beneficiary collected',done:true},{l:'Arrived at hospital',done:true},{l:'Registration & waiting',done:false},{l:'Doctor consultation',done:false}].map((c,j)=>(
-                <div key={j} style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  <div style={{ width:18, height:18, borderRadius:'50%', background:c.done?C.success:`${C.primary}10`, border:`2px solid ${c.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                    {c.done&&<span style={{color:'#fff',display:'flex',transform:'scale(0.7)'}}>{I.check}</span>}
-                  </div>
-                  <p style={{ fontSize:12, color:c.done?C.type:C.muted, fontWeight:c.done?600:400, textDecoration:c.done?'line-through':undefined }}>{c.l}</p>
-                </div>
-              ))}
-            </div>
-            <div style={{ marginBottom:10 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                <p style={{ fontSize:11, color:C.muted }}>3 of 5 tasks complete</p>
-                <p style={{ fontSize:11, fontWeight:700, color:C.primary }}>60%</p>
-              </div>
-              <div style={{ height:6, borderRadius:99, background:`${C.primary}15`, overflow:'hidden' }}>
-                <div style={{ width:'60%', height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99 }} />
-              </div>
-            </div>
-            <Btn label="Open Task" onClick={()=>onNav('activeTask')} />
+            <p style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>Live task tracking (checklists, time remaining) will appear here once a job is in progress. This feature is coming soon.</p>
           </Card>
         </div>
 
@@ -402,18 +489,27 @@ function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; se
 
         <Card style={{ padding:22 }}>
           <SectionTitle title="Notifications" action="View All" onAction={()=>onNav('notifications')} />
-          {NOTIFS.slice(0,4).map((n,i)=>(
-            <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'8px 0', borderBottom:i<3?`1px solid ${C.border}`:'none' }}>
-              <div style={{ width:32, height:32, borderRadius:10, background:`${n.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{n.title}</p>
-                  {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.color, marginTop:2, flexShrink:0 }} />}
+          {notifLoading ? (
+            <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>Loading notifications…</p>
+          ) : notifError ? (
+            <p style={{ fontSize:12, color:C.error, padding:'8px 0' }}>{notifError}</p>
+          ) : notifications.length===0 ? (
+            <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>You're all caught up — no notifications yet.</p>
+          ) : notifications.slice(0,4).map((n:any,i:number,arr:any[])=>{
+            const meta = notifTypeMeta(n.type)
+            return (
+              <div key={n.id} onClick={n.read?undefined:()=>onMarkNotifRead(n.id)} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'8px 0', borderBottom:i<arr.length-1?`1px solid ${C.border}`:'none', cursor:n.read?'default':'pointer' }}>
+                <div style={{ width:32, height:32, borderRadius:10, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:15, flexShrink:0 }}>{meta.icon}</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                    <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{n.title}</p>
+                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:meta.color, marginTop:2, flexShrink:0 }} />}
+                  </div>
+                  <p style={{ fontSize:11, color:C.muted }}>{n.body}</p>
                 </div>
-                <p style={{ fontSize:11, color:C.muted }}>{n.body}</p>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </Card>
       </div>
     </div>
@@ -421,52 +517,62 @@ function DashboardHome({ status, setStatus, onNav, onToast }:{ status:Status; se
 }
 
 // ─── Today's Schedule ─────────────────────────────────────────────────────────
-function Schedule({ onToast }:{ onToast:(m:string)=>void }) {
+function Schedule({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; jobs:ScheduledJob[]; loading:boolean; error:string }) {
+  const todayLabel = new Date().toLocaleDateString('en-GB',{ weekday:'long', day:'numeric', month:'long', year:'numeric' })
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:800 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Today's Schedule</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Wednesday, 15 January 2025 · 3 jobs scheduled</p>
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {JOBS.map((job,i)=>(
-          <Card key={job.id} style={{ padding:24, border:`1.5px solid ${job.status==='active'?C.primary+'30':C.border}`, background:job.status==='active'?`${C.primary}04`:C.surface }}>
-            <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
-              <div style={{ flexShrink:0, textAlign:'center' as const, width:52 }}>
-                <p style={{ fontSize:14, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.time.split(' ')[0]}</p>
-                <p style={{ fontSize:10, color:C.muted }}>{job.time.split(' ')[1]}</p>
-              </div>
-              <div style={{ width:1, alignSelf:'stretch', background:job.status==='active'?C.primary:C.border, flexShrink:0 }} />
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
-                  <div>
-                    <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
-                      <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.service}</h3>
-                      <Bdg label={job.status==='active'?'In Progress':job.status==='upcoming'?'Upcoming':'Completed'} color={job.status==='active'?C.primary:job.status==='upcoming'?C.info:C.success} dot />
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{todayLabel} · {loading?'Loading…':`${jobs.length} job${jobs.length===1?'':'s'} scheduled`}</p>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your schedule…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : jobs.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>📅</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Jobs Today</p>
+          <p style={{ fontSize:12, color:C.muted }}>You have no jobs scheduled for today.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {jobs.map((job)=>(
+            <Card key={job.id} style={{ padding:24 }}>
+              <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
+                <div style={{ flexShrink:0, textAlign:'center' as const, width:52 }}>
+                  <p style={{ fontSize:14, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.time ? job.time.split(' ')[0] : '—'}</p>
+                  <p style={{ fontSize:10, color:C.muted }}>{job.time.split(' ')[1] ?? ''}</p>
+                </div>
+                <div style={{ width:1, alignSelf:'stretch', background:C.border, flexShrink:0 }} />
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
+                    <div>
+                      <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
+                        <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{job.service}</h3>
+                      </div>
+                      <p style={{ fontSize:12, color:C.muted }}>{[job.duration, job.client, job.beneficiary].filter(Boolean).join(' · ')}</p>
                     </div>
-                    <p style={{ fontSize:12, color:C.muted }}>{job.duration} · {job.client} → {job.beneficiary}</p>
+                    {job.amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{job.currency} {job.amount.toLocaleString()}</p>}
                   </div>
-                  <p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {job.amount.toLocaleString()}</p>
-                </div>
-                <div style={{ display:'flex', gap:14, marginBottom:14, flexWrap:'wrap' as const }}>
-                  <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                    <span style={{color:C.muted,display:'flex',transform:'scale(0.85)'}}>{I.pin}</span>
-                    <p style={{ fontSize:12, color:C.sub }}>{job.location}</p>
+                  <div style={{ display:'flex', gap:14, marginBottom:14, flexWrap:'wrap' as const }}>
+                    {job.location&&<div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                      <span style={{color:C.muted,display:'flex',transform:'scale(0.85)'}}>{I.pin}</span>
+                      <p style={{ fontSize:12, color:C.sub }}>{job.location}</p>
+                    </div>}
+                    {job.time&&<div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                      <span style={{color:C.muted,display:'flex'}}>{I.clock}</span>
+                      <p style={{ fontSize:12, color:C.sub }}>{job.time}</p>
+                    </div>}
                   </div>
-                  <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                    <span style={{color:C.muted,display:'flex'}}>{I.clock}</span>
-                    <p style={{ fontSize:12, color:C.sub }}>{job.time}</p>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening navigation…')} />
+                    <Btn label="Call Client" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling client…')} />
                   </div>
-                </div>
-                <div style={{ display:'flex', gap:8 }}>
-                  {job.status==='active'&&<Btn label="Continue Task" variant="primary" small icon={I.play} onClick={()=>onToast('Opening task…')} />}
-                  {job.status==='upcoming'&&<Btn label="View Details" variant="secondary" small />}
-                  <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening navigation…')} />
-                  <Btn label="Call Client" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling client…')} />
                 </div>
               </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -599,35 +705,56 @@ function Invitations({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Calendar ─────────────────────────────────────────────────────────────────
-function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
-  const [selectedDay, setSelectedDay] = useState(15)
-  const [blocked, setBlocked] = useState(new Set([20,21]))
+function CalendarView({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; jobs:ScheduledJob[]; loading:boolean; error:string }) {
+  const now = new Date()
+  const year = now.getFullYear()
+  const monthIndex = now.getMonth()
+  const today = now.getDate()
+  const monthLabel = now.toLocaleDateString('en-GB',{ month:'long', year:'numeric' })
+  const monthAbbr = now.toLocaleDateString('en-GB',{ month:'short' })
+
+  const [selectedDay, setSelectedDay] = useState(today)
+  const [blocked, setBlocked] = useState(new Set<number>())
   const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
-  const month = Array.from({length:31},(_,i)=>i+1)
-  const jobDays = new Set([13,14,15,16,17,18,22,23])
+  const daysInMonth = new Date(year, monthIndex+1, 0).getDate()
+  const month = Array.from({length:daysInMonth},(_,i)=>i+1)
+  // Monday-first offset for the 1st of the month (JS getDay(): 0=Sun..6=Sat)
+  const leadingBlanks = (new Date(year, monthIndex, 1).getDay() + 6) % 7
+
+  // Real job dates for this month, derived from getMyApplications() —
+  // Block a Date has no backing table yet, so it stays local-only (not
+  // persisted) rather than a fabricated Supabase write.
+  const jobDays = new Set<number>()
+  jobs.forEach(job => {
+    if(!job.scheduledDate) return
+    const d = new Date(job.scheduledDate)
+    if(d.getFullYear()===year && d.getMonth()===monthIndex) jobDays.add(d.getDate())
+  })
+  const daySchedule = jobs.filter(job => {
+    if(!job.scheduledDate) return false
+    const d = new Date(job.scheduledDate)
+    return d.getFullYear()===year && d.getMonth()===monthIndex && d.getDate()===selectedDay
+  })
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:800 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Calendar & Availability</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>January 2025 · Manage your schedule and availability</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{monthLabel} · Manage your schedule and availability</p>
       <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:20 }} className="cad-2col">
         <Card style={{ padding:24 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
-            <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>January 2025</h3>
-            <div style={{ display:'flex', gap:4 }}>
-              <button style={{ width:28, height:28, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg></button>
-              <button style={{ width:28, height:28, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg></button>
-            </div>
+            <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{monthLabel}</h3>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:2, marginBottom:4 }}>
             {days.map(d=><p key={d} style={{ fontSize:10, fontWeight:800, color:C.muted, textAlign:'center' as const, padding:'4px 0' }}>{d}</p>)}
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:3 }}>
-            {[...Array(2)].map((_,i)=><div key={`e${i}`} />)}
+            {[...Array(leadingBlanks)].map((_,i)=><div key={`e${i}`} />)}
             {month.map(d=>{
               const isSelected = d===selectedDay
               const hasJob = jobDays.has(d)
               const isBlocked = blocked.has(d)
-              const isToday = d===15
+              const isToday = d===today
               return (
                 <button key={d} onClick={()=>setSelectedDay(d)}
                   style={{ aspectRatio:'1', borderRadius:8, border:`1.5px solid ${isSelected?C.primary:isToday?`${C.primary}30`:'transparent'}`, background:isSelected?C.primary:isBlocked?`${C.error}10`:isToday?`${C.primary}08`:'transparent', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2, position:'relative' as const }}>
@@ -650,15 +777,19 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
 
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
           <Card style={{ padding:20 }}>
-            <SectionTitle title={`Jan ${selectedDay} — Schedule`} />
-            {selectedDay===15
-              ? JOBS.map((job,i)=>(
-                <div key={i} style={{ padding:'10px 0', borderBottom:i<JOBS.length-1?`1px solid ${C.border}`:'none' }}>
-                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{job.time} · {job.service}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{job.client} · {job.duration}</p>
+            <SectionTitle title={`${monthAbbr} ${selectedDay} — Schedule`} />
+            {loading ? (
+              <p style={{ fontSize:13, color:C.muted }}>Loading…</p>
+            ) : error ? (
+              <p style={{ fontSize:13, color:C.error }}>{error}</p>
+            ) : daySchedule.length===0 ? (
+              <p style={{ fontSize:13, color:C.muted }}>No jobs scheduled for this day.</p>
+            ) : daySchedule.map((job,i)=>(
+                <div key={job.id} style={{ padding:'10px 0', borderBottom:i<daySchedule.length-1?`1px solid ${C.border}`:'none' }}>
+                  <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{[job.time, job.service].filter(Boolean).join(' · ')}</p>
+                  <p style={{ fontSize:11, color:C.muted }}>{[job.client, job.duration].filter(Boolean).join(' · ')}</p>
                 </div>
               ))
-              : <p style={{ fontSize:13, color:C.muted }}>No jobs scheduled for this day.</p>
             }
           </Card>
           <Card style={{ padding:20 }}>
@@ -667,12 +798,12 @@ function CalendarView({ onToast }:{ onToast:(m:string)=>void }) {
             <div style={{ display:'flex', gap:8, flexWrap:'wrap' as const, marginBottom:12 }}>
               {[...blocked].map(d=>(
                 <div key={d} style={{ display:'flex', gap:4, alignItems:'center', padding:'4px 10px', borderRadius:99, background:`${C.error}10`, border:`1px solid ${C.error}30` }}>
-                  <p style={{ fontSize:11, fontWeight:700, color:C.error }}>Jan {d}</p>
+                  <p style={{ fontSize:11, fontWeight:700, color:C.error }}>{monthAbbr} {d}</p>
                   <button onClick={()=>setBlocked(p=>{ const n=new Set(p); n.delete(d); return n })} style={{ background:'none', border:'none', cursor:'pointer', color:C.error, display:'flex', padding:0 }}><span style={{display:'flex',transform:'scale(0.75)'}}>{I.close}</span></button>
                 </div>
               ))}
             </div>
-            <Btn label={`Block Jan ${selectedDay}`} variant="secondary" small onClick={()=>{ setBlocked(p=>new Set([...p,selectedDay])); onToast(`Jan ${selectedDay} blocked`) }} />
+            <Btn label={`Block ${monthAbbr} ${selectedDay}`} variant="secondary" small onClick={()=>{ setBlocked(p=>new Set([...p,selectedDay])); onToast(`${monthAbbr} ${selectedDay} blocked (not saved — coming soon)`) }} />
           </Card>
         </div>
       </div>
@@ -776,35 +907,70 @@ function Earnings({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
-function NotificationCenter() {
+function NotificationCenter({ notifications, loading, error, onMarkRead, onMarkAllRead }:{
+  notifications:any[]; loading:boolean; error:string
+  onMarkRead:(id:string)=>void; onMarkAllRead:()=>void
+}) {
+  const unreadCount = notifications.filter((n:any)=>!n.read).length
+
+  if(loading) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your notifications…</p>
+      </div>
+    )
+  }
+
+  if(error) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24, gap:10, flexWrap:'wrap' as const }}>
         <div>
           <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Notification Center</h2>
-          <p style={{ fontSize:13, color:C.muted }}>{NOTIFS.filter(n=>!n.read).length} unread</p>
+          <p style={{ fontSize:13, color:C.muted }}>{unreadCount} unread</p>
         </div>
-        <Bdg label={`${NOTIFS.filter(n=>!n.read).length} new`} color={C.primary} dot />
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          {unreadCount>0&&<Btn label="Mark all as read" variant="ghost" small onClick={onMarkAllRead} />}
+          <Bdg label={`${unreadCount} new`} color={C.primary} dot />
+        </div>
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {NOTIFS.map((n,i)=>(
-          <Card key={i} style={{ padding:18, background:n.read?C.surface:`${n.color}04`, border:`1px solid ${n.read?C.border:n.color+'20'}` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${n.color}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{n.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
-                    {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:n.color }} />}
+      {notifications.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>🔔</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Notifications</p>
+          <p style={{ fontSize:12, color:C.muted }}>You're all caught up — no new notifications.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {notifications.map((n:any)=>{
+            const meta = notifTypeMeta(n.type)
+            return (
+              <Card key={n.id} onClick={n.read?undefined:()=>onMarkRead(n.id)} style={{ padding:18, background:n.read?C.surface:`${meta.color}04`, border:`1px solid ${n.read?C.border:meta.color+'20'}`, cursor:n.read?'default':'pointer' }}>
+                <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+                  <div style={{ width:44, height:44, borderRadius:14, background:`${meta.color}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, flexShrink:0 }}>{meta.icon}</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                        <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title}</p>
+                        {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:meta.color }} />}
+                      </div>
+                      <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{formatRelativeTime(n.created_at)}</p>
+                    </div>
+                    <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>{n.body}</p>
                   </div>
-                  <p style={{ fontSize:11, color:C.muted, whiteSpace:'nowrap' as const }}>{n.time}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>{n.body}</p>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -912,20 +1078,84 @@ function Goals({ onToast }:{ onToast:(m:string)=>void }) {
 
 // ─── Profile Completion ───────────────────────────────────────────────────────
 function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
-  const sections = [
-    { l:'Personal Information',  pct:100, done:true  },
-    { l:'Professional Profile',  pct:100, done:true  },
-    { l:'Skills & Services',     pct:100, done:true  },
-    { l:'Certifications',        pct:80,  done:false, missing:'Medical Training Certificate' },
-    { l:'Identity Verification', pct:75,  done:false, missing:'Medical Fitness Certificate' },
-    { l:'Banking & Payouts',     pct:100, done:true  },
-    { l:'Availability',          pct:100, done:true  },
-    { l:'References',            pct:100, done:true  },
-    { l:'Agreements',            pct:40,  done:false, missing:'Code of Conduct, Care Standards' },
-  ]
-  const overall = Math.round(sections.reduce((a,s)=>a+s.pct,0)/sections.length)
-  const strength = overall>=90?'Excellent':overall>=70?'Good':'Needs Work'
-  const strengthColor = overall>=90?C.success:overall>=70?C.warning:C.error
+  const [steps, setSteps] = useState<OnboardingStepStatus[]|null>(null)
+  const [percent, setPercent] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  // Uses the exact same step rules as CareAgentOnboarding's registration-
+  // progress restore effect, via the shared computeOnboardingCompletion
+  // helper (src/lib/onboardingCompletion.ts) — never a second, independent
+  // notion of "complete" that could drift from onboarding.
+  useEffect(() => {
+    let cancelled = false
+    const loadCompletion = async () => {
+      try {
+        setLoading(true)
+        setError('')
+
+        const [
+          profileResult, agentDetailsResult, skillsResult, certificationsResult,
+          identityDocsResult, bankAccountResult, availabilityResult,
+          equipmentResult, referencesResult, agreementsResult,
+        ] = await Promise.allSettled([
+          getMyProfile(), getMyAgentDetails(), getMyAgentSkills(), getMyCertifications(),
+          getMyIdentityDocuments(), getMyBankAccount(), getMyAvailability(),
+          getMyEquipmentTransport(), getMyReferences(), getMyAgreements(),
+        ])
+
+        if(cancelled) return
+
+        // Promise.allSettled: an individual fetch failing just makes that
+        // step read as "incomplete" below (safe default) instead of
+        // breaking the whole Profile Completion view.
+        const completion = computeOnboardingCompletion({
+          profile: profileResult.status==='fulfilled' ? profileResult.value : null,
+          agentDetails: agentDetailsResult.status==='fulfilled' ? agentDetailsResult.value : null,
+          skills: skillsResult.status==='fulfilled' ? skillsResult.value : null,
+          certifications: certificationsResult.status==='fulfilled' ? certificationsResult.value : null,
+          identityDocs: identityDocsResult.status==='fulfilled' ? identityDocsResult.value : null,
+          bankAccount: bankAccountResult.status==='fulfilled' ? bankAccountResult.value : null,
+          availability: availabilityResult.status==='fulfilled' ? availabilityResult.value : null,
+          equipment: equipmentResult.status==='fulfilled' ? equipmentResult.value : null,
+          references: referencesResult.status==='fulfilled' ? referencesResult.value : null,
+          agreements: agreementsResult.status==='fulfilled' ? agreementsResult.value : null,
+        })
+
+        setSteps(completion.steps)
+        setPercent(completion.percent)
+      } catch (err) {
+        if(cancelled) return
+        console.error('Failed to compute profile completion:', err)
+        setError("We couldn't load your profile completion status. Please try again.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    loadCompletion()
+    return () => { cancelled = true }
+  }, [])
+
+  if(loading) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Profile Completion</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your profile completion status…</p>
+      </div>
+    )
+  }
+
+  if(error || !steps) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Profile Completion</h2>
+        <p style={{ fontSize:13, color:C.error }}>{error || "We couldn't load your profile completion status."}</p>
+      </div>
+    )
+  }
+
+  const strength = percent>=90?'Excellent':percent>=70?'Good':'Needs Work'
+  const strengthColor = percent>=90?C.success:percent>=70?C.warning:C.error
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Profile Completion</h2>
@@ -935,31 +1165,30 @@ function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
             <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Profile Strength: <span style={{color:strengthColor}}>{strength}</span></p>
             <p style={{ fontSize:12, color:C.muted }}>A complete profile gets 3× more bookings</p>
           </div>
-          <p style={{ fontSize:40, fontWeight:900, color:strengthColor, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{overall}%</p>
+          <p style={{ fontSize:40, fontWeight:900, color:strengthColor, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>{percent}%</p>
         </div>
         <div style={{ height:10, borderRadius:99, background:`${C.primary}12`, overflow:'hidden' }}>
-          <div style={{ width:`${overall}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.6s' }} />
+          <div style={{ width:`${percent}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.6s' }} />
         </div>
         <div style={{ display:'flex', gap:10, marginTop:14 }}>
           <Btn label="Complete Profile" icon={I.edit} onClick={()=>onToast('Opening registration…')} />
         </div>
       </Card>
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {sections.map((s,i)=>(
-          <Card key={i} style={{ padding:18 }}>
+        {steps.map((s)=>(
+          <Card key={s.step} style={{ padding:18 }}>
             <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-              <div style={{ width:32, height:32, borderRadius:10, background:s.done?`${C.success}10`:`${C.warning}10`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, color:s.done?C.success:C.warning }}>
-                {s.done?<span style={{display:'flex',transform:'scale(0.85)'}}>{I.check}</span>:<span style={{fontSize:12,fontWeight:900}}>!</span>}
+              <div style={{ width:32, height:32, borderRadius:10, background:s.complete?`${C.success}10`:`${C.warning}10`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, color:s.complete?C.success:C.warning }}>
+                {s.complete?<span style={{display:'flex',transform:'scale(0.85)'}}>{I.check}</span>:<span style={{fontSize:12,fontWeight:900}}>!</span>}
               </div>
               <div style={{ flex:1 }}>
                 <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.l}</p>
-                  <p style={{ fontSize:11, fontWeight:800, color:s.done?C.success:C.warning }}>{s.pct}%</p>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.label}</p>
+                  <p style={{ fontSize:11, fontWeight:800, color:s.complete?C.success:C.warning }}>{s.complete?100:0}%</p>
                 </div>
                 <div style={{ height:4, borderRadius:99, background:C.bg, overflow:'hidden' }}>
-                  <div style={{ width:`${s.pct}%`, height:'100%', background:s.done?C.success:C.warning, borderRadius:99 }} />
+                  <div style={{ width:s.complete?'100%':'0%', height:'100%', background:s.complete?C.success:C.warning, borderRadius:99 }} />
                 </div>
-                {s.missing&&<p style={{ fontSize:11, color:C.warning, marginTop:3 }}>Missing: {s.missing}</p>}
               </div>
             </div>
           </Card>
@@ -970,42 +1199,112 @@ function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Service Areas ────────────────────────────────────────────────────────────
+// Service Areas reuses the same agent_availability.max_travel_distance_km
+// / agent_details.service_areas columns the onboarding travel-radius step
+// already persists (see Phase 1A) — this view was previously a disconnected
+// local useState that never read or wrote that data.
 function ServiceAreas({ onToast }:{ onToast:(m:string)=>void }) {
-  const [radius, setRadius] = useState(25)
+  const [availability, setAvailability] = useState<any>(null)
+  const [serviceAreaCities, setServiceAreaCities] = useState<string[]>([])
+  const [radius, setRadius] = useState<number|null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError('')
+        const [availabilityResult, agentDetailsResult] = await Promise.allSettled([
+          getMyAvailability(),
+          getMyAgentDetails(),
+        ])
+        if(cancelled) return
+        const availabilityData = availabilityResult.status==='fulfilled' ? (availabilityResult.value as any) : null
+        setAvailability(availabilityData)
+        setRadius(availabilityData?.max_travel_distance_km ?? 25)
+        const agentDetailsData = agentDetailsResult.status==='fulfilled' ? (agentDetailsResult.value as any) : null
+        setServiceAreaCities(agentDetailsData?.service_areas ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load service area settings:', err)
+        setError("We couldn't load your service area settings.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  const handleSave = async () => {
+    if(radius==null) return
+    setSaving(true)
+    try {
+      const saved = await saveMyAvailability({
+        working_days: availability?.working_days ?? [],
+        preferred_shift: availability?.preferred_shift ?? 'morning',
+        emergency_available: availability?.emergency_available ?? false,
+        holiday_available: availability?.holiday_available ?? false,
+        max_weekly_hours: availability?.max_weekly_hours ?? 40,
+        max_travel_distance_km: radius,
+      })
+      setAvailability(saved)
+      onToast('Service area updated')
+    } catch(err) {
+      console.error('Failed to save service area:', err)
+      onToast("Couldn't save — please try again")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:700 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Service Areas</h2>
-      {/* Map placeholder */}
-      <Card style={{ overflow:'hidden', marginBottom:20 }}>
-        <div style={{ height:280, background:`linear-gradient(135deg,${C.bg},#E4EEF0)`, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:10, position:'relative' as const }}>
-          <div style={{ position:'absolute', inset:0, backgroundImage:`radial-gradient(circle at 40% 50%, ${C.primary}15 0%, transparent 70%)` }} />
-          {/* Coverage rings */}
-          {[100,70,42].map((s,i)=>(
-            <div key={i} style={{ position:'absolute', width:`${s}%`, height:`${s*0.7}%`, borderRadius:'50%', border:`2px dashed ${C.primary}${i===2?'40':'20'}`, top:'50%', left:'50%', transform:'translate(-50%,-50%)' }} />
-          ))}
-          <div style={{ width:16, height:16, borderRadius:'50%', background:C.primary, boxShadow:`0 0 0 6px ${C.primary}30`, zIndex:1 }} />
-          <p style={{ fontSize:13, fontWeight:700, color:C.sub, zIndex:1, background:C.surface, padding:'4px 12px', borderRadius:8 }}>Colombo · Coverage: {radius} km</p>
-          <p style={{ fontSize:11, color:C.muted }}>Interactive map — coming soon</p>
-        </div>
-        <div style={{ padding:20 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Travel Radius</p>
-            <p style={{ fontSize:13, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{radius} km</p>
-          </div>
-          <input type="range" min={5} max={100} step={5} value={radius} onChange={e=>setRadius(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer', marginBottom:14 }} />
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
-            {['Colombo','Dehiwela','Moratuwa','Mount Lavinia','Nugegoda','Maharagama'].map((city,i)=>(
-              <div key={i} style={{ padding:'8px 10px', borderRadius:8, background:C.bg, display:'flex', gap:5, alignItems:'center' }}>
-                <span style={{color:C.primary,display:'flex',transform:'scale(0.8)'}}>{I.pin}</span>
-                <p style={{ fontSize:11, fontWeight:600, color:C.type }}>{city}</p>
-              </div>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your service area…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : (
+        <Card style={{ overflow:'hidden', marginBottom:20 }}>
+          {/* Map placeholder */}
+          <div style={{ height:280, background:`linear-gradient(135deg,${C.bg},#E4EEF0)`, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:10, position:'relative' as const }}>
+            <div style={{ position:'absolute', inset:0, backgroundImage:`radial-gradient(circle at 40% 50%, ${C.primary}15 0%, transparent 70%)` }} />
+            {/* Coverage rings */}
+            {[100,70,42].map((s,i)=>(
+              <div key={i} style={{ position:'absolute', width:`${s}%`, height:`${s*0.7}%`, borderRadius:'50%', border:`2px dashed ${C.primary}${i===2?'40':'20'}`, top:'50%', left:'50%', transform:'translate(-50%,-50%)' }} />
             ))}
+            <div style={{ width:16, height:16, borderRadius:'50%', background:C.primary, boxShadow:`0 0 0 6px ${C.primary}30`, zIndex:1 }} />
+            <p style={{ fontSize:13, fontWeight:700, color:C.sub, zIndex:1, background:C.surface, padding:'4px 12px', borderRadius:8 }}>Coverage: {radius} km</p>
+            <p style={{ fontSize:11, color:C.muted }}>Interactive map — coming soon</p>
           </div>
-          <div style={{ marginTop:14 }}>
-            <Btn label="Save Coverage Area" variant="primary" small onClick={()=>onToast('Service area updated')} />
+          <div style={{ padding:20 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:8 }}>
+              <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Travel Radius</p>
+              <p style={{ fontSize:13, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{radius} km</p>
+            </div>
+            <input type="range" min={5} max={100} step={5} value={radius??25} onChange={e=>setRadius(+e.target.value)} style={{ width:'100%', accentColor:C.primary, cursor:'pointer', marginBottom:14 }} />
+            {serviceAreaCities.length>0 ? (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+                {serviceAreaCities.map((city,i)=>(
+                  <div key={i} style={{ padding:'8px 10px', borderRadius:8, background:C.bg, display:'flex', gap:5, alignItems:'center' }}>
+                    <span style={{color:C.primary,display:'flex',transform:'scale(0.8)'}}>{I.pin}</span>
+                    <p style={{ fontSize:11, fontWeight:600, color:C.type }}>{city}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize:12, color:C.muted }}>No service areas set yet — add cities during profile setup.</p>
+            )}
+            <div style={{ marginTop:14 }}>
+              <Btn label={saving?'Saving…':'Save Coverage Area'} variant="primary" small disabled={saving} onClick={handleSave} />
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      )}
     </div>
   )
 }
@@ -1045,35 +1344,44 @@ function StatusCenter({ status, setStatus, onToast }:{ status:Status; setStatus:
 }
 
 // ─── Activity Timeline ────────────────────────────────────────────────────────
-function ActivityTimeline() {
-  const events = [
-    { icon:'💼', l:'Job Accepted',         d:'Post-Surgery Care · Chamari Dissanayake',          t:'Today, 2 min ago',    color:C.accent  },
-    { icon:'💰', l:'Payment Received',     d:'LKR 3,750 for Hospital Appointment · Ihsan',       t:'Today, 1 hr ago',     color:C.success },
-    { icon:'⭐', l:'Review Received',      d:'5 stars from Mohamed Ihsan',                       t:'Today, 1.5 hrs ago',  color:C.warning },
-    { icon:'▶️', l:'Task Started',         d:'Hospital Appointment · Nimal Perera',              t:'Today, 9:00 AM',      color:C.primary },
-    { icon:'✅', l:'Certificate Approved', d:'First Aid Certificate verified by ReadyPal',       t:'Yesterday, 3:00 PM',  color:C.success },
-    { icon:'👤', l:'Profile Updated',      d:'Professional headline updated',                    t:'2 days ago',          color:C.primary },
-    { icon:'💼', l:'Job Accepted',         d:'Home Care · Priya Fernando',                       t:'14 Jan, 8:00 AM',     color:C.accent  },
-    { icon:'🔐', l:'Login',               d:'Chrome · MacBook · Colombo',                       t:'14 Jan, 7:55 AM',     color:C.muted   },
-  ]
+// Built from real notifications (getMyNotifications) — there is no separate
+// activity_log table yet, so richer entries (payments, reviews, logins,
+// task-in-progress events) aren't fabricated; they'll appear here once
+// those subsystems exist and start writing notifications.
+function ActivityTimeline({ notifications, loading, error }:{ notifications:any[]; loading:boolean; error:string }) {
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Activity Timeline</h2>
-      <div style={{ display:'flex', flexDirection:'column' }}>
-        {events.map((e,i,arr)=>(
-          <div key={i} style={{ display:'flex', gap:14 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:40, height:40, borderRadius:12, background:`${e.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{e.icon}</div>
-              {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
-            </div>
-            <div style={{ paddingBottom:i<arr.length-1?18:0, paddingTop:4 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{e.l}</p>
-              <p style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{e.d}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{e.t}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your activity…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : notifications.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>🕒</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Activity Yet</p>
+          <p style={{ fontSize:12, color:C.muted }}>Your activity will show up here as things happen.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column' }}>
+          {notifications.map((n:any,i:number,arr:any[])=>{
+            const meta = notifTypeMeta(n.type)
+            return (
+              <div key={n.id} style={{ display:'flex', gap:14 }}>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+                  <div style={{ width:40, height:40, borderRadius:12, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18 }}>{meta.icon}</div>
+                  {i<arr.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
+                </div>
+                <div style={{ paddingBottom:i<arr.length-1?18:0, paddingTop:4 }}>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{n.title}</p>
+                  <p style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{n.body}</p>
+                  <p style={{ fontSize:11, color:C.muted }}>{formatRelativeTime(n.created_at)}</p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -1131,119 +1439,8 @@ function EmergencyPanel({ onToast }:{ onToast:(m:string)=>void }) {
   )
 }
 
-// ─── Empty / Loading / Error / Success ────────────────────────────────────────
-function EmptyStates() {
-  const items = [
-    { emoji:'💼', title:'No Active Jobs',    desc:"You don't have any active jobs right now. Check your invitations to get started.",  cta:'Browse Invitations' },
-    { emoji:'📨', title:'No Invitations',    desc:'No new job invitations at the moment. Make sure your status is set to Online.',      cta:'Set Online' },
-    { emoji:'🔔', title:'No Notifications',  desc:"You're all caught up — no new notifications.",                                       cta:'View Settings' },
-    { emoji:'💬', title:'No Messages',       desc:'No messages yet. Once you accept a job, clients can message you here.',             cta:'View Schedule' },
-    { emoji:'💳', title:'No Earnings Yet',   desc:'Complete your first job to start earning. Your payouts will appear here.',          cta:'Find Jobs' },
-  ]
-  return (
-    <div style={{ padding:'28px 32px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }} className="cad-2col">
-        {items.map((s,i)=>(
-          <Card key={i} style={{ padding:'40px 24px', textAlign:'center' as const }}>
-            <div style={{ fontSize:44, marginBottom:14 }}>{s.emoji}</div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{s.title}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7, marginBottom:18 }}>{s.desc}</p>
-            <Btn label={s.cta} variant="secondary" small />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LoadingStates() {
-  function Shimmer({ style={} }:{ style?:CSSProperties }) {
-    return <div style={{ borderRadius:10, background:'linear-gradient(90deg,#E4E8EA 25%,#F2F4F5 50%,#E4E8EA 75%)', backgroundSize:'200% 100%', animation:'shimmer 1.6s ease-in-out infinite', ...style }} />
-  }
-  return (
-    <div style={{ padding:'28px 32px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-        {['Loading Dashboard','Loading Schedule','Loading Calendar','Loading Analytics'].map((l,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:14 }}>{l}</p>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:14 }}>
-              {[...Array(4)].map((_,j)=><Shimmer key={j} style={{ height:80, borderRadius:14 }} />)}
-            </div>
-            {[...Array(3)].map((_,j)=>(
-              <div key={j} style={{ display:'flex', gap:12, marginBottom:10 }}>
-                <Shimmer style={{ width:44, height:44, borderRadius:14, flexShrink:0 }} />
-                <div style={{ flex:1 }}>
-                  <Shimmer style={{ height:13, width:'60%', marginBottom:6 }} />
-                  <Shimmer style={{ height:10, width:'40%' }} />
-                </div>
-              </div>
-            ))}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  const errors = [
-    { icon:'📊', title:'Unable to Load Dashboard', desc:'We could not retrieve your dashboard data. Please try again.', color:C.error },
-    { icon:'📅', title:'Schedule Error',            desc:'Your schedule could not be loaded. Check your connection.',   color:C.warning },
-    { icon:'📶', title:'Network Error',             desc:'You appear to be offline. Progress has been saved.',          color:C.muted },
-  ]
-  return (
-    <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {errors.map((e,i)=>(
-          <Card key={i} style={{ padding:22, border:`1.5px solid ${e.color}30`, background:`${e.color}04` }}>
-            <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${e.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{e.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:800, color:e.color, marginBottom:4 }}>{e.title}</p>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:12 }}>{e.desc}</p>
-                <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={()=>onToast('Retrying…')} />
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
-  const items = [
-    { icon:'🟢', title:'Availability Updated',  desc:'Your status is now Online. Clients can send you job invitations.',                 color:C.success },
-    { icon:'✅', title:'Job Accepted',           desc:'Hospital Appointment accepted. Mohamed Ihsan has been notified.',                  color:C.success },
-    { icon:'👤', title:'Profile Updated',        desc:'Your professional headline has been updated successfully.',                        color:C.success },
-    { icon:'🏆', title:'Goal Achieved',          desc:"Congratulations! You've hit your weekly target of 8 jobs!",                       color:C.warning },
-  ]
-  return (
-    <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {items.map((s,i)=>(
-          <Card key={i} style={{ padding:20, border:`1.5px solid ${s.color}30`, background:`${s.color}04` }}>
-            <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-              <div style={{ width:44, height:44, borderRadius:14, background:`${s.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.icon}</div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:s.color, marginBottom:3 }}>{s.title}</p>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{s.desc}</p>
-              </div>
-              <span style={{ color:s.color, display:'flex', transform:'scale(1.3)' }}>{I.check}</span>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'home'|'schedule'|'activeTask'|'invitations'|'calendar'|'performance'|'earnings'|'notifications'|'messages'|'goals'|'profile'|'serviceAreas'|'statusCenter'|'timeline'|'emergency'|'empty'|'loading'|'error'|'success'
+type SubView = 'home'|'schedule'|'activeTask'|'invitations'|'calendar'|'performance'|'earnings'|'notifications'|'messages'|'goals'|'profile'|'serviceAreas'|'statusCenter'|'timeline'|'emergency'
 
 const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'home',        l:'Dashboard',       icon:I.target,    group:'Overview' },
@@ -1261,18 +1458,155 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'statusCenter',l:'Status Center',   icon:I.shield,    group:'Settings' },
   { k:'timeline',    l:'Activity Log',    icon:I.clock,     group:'Settings' },
   { k:'emergency',   l:'Emergency Panel', icon:I.sos,       group:'Emergency' },
-  { k:'empty',       l:'Empty States',    icon:I.warning,   group:'Dev' },
-  { k:'loading',     l:'Loading States',  icon:I.refresh,   group:'Dev' },
-  { k:'error',       l:'Error States',    icon:I.warning,   group:'Dev' },
-  { k:'success',     l:'Success States',  icon:I.check,     group:'Dev' },
 ]
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareAgentDashboard() {
+  const navigate = useNavigate()
   const [sub, setSub] = useState<SubView>('home')
   const [status, setStatus] = useState<Status>('online')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // ─── Application-status guard ───────────────────────────────────────────
+  // Only an approved agent may stay on this dashboard. 'checking' renders a
+  // loading screen (never the real dashboard) until agent_details is known;
+  // 'denied' redirects away and also renders nothing, so an unapproved or
+  // signed-out visitor never sees a flash of dashboard content.
+  const [accessState, setAccessState] = useState<'checking'|'allowed'|'denied'>('checking')
+  const [profile, setProfile] = useState<any>(null)
+  const [agentDetails, setAgentDetails] = useState<any>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const checkAccess = async () => {
+      const user = await getCurrentUser().catch(() => null)
+      if(!user) {
+        if(!cancelled) { setAccessState('denied'); navigate('/auth', { replace:true }) }
+        return
+      }
+
+      const [profileResult, agentDetailsResult] = await Promise.allSettled([
+        getMyProfile(),
+        getMyAgentDetails(),
+      ])
+      if(cancelled) return
+
+      setProfile(profileResult.status==='fulfilled' ? profileResult.value : null)
+      const agentDetailsData = agentDetailsResult.status==='fulfilled' ? (agentDetailsResult.value as any) : null
+      setAgentDetails(agentDetailsData)
+
+      if(agentDetailsData?.application_status === 'approved') {
+        setAccessState('allowed')
+      } else {
+        // Fail closed: any uncertainty (fetch failure, missing record, any
+        // status other than 'approved') sends the agent back to onboarding
+        // rather than granting access.
+        setAccessState('denied')
+        navigate('/agent/onboarding', { replace:true })
+      }
+    }
+    checkAccess()
+    return () => { cancelled = true }
+  }, [navigate])
+
+  // ─── Real agent identity ────────────────────────────────────────────────
+  const agentName = profile?.full_name?.trim() || 'Care Agent'
+  const agentInitials = getInitials(profile?.full_name)
+  const agentSubtitle = [
+    agentDetails?.professional_headline?.trim(),
+    profile?.city?.trim() || profile?.district?.trim(),
+  ].filter(Boolean).join(' · ') || 'Care Agent'
+
+  // ─── Real notifications ─────────────────────────────────────────────────
+  const [notifications, setNotifications] = useState<any[]>([])
+  const [notifLoading, setNotifLoading] = useState(true)
+  const [notifError, setNotifError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadNotifications = async () => {
+      try {
+        setNotifLoading(true)
+        setNotifError('')
+        const data = await getMyNotifications()
+        if(!cancelled) setNotifications(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load notifications:', err)
+        setNotifError("We couldn't load your notifications. Please try again.")
+      } finally {
+        if(!cancelled) setNotifLoading(false)
+      }
+    }
+    loadNotifications()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  const unreadNotifCount = notifications.filter((n:any)=>!n.read).length
+
+  // ─── Real applications / scheduled jobs ─────────────────────────────────
+  const [applications, setApplications] = useState<any[]>([])
+  const [jobsLoading, setJobsLoading] = useState(true)
+  const [jobsError, setJobsError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadApplications = async () => {
+      try {
+        setJobsLoading(true)
+        setJobsError('')
+        const data = await getMyApplications()
+        if(!cancelled) setApplications(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load applications:', err)
+        setJobsError("We couldn't load your schedule. Please try again.")
+      } finally {
+        if(!cancelled) setJobsLoading(false)
+      }
+    }
+    loadApplications()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  const scheduledJobs = applications
+    .map(scheduledJobFromApplication)
+    .sort((a,b) => {
+      if(!a.scheduledDate && !b.scheduledDate) return 0
+      if(!a.scheduledDate) return 1
+      if(!b.scheduledDate) return -1
+      return a.scheduledDate.localeCompare(b.scheduledDate)
+    })
+  const todaysJobs = scheduledJobs.filter(j => isSameDate(j.scheduledDate, new Date()))
+
+  const markNotifRead = async (id:string) => {
+    const target = notifications.find(n=>n.id===id)
+    if(!target || target.read) return
+    // Optimistic — small, low-risk update local to one row.
+    setNotifications(list => list.map(n=>n.id===id?{...n,read:true}:n))
+    try {
+      await markNotificationRead(id)
+    } catch(err) {
+      console.error('Failed to mark notification as read:', err)
+      setNotifications(list => list.map(n=>n.id===id?{...n,read:false}:n))
+    }
+  }
+
+  const markAllNotifsRead = async () => {
+    const unreadIds = notifications.filter(n=>!n.read).map(n=>n.id)
+    if(unreadIds.length===0) return
+    const previous = notifications
+    setNotifications(list => list.map(n=>({...n,read:true})))
+    try {
+      await markAllNotificationsRead()
+    } catch(err) {
+      console.error('Failed to mark all notifications as read:', err)
+      setNotifications(previous)
+    }
+  }
 
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),2800) }
 
@@ -1280,27 +1614,37 @@ export default function CareAgentDashboard() {
 
   const renderSub = () => {
     switch(sub) {
-      case 'home':        return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast} />
-      case 'schedule':    return <Schedule onToast={showToast} />
+      case 'home':        return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
+                             agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
+                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead}
+                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError} />
+      case 'schedule':    return <Schedule onToast={showToast} jobs={todaysJobs} loading={jobsLoading} error={jobsError} />
       case 'activeTask':  return <ActiveTask onToast={showToast} />
       case 'invitations': return <Invitations onToast={showToast} />
-      case 'calendar':    return <CalendarView onToast={showToast} />
+      case 'calendar':    return <CalendarView onToast={showToast} jobs={scheduledJobs} loading={jobsLoading} error={jobsError} />
       case 'performance': return <Performance />
       case 'earnings':    return <Earnings onToast={showToast} />
-      case 'notifications':return <NotificationCenter />
+      case 'notifications':return <NotificationCenter notifications={notifications} loading={notifLoading} error={notifError} onMarkRead={markNotifRead} onMarkAllRead={markAllNotifsRead} />
       case 'messages':    return <MessagesPreview onToast={showToast} />
       case 'goals':       return <Goals onToast={showToast} />
       case 'profile':     return <ProfileCompletion onToast={showToast} />
       case 'serviceAreas':return <ServiceAreas onToast={showToast} />
       case 'statusCenter':return <StatusCenter status={status} setStatus={setStatus} onToast={showToast} />
-      case 'timeline':    return <ActivityTimeline />
+      case 'timeline':    return <ActivityTimeline notifications={notifications} loading={notifLoading} error={notifError} />
       case 'emergency':   return <EmergencyPanel onToast={showToast} />
-      case 'empty':       return <EmptyStates />
-      case 'loading':     return <LoadingStates />
-      case 'error':       return <ErrorStates onToast={showToast} />
-      case 'success':     return <SuccessStates onToast={showToast} />
-      default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast} />
+      default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
+                             agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
+                             notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead}
+                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError} />
     }
+  }
+
+  if(accessState !== 'allowed') {
+    return (
+      <div style={{ display:'flex', minHeight:'100vh', alignItems:'center', justifyContent:'center', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
+        {accessState==='checking' && <p style={{ fontSize:13, color:C.muted }}>Loading your dashboard…</p>}
+      </div>
+    )
   }
 
   return (
@@ -1311,11 +1655,11 @@ export default function CareAgentDashboard() {
         <div style={{ padding:'18px 18px 12px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:8 }}>
             <div style={{ position:'relative' as const }}>
-              <Avatar initials="KP" size={36} />
+              <Avatar initials={agentInitials} size={36} />
               <div style={{ position:'absolute', bottom:0, right:0, width:10, height:10, borderRadius:'50%', background:STATUS_CONFIG[status].color, border:'2px solid #fff' }} />
             </div>
             <div>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
+              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{agentName}</p>
               <div style={{ display:'flex', gap:4, alignItems:'center' }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:STATUS_CONFIG[status].color }} />
                 <p style={{ fontSize:11, color:STATUS_CONFIG[status].color, fontWeight:700 }}>{STATUS_CONFIG[status].label}</p>
@@ -1327,7 +1671,7 @@ export default function CareAgentDashboard() {
             <div style={{ display:'flex', gap:8, alignItems:'center' }}>
               <button onClick={()=>setSub('notifications')} style={{ position:'relative' as const, background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>
                 {I.bell}
-                <div style={{ position:'absolute', top:-2, right:-2, width:8, height:8, borderRadius:'50%', background:C.error }} />
+                {unreadNotifCount>0&&<div style={{ position:'absolute', top:-2, right:-2, width:8, height:8, borderRadius:'50%', background:C.error }} />}
               </button>
               <button onClick={()=>setSub('messages')} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>{I.msg}</button>
             </div>
@@ -1345,8 +1689,7 @@ export default function CareAgentDashboard() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${isEmerg?C.error:C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?(isEmerg?C.error:C.primary):isEmerg?C.error:C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${isEmerg?C.error:C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?(isEmerg?C.error:C.primary):isEmerg?`${C.error}80`:C.muted, flexShrink:0 }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='invitations'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', padding:'0 5px' }}>2</div>}
-                  {n.k==='notifications'&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', padding:'0 5px' }}>3</div>}
+                  {n.k==='notifications'&&unreadNotifCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', padding:'0 5px' }}>{unreadNotifCount}</div>}
                 </button>
               )
             })}
@@ -1359,9 +1702,9 @@ export default function CareAgentDashboard() {
         <div style={{ position:'fixed', inset:0, zIndex:50, background:'rgba(0,0,0,0.4)' }} onClick={()=>setSidebarOpen(false)}>
           <div onClick={e=>e.stopPropagation()} style={{ width:240, height:'100%', background:C.surface, overflowY:'auto' }}>
             <div style={{ padding:'16px 18px', borderBottom:`1px solid ${C.border}`, display:'flex', gap:10, alignItems:'center' }}>
-              <Avatar initials="KP" size={36} />
+              <Avatar initials={agentInitials} size={36} />
               <div>
-                <p style={{ fontSize:13, fontWeight:800, color:C.type }}>Kasun Perera</p>
+                <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{agentName}</p>
                 <p style={{ fontSize:11, color:STATUS_CONFIG[status].color, fontWeight:700 }}>{STATUS_CONFIG[status].label}</p>
               </div>
             </div>
