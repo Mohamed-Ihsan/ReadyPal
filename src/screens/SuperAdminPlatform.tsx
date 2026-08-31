@@ -1,4 +1,5 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
 
 const C = {
   primary:'#00737A', accent:'#EE8153', type:'#2C3E43', sub:'#6B7E85',
@@ -44,16 +45,6 @@ const SERVICES = [
   { name:'SMS Gateway',     status:'healthy',  latency:'64ms',  uptime:'99.90%' },
   { name:'AI Service',      status:'healthy',  latency:'420ms', uptime:'99.95%' },
   { name:'Push Notifications',status:'healthy',latency:'22ms',  uptime:'99.99%' },
-]
-
-const FEATURE_FLAGS = [
-  { name:'AI Assistant',          cat:'AI',        env:'Production', status:'enabled',  rollout:100, targets:'All Users',   deps:'OpenAI API'         },
-  { name:'Instant Booking',       cat:'Bookings',  env:'Production', status:'enabled',  rollout:100, targets:'All Clients', deps:'Payments'           },
-  { name:'Voice Care Notes',      cat:'AI',        env:'Staging',    status:'beta',     rollout:20,  targets:'Agents',      deps:'AI Assistant'       },
-  { name:'Video Consultation',    cat:'Care',      env:'Development',status:'disabled', rollout:0,   targets:'Premium',     deps:'Twilio'             },
-  { name:'Predictive Matching',   cat:'AI',        env:'Staging',    status:'beta',     rollout:50,  targets:'All',         deps:'AI Assistant'       },
-  { name:'Smart Invoicing',       cat:'Finance',   env:'Production', status:'enabled',  rollout:100, targets:'All',         deps:'Finance Module'     },
-  { name:'WhatsApp Integration',  cat:'Comms',     env:'Development',status:'disabled', rollout:0,   targets:'All',         deps:'Twilio'             },
 ]
 
 const CMS_PAGES = [
@@ -118,16 +109,6 @@ const RELEASES = [
   { version:'v2.7.4', env:'Production', date:'01 Jan 2026', author:'DevOps', status:'stable',  notes:'Security patches, dependency updates' },
 ]
 
-const BRAND_ASSETS = [
-  {l:'Light Logo',    sz:'SVG / PNG',  note:'Used on white backgrounds',       preview:'RP'},
-  {l:'Dark Logo',     sz:'SVG / PNG',  note:'Used on dark backgrounds',        preview:'RP'},
-  {l:'Favicon',       sz:'ICO / PNG',  note:'Browser tab icon (16×16, 32×32)', preview:'R'},
-  {l:'App Icon',      sz:'PNG 1024px', note:'iOS and Android app icon',        preview:'RP'},
-  {l:'Splash Screen', sz:'PNG',        note:'App loading screen',              preview:'ReadyPal'},
-  {l:'Email Header',  sz:'PNG',        note:'Used in transactional emails',    preview:'RP'},
-  {l:'PDF Branding',  sz:'PNG',        note:'Report headers and footers',      preview:'RP'},
-  {l:'Invoice Logo',  sz:'PNG',        note:'Payment invoice logo',            preview:'RP'},
-]
 
 const MEDIA_FOLDERS = ['Brand Assets','Blog Images','Care Guides','Care Agents','Clients','Documents','Videos']
 
@@ -531,7 +512,7 @@ function PlatformSettings({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Branding Center ──────────────────────────────────────────────────────────
-function BrandingCenter({ onToast }:{ onToast:(m:string)=>void }) {
+function BrandingCenter({ onToast, BRAND_ASSETS }:{ onToast:(m:string)=>void; BRAND_ASSETS:any[] }) {
   return (
     <div style={{ padding:'20px 24px 60px' }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18 }}>
@@ -576,7 +557,7 @@ function BrandingCenter({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
-function FeatureFlags({ onToast }:{ onToast:(m:string)=>void }) {
+function FeatureFlags({ onToast, FEATURE_FLAGS }:{ onToast:(m:string)=>void; FEATURE_FLAGS:any[] }) {
   const ec = (e:string) => e==='Production'?C.error:e==='Staging'?C.warning:C.muted
   return (
     <div style={{ padding:'20px 24px 60px' }}>
@@ -1787,6 +1768,33 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function SuperAdminPlatform() {
+  const [FEATURE_FLAGS, setFEATURE_FLAGS] = useState<any[]>([])
+  const [BRAND_ASSETS, setBRAND_ASSETS] = useState<any[]>([])
+
+  useEffect(() => {
+    async function loadFlags() {
+      const { data, error } = await supabase
+        .from('platform_settings')
+        .select('value')
+        .eq('key', 'feature_flags')
+        .single()
+      if (error) { console.error(error); return }
+      setFEATURE_FLAGS(data?.value || [])
+    }
+    async function loadBranding() {
+      const { data, error } = await supabase
+        .from('platform_settings')
+        .select('value')
+        .eq('key', 'branding')
+        .single()
+      if (error) { console.error(error); return }
+      setBRAND_ASSETS(data?.value || [])
+    }
+    loadFlags()
+    loadBranding()
+  }, [])
+  
+
   const [sub, setSub] = useState<SubView>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1799,8 +1807,8 @@ export default function SuperAdminPlatform() {
     switch(sub) {
       case 'home':         return <SADashboard onNav={setSub} onToast={showToast} />
       case 'settings':     return <PlatformSettings onToast={showToast} />
-      case 'branding':     return <BrandingCenter onToast={showToast} />
-      case 'flags':        return <FeatureFlags onToast={showToast} />
+      case 'branding':     return <BrandingCenter onToast={showToast} BRAND_ASSETS={BRAND_ASSETS} />
+      case 'flags':        return <FeatureFlags onToast={showToast} FEATURE_FLAGS={FEATURE_FLAGS} />
       case 'cms':          return <CMSDashboard onNav={setSub} onToast={showToast} />
       case 'pageBuilder':  return <PageBuilder onToast={showToast} />
       case 'blog':         return <BlogManagement onToast={showToast} />

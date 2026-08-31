@@ -1,4 +1,6 @@
-import { useState, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { supabase } from '../lib/supabaseClient'
+import { getBeneficiariesFull } from '../lib/api'
 import logoFull from '@/imports/20260723_170707.png'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -229,7 +231,7 @@ type ProfileTab = 'overview'|'medical'|'documents'|'care-history'|'emergency'|'n
 // ══════════════════════════════════════════════════════════════════════════════
 // BENEFICIARY DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════════
-function Dashboard({ onView, onAdd }: { onView:(id:string)=>void; onAdd:()=>void }) {
+function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void; onAdd:()=>void; beneficiaries: Beneficiary[] }) {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('Alphabetical')
   const [filterDrawer, setFilterDrawer] = useState(false)
@@ -237,7 +239,7 @@ function Dashboard({ onView, onAdd }: { onView:(id:string)=>void; onAdd:()=>void
   const [statusFilter, setStatusFilter] = useState('')
   const [moreMenuId, setMoreMenuId] = useState<string|null>(null)
 
-  const filtered = BENEFICIARIES.filter(b => {
+  const filtered = beneficiaries.filter(b => {
     const q = search.toLowerCase()
     const matchSearch = !q || b.name.toLowerCase().includes(q) || b.city.toLowerCase().includes(q) || b.relationship.toLowerCase().includes(q) || b.conditions.join(' ').toLowerCase().includes(q)
     const matchGender = !genderFilter || b.gender === genderFilter
@@ -246,7 +248,7 @@ function Dashboard({ onView, onAdd }: { onView:(id:string)=>void; onAdd:()=>void
   }).sort((a,b) => sort==='Alphabetical' ? a.name.localeCompare(b.name) : sort==='Oldest' ? a.age - b.age : b.age - a.age)
 
   const summaryStats = [
-    { label:'Total Beneficiaries', value:BENEFICIARIES.length, color:C.primary, icon:I.users },
+    { label:'Total Beneficiaries', value:beneficiaries.length, color:C.primary, icon:I.users },
     { label:'Active Care Requests', value:2, color:C.accent, icon:I.requests },
     { label:'Upcoming Visits', value:3, color:C.info, icon:I.calendar },
     { label:'Pending Documents', value:1, color:C.warning, icon:I.doc },
@@ -1178,12 +1180,18 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
 export default function BeneficiaryManagement() {
   const [view, setView] = useState<View>('dashboard')
   const [selectedId, setSelectedId] = useState<string>('')
+  const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([])
 
-  const selectedBene = BENEFICIARIES.find(b=>b.id===selectedId)
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) getBeneficiariesFull(data.user.id).then(setBeneficiaries).catch(console.error)
+    })
+  }, [])
+
+  const selectedBene = beneficiaries.find(b=>b.id===selectedId)
 
   return (
     <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
-      {/* Top bar */}
       <div style={{ height:60, background:C.surface, borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', padding:'0 28px', gap:12, flexShrink:0, position:'sticky', top:0, zIndex:20 }}>
         <img src={logoFull} alt="ReadyPal" style={{ height:84, objectFit:'contain' }} />
         <div style={{ flex:1 }} />
@@ -1195,10 +1203,8 @@ export default function BeneficiaryManagement() {
           ))}
         </div>
       </div>
-
-      {/* Content */}
       <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column' }}>
-        {view==='dashboard' && <Dashboard onView={id=>{setSelectedId(id);setView('profile')}} onAdd={()=>setView('add-wizard')} />}
+        {view==='dashboard' && <Dashboard onView={id=>{setSelectedId(id);setView('profile')}} onAdd={()=>setView('add-wizard')} beneficiaries={beneficiaries} />}
         {view==='profile' && selectedBene && <Profile b={selectedBene} onBack={()=>setView('dashboard')} />}
         {view==='add-wizard' && (
           <div style={{ flex:1, display:'flex', flexDirection:'column', background:C.surface, overflow:'hidden' }}>

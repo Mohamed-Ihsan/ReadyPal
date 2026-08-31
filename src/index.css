@@ -1,4 +1,7 @@
 @import "tailwindcss";
+.leaflet-container img {
+  max-width: none !important;
+}
 
 @theme {
   --font-sans: 'Manrope', sans-serif;

@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, type ReactNode, type CSSProperties } from 
 import logoFull from '@/imports/20260723_170707.png'
 import logoIcon from '@/imports/20260723_164632.png'
 import logoWhite from '@/imports/20260723_165045.png'
+import { supabase } from '../lib/supabaseClient'
+import { getDashboardOverview, getAllCareRequests, getBeneficiaries, getAllNotifications, getCurrentProfile, updateProfile, getPaymentsData, getMyReviews, getMyAgents, getMyConversations, getConversationMessages, sendMessage } from '../lib/api'
+import { useNavigate } from 'react-router-dom'
 
 // ─── Colours ──────────────────────────────────────────────────────────────────
 const C = {
@@ -340,7 +343,7 @@ function MobileNav({ active, setActive }: { active: DashPage; setActive: (p: Das
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD OVERVIEW
 // ═══════════════════════════════════════════════════════════════════════════════
-function OverviewPage() {
+function OverviewPage({ overview }: { overview: any }) {
   // Animated counter
   const [count, setCount] = useState(0)
   useEffect(() => {
@@ -357,8 +360,8 @@ function OverviewPage() {
   }, [])
 
   const summaryCards = [
-    { label:'Upcoming Visits',          value:'3',    sub:'Next: Today 9:00 AM',      color:C.primary, icon:I.calendar,  trend:'+1 this week' },
-    { label:'Active Care Requests',     value:'2',    sub:'1 awaiting confirmation',   color:C.accent,  icon:I.requests,  trend:'Needs attention' },
+    { label:'Upcoming Visits',          value:String(overview.counts.upcomingVisits),    sub:'Next: Today 9:00 AM',      color:C.primary, icon:I.calendar,  trend:'+1 this week' },
+    { label:'Active Care Requests',     value:String(overview.counts.activeRequests),    sub:'1 awaiting confirmation',   color:C.accent,  icon:I.requests,  trend:'Needs attention' },
     { label:'Unread Messages',          value:'5',    sub:'From 3 agents',             color:'#3B82F6', icon:I.messages,  trend:'2 new today' },
     { label:'Pending Payments',         value:'LKR 4,500', sub:'Due in 3 days',        color:C.warning, icon:I.payments,  trend:'1 invoice' },
     { label:'Agents Applied',           value:'4',    sub:'For Home Visit request',    color:C.success, icon:I.agents,    trend:'Review now' },
@@ -373,12 +376,7 @@ function OverviewPage() {
     { label:'Contact Support',     icon:I.support,       color:'#3B82F6' },
   ]
 
-  const requests = [
-    { id:'CR-001', title:'Hospital Appointment Escort', status:'in-progress', agent:'Chamari Dissanayake', date:'15 Jan 2025', location:'Colombo 07', progress:65 },
-    { id:'CR-002', title:'Weekly Home Wellness Visit',  status:'open',         agent:'—',                  date:'18 Jan 2025', location:'Kandy',      progress:0  },
-    { id:'CR-003', title:'Medication Collection',       status:'applied',      agent:'3 agents applied',   date:'20 Jan 2025', location:'Negombo',    progress:20 },
-    { id:'CR-004', title:'Medical Escort — Nawaloka',   status:'completed',    agent:'Nimal Perera',       date:'10 Jan 2025', location:'Colombo 02', progress:100 },
-  ]
+  const requests = overview.requests 
 
   const visits = [
     { time:'09:00 AM', title:'Home Wellness Visit',     agent:'Chamari Dissanayake', beneficiary:'Amara Fernando', status:'today' },
@@ -395,12 +393,7 @@ function OverviewPage() {
     { icon:I.notifications,color:C.primary,label:'New care request created',detail:'Hospital Appointment Escort',       time:'3 days ago' },
   ]
 
-  const notifications = [
-    { title:'Application Update', detail:'Priya Senanayake applied to your Home Wellness Visit request.', time:'30 min ago', unread:true, color:C.primary },
-    { title:'Visit Reminder',     detail:'Chamari arrives tomorrow at 10:30 AM for Hospital Companion.', time:'1 hr ago',  unread:true, color:C.accent },
-    { title:'Payment Due',        detail:'Invoice #INV-2025-014 due in 3 days. Amount: LKR 4,500.',      time:'4 hr ago',  unread:false, color:C.warning },
-    { title:'Review Request',     detail:'How was Nimal Perera\'s service on Jan 10? Share your experience.', time:'1 day ago', unread:false, color:C.success },
-  ]
+  const notifications = overview.notifications 
 
   const convos = [
     { name:'Chamari Dissanayake', role:'Care Agent', last:"I'm on my way, should arrive by 8:50.", time:'8:45 AM',  unread:2, typing:false },
@@ -427,7 +420,7 @@ function OverviewPage() {
           <div>
             <p style={{ fontSize:13, color:'rgba(255,255,255,0.70)', fontWeight:600, fontFamily:'Manrope,sans-serif', marginBottom:4 }}>Monday, 13 January 2025</p>
             <h2 style={{ fontSize:26, fontWeight:900, color:'#fff', letterSpacing:'-0.02em', lineHeight:1.2, marginBottom:8 }}>
-              Good Morning, Mohamed
+              Good Morning, {overview.fullName.split(' ')[0]}
             </h2>
             <p style={{ fontSize:14, color:'rgba(255,255,255,0.80)', lineHeight:1.6, maxWidth:400 }}>
               Everything you need to manage Amara's care, right here.
@@ -499,7 +492,7 @@ function OverviewPage() {
             </div>
           </div>
           <div>
-            {requests.map((r, i) => (
+            {requests.map((r: any, i: number) => (
               <div key={r.id} style={{ padding:'14px 20px', borderBottom: i < requests.length - 1 ? `1px solid ${C.border}` : 'none', display:'flex', alignItems:'center', gap:14, cursor:'pointer', transition:'background 0.15s' }}
                 onMouseEnter={e => e.currentTarget.style.background = '#FAFAFA'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
@@ -586,7 +579,7 @@ function OverviewPage() {
             <button style={{ fontSize:12, fontWeight:700, color:C.primary, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>View all</button>
           </div>
           <div>
-            {notifications.map((n, i) => (
+            {notifications.map((n: any, i: number) => (
               <div key={i} style={{ padding:'12px 16px', borderBottom: i < notifications.length-1 ? `1px solid ${C.border}` : 'none', background: n.unread ? `${n.color}05` : 'transparent', cursor:'pointer', transition:'background 0.15s' }}>
                 <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
                   {n.unread && <div style={{ width:7, height:7, borderRadius:'50%', background:n.color, marginTop:5, flexShrink:0 }} />}
@@ -730,16 +723,8 @@ function OverviewPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CARE REQUESTS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function RequestsPage() {
+function RequestsPage({ allRequests }: { allRequests: any[] }) {
   const [filter, setFilter] = useState('all')
-  const allRequests = [
-    { id:'CR-001', title:'Hospital Appointment Escort',  status:'in-progress', agent:'Chamari Dissanayake',   date:'15 Jan 2025', loc:'Colombo 07',   budget:'LKR 2,500', progress:65  },
-    { id:'CR-002', title:'Weekly Home Wellness Visit',   status:'open',        agent:'—',                     date:'18 Jan 2025', loc:'Kandy',         budget:'LKR 1,800', progress:0   },
-    { id:'CR-003', title:'Medication Collection',        status:'applied',     agent:'3 agents applied',       date:'20 Jan 2025', loc:'Negombo',       budget:'LKR 1,200', progress:20  },
-    { id:'CR-004', title:'Medical Escort — Nawaloka',    status:'completed',   agent:'Nimal Perera',           date:'10 Jan 2025', loc:'Colombo 02',    budget:'LKR 3,000', progress:100 },
-    { id:'CR-005', title:'Daily Wellness Check-in',      status:'open',        agent:'—',                     date:'22 Jan 2025', loc:'Galle',          budget:'LKR 900',   progress:0   },
-    { id:'CR-006', title:'Grocery & Bill Assistance',    status:'cancelled',   agent:'—',                     date:'08 Jan 2025', loc:'Kurunegala',     budget:'LKR 1,400', progress:0   },
-  ]
   const tabs = ['all','open','applied','in-progress','completed','cancelled']
   const filtered = filter === 'all' ? allRequests : allRequests.filter(r => r.status === filter)
 
@@ -823,12 +808,7 @@ function RequestsPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // BENEFICIARIES PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function BeneficiariesPage() {
-  const people = [
-    { name:'Amara Fernando',   age:74, loc:'Colombo 07', health:'Stable', agent:'Chamari Dissanayake',  status:'active',   notes:'Diabetes, hypertension. Attends Nawaloka weekly.' },
-    { name:'Lakshmi Perera',   age:81, loc:'Kandy',       health:'Needs Attention', agent:'—',             status:'pending',  notes:'Cataract surgery recovery. Needs daily medication check.' },
-    { name:'Roshan Wijesekara',age:68, loc:'Galle',       health:'Good',   agent:'Priya Senanayake',    status:'active',   notes:'Retired, active. Needs transport to mosque on Fridays.' },
-  ]
+function BeneficiariesPage({ people }: { people: any[] }) {
   const healthColor = { 'Stable':'#22C55E', 'Good':'#3B82F6', 'Needs Attention':'#F59E0B' }
 
   return (
@@ -852,7 +832,7 @@ function BeneficiariesPage() {
                 <Avatar name={p.name} size={52} />
                 <div style={{ flex:1 }}>
                   <p style={{ fontSize:15, fontWeight:800, color:C.type }}>{p.name}</p>
-                  <p style={{ fontSize:12, color:C.muted, marginTop:2 }}>Age {p.age} · {p.loc}</p>
+                  <p style={{ fontSize:12, color:C.muted, marginTop:2 }}>Age {p.age || '—'} · {p.city || '—'}</p>
                   <div style={{ marginTop:6 }}>
                     <Badge label={p.health} color={(healthColor as Record<string,string>)[p.health] ?? C.muted} />
                   </div>
@@ -861,11 +841,11 @@ function BeneficiariesPage() {
               <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:16 }}>
                 <div style={{ display:'flex', gap:8 }}>
                   <span style={{ color:C.muted, flexShrink:0 }}>{I.agents}</span>
-                  <span style={{ fontSize:12, color:C.type, fontWeight:600 }}>{p.agent}</span>
+                  <span style={{ fontSize:12, color:C.type, fontWeight:600 }}>{p.relationship || 'Beneficiary'}</span>
                 </div>
                 <div style={{ display:'flex', gap:8 }}>
                   <span style={{ color:C.muted, flexShrink:0 }}>{I.doc}</span>
-                  <span style={{ fontSize:12, color:C.muted, lineHeight:1.5 }}>{p.notes}</span>
+                  <span style={{ fontSize:12, color:C.muted, lineHeight:1.5 }}>{p.med_notes || 'No notes yet'}</span>
                 </div>
               </div>
               <div style={{ display:'flex', gap:8 }}>
@@ -890,14 +870,8 @@ function BeneficiariesPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // PAYMENTS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function PaymentsPage() {
-  const history = [
-    { id:'PAY-001', desc:'Home Wellness Visit — Chamari',   date:'12 Jan 2025', amount:'LKR 2,250', status:'completed' },
-    { id:'PAY-002', desc:'Hospital Escort — Nimal',        date:'10 Jan 2025', amount:'LKR 3,000', status:'completed' },
-    { id:'PAY-003', desc:'Medication Collection',           date:'05 Jan 2025', amount:'LKR 1,200', status:'completed' },
-    { id:'PAY-004', desc:'Home Wellness Visit — Chamari',   date:'18 Jan 2025', amount:'LKR 2,250', status:'pending'   },
-    { id:'PAY-005', desc:'Grocery & Bill Assistance',       date:'22 Jan 2025', amount:'LKR 1,800', status:'pending'   },
-  ]
+function PaymentsPage({ data }: { data: any }) {
+  const history = data.history
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
       <div>
@@ -906,10 +880,10 @@ function PaymentsPage() {
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14 }} className="pay-summary-grid">
         {[
-          { label:'Wallet Balance', value:'LKR 12,000', color:C.success, icon:I.wallet },
-          { label:'Outstanding',    value:'LKR 4,500',  color:C.warning, icon:I.warning },
-          { label:'Paid (Jan)',     value:'LKR 18,750', color:C.primary, icon:I.check },
-          { label:'Open Invoices',  value:'3',          color:'#3B82F6', icon:I.doc },
+          { label:'Wallet Balance', value:`LKR ${data.summary.walletBalance.toLocaleString()}`, color:C.success, icon:I.wallet },
+          { label:'Outstanding',    value:`LKR ${data.summary.outstanding.toLocaleString()}`,  color:C.warning, icon:I.warning },
+          { label:'Paid',           value:`LKR ${data.summary.paid.toLocaleString()}`, color:C.primary, icon:I.check },
+          { label:'Open Invoices',  value:String(data.summary.openInvoices),          color:'#3B82F6', icon:I.doc },
         ].map(p => (
           <Card key={p.label} hover style={{ padding:20 }}>
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
@@ -934,7 +908,10 @@ function PaymentsPage() {
               </tr>
             </thead>
             <tbody>
-              {history.map((h, i) => (
+              {history.length === 0 && (
+                <tr><td colSpan={5} style={{ padding:'40px 16px', textAlign:'center', color:C.muted, fontSize:13 }}>No payment history yet.</td></tr>
+              )}
+              {history.map((h: any, i: number) => (
                 <tr key={h.id} style={{ borderBottom: i < history.length-1 ? `1px solid ${C.border}` : 'none' }}>
                   <td style={{ padding:'14px 16px', fontSize:12, color:C.muted }}>{h.id}</td>
                   <td style={{ padding:'14px 16px', fontSize:13, fontWeight:600, color:C.type }}>{h.desc}</td>
@@ -954,12 +931,8 @@ function PaymentsPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // REVIEWS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function ReviewsPage() {
-  const reviews = [
-    { agent:'Chamari Dissanayake', date:'12 Jan 2025', rating:5, text:'Chamari was absolutely wonderful with Amara. She was punctual, caring, and sent detailed reports after every visit. Highly recommended.', service:'Home Wellness Visit' },
-    { agent:'Nimal Perera',        date:'10 Jan 2025', rating:5, text:'Nimal handled the hospital appointment smoothly. He was professional and kept us updated throughout. We felt completely at ease.', service:'Hospital Appointment' },
-    { agent:'Priya Senanayake',    date:'02 Jan 2025', rating:4, text:"Great communicator, very organised. Medication was collected on time and all notes were clear. Will use again.", service:'Medication Collection' },
-  ]
+function ReviewsPage({ reviews }: { reviews: any[] }) {
+  const avgRating = reviews.length ? (reviews.reduce((s: number, r: any) => s + r.rating, 0) / reviews.length) : 0
   const Stars = ({ n }: { n: number }) => (
     <div style={{ display:'flex', gap:2 }}>
       {[1,2,3,4,5].map(i => <svg key={i} width="13" height="13" viewBox="0 0 12 12" fill={i<=n?'#F59E0B':'#E4E8EA'}><path d="M6 1l1.5 3 3.5.5-2.5 2.5.6 3.5L6 9 2.9 10.5l.6-3.5L1 4.5 4.5 4z"/></svg>)}
@@ -977,8 +950,8 @@ function ReviewsPage() {
       <Card style={{ padding:24 }}>
         <div style={{ display:'flex', gap:24, alignItems:'center' }}>
           <div style={{ textAlign:'center' }}>
-            <p style={{ fontSize:52, fontWeight:900, color:C.type, letterSpacing:'-0.04em', lineHeight:1 }}>4.9</p>
-            <Stars n={5} />
+            <p style={{ fontSize:52, fontWeight:900, color:C.type, letterSpacing:'-0.04em', lineHeight:1 }}>{reviews.length ? avgRating.toFixed(1) : '—'}</p>
+            <Stars n={Math.round(avgRating)} />
             <p style={{ fontSize:12, color:C.muted, marginTop:4 }}>{reviews.length} reviews</p>
           </div>
           <div style={{ flex:1 }}>
@@ -989,7 +962,7 @@ function ReviewsPage() {
                   <span style={{ fontSize:12, color:C.muted, width:8 }}>{n}</span>
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="#F59E0B"><path d="M6 1l1.5 3 3.5.5-2.5 2.5.6 3.5L6 9 2.9 10.5l.6-3.5L1 4.5 4.5 4z"/></svg>
                   <div style={{ flex:1, height:6, borderRadius:3, background:C.border, overflow:'hidden' }}>
-                    <div style={{ height:'100%', background:'#F59E0B', width:`${(count/reviews.length)*100}%`, borderRadius:3 }} />
+                    <div style={{ height:'100%', background:'#F59E0B', width:`${reviews.length ? (count/reviews.length)*100 : 0}%`, borderRadius:3 }} />
                   </div>
                   <span style={{ fontSize:11, color:C.muted, width:14 }}>{count}</span>
                 </div>
@@ -999,7 +972,10 @@ function ReviewsPage() {
         </div>
       </Card>
       <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-        {reviews.map(r => (
+        {reviews.length === 0 && (
+          <div style={{ padding:'30px 20px', textAlign:'center', color:C.muted, fontSize:13 }}>You haven't left any reviews yet.</div>
+        )}
+        {reviews.map((r: any) => (
           <Card key={r.agent} hover style={{ padding:22 }}>
             <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
               <Avatar name={r.agent} size={42} />
@@ -1023,31 +999,34 @@ function ReviewsPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MESSAGES PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function MessagesPage() {
+function MessagesPage({ conversations, clientId }: { conversations: any[]; clientId: string }) {
   const [active, setActive] = useState(0)
   const [msg, setMsg] = useState('')
-  const convos = [
-    { name:'Chamari Dissanayake', role:'Care Agent', last:"I'm on my way, should arrive by 8:50.", time:'8:45 AM', unread:2, msgs:[
-      { from:'agent', text:"Good morning! I'm preparing for today's visit.", time:'8:20 AM' },
-      { from:'me',    text:"Great, thank you. Please check her blood pressure first.", time:'8:25 AM' },
-      { from:'agent', text:"Of course. I have the medication checklist ready.", time:'8:30 AM' },
-      { from:'me',    text:"Perfect. She also needs her eye drops at 9 AM.", time:'8:40 AM' },
-      { from:'agent', text:"I'm on my way, should arrive by 8:50.", time:'8:45 AM' },
-    ]},
-    { name:'Priya Senanayake', role:'Care Agent', last:"Could you confirm the address for today?", time:'Yesterday', unread:0, msgs:[
-      { from:'agent', text:"Hello, I wanted to confirm tomorrow's schedule.", time:'Yesterday 2 PM' },
-      { from:'me',    text:"Yes, please visit at 10 AM. The address is 14/3 Temple Road, Kandy.", time:'Yesterday 2:05 PM' },
-      { from:'agent', text:"Could you confirm the address for today?", time:'Yesterday 2:10 PM' },
-    ]},
-    { name:'ReadyPal Support', role:'Support', last:"Your account has been verified successfully.", time:'Mon', unread:0, msgs:[
-      { from:'agent', text:"Your account has been verified successfully. Welcome to ReadyPal!", time:'Mon 10 AM' },
-    ]},
-  ]
-  const convo = convos[active]
+  const [messages, setMessages] = useState<any[]>([])
+  const convo = conversations[active]
+
+  useEffect(() => {
+    if (!convo) { setMessages([]); return }
+    getConversationMessages(convo.id).then(setMessages).catch(console.error)
+  }, [convo?.id])
+
+  const handleSend = async () => {
+    if (!msg.trim() || !convo) return
+    const text = msg
+    setMsg('')
+    try {
+      await sendMessage(convo.id, clientId, text)
+      const updated = await getConversationMessages(convo.id)
+      setMessages(updated)
+    } catch (err) { console.error(err) }
+  }
+
+  if (!conversations.length) {
+    return <div style={{ padding:60, textAlign:'center', color:C.muted, fontSize:13 }}>No conversations yet. Once you hire an agent, your conversation will appear here.</div>
+  }
 
   return (
     <div style={{ display:'flex', height:'calc(100vh - 108px)', background:C.surface, borderRadius:16, border:`1px solid ${C.border}`, overflow:'hidden' }}>
-      {/* Sidebar */}
       <div style={{ width:280, flexShrink:0, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column' }}>
         <div style={{ padding:'16px 16px 12px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ position:'relative' }}>
@@ -1055,8 +1034,8 @@ function MessagesPage() {
             <input placeholder="Search messages" style={{ width:'100%', padding:'8px 12px 8px 30px', borderRadius:10, border:`1px solid ${C.border}`, fontSize:13, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#FAFAFA' }} />
           </div>
         </div>
-        {convos.map((c, i) => (
-          <button key={i} onClick={() => setActive(i)} style={{ display:'flex', gap:12, padding:'14px 16px', borderBottom:`1px solid ${C.border}`, background: active===i ? `${C.primary}08` : 'transparent', cursor:'pointer', border:'none', borderLeft: active===i ? `3px solid ${C.primary}` : '3px solid transparent', textAlign:'left', transition:'all 0.15s' }}>
+        {conversations.map((c, i) => (
+          <button key={c.id} onClick={() => setActive(i)} style={{ display:'flex', gap:12, padding:'14px 16px', borderBottom:`1px solid ${C.border}`, background: active===i ? `${C.primary}08` : 'transparent', cursor:'pointer', border:'none', borderLeft: active===i ? `3px solid ${C.primary}` : '3px solid transparent', textAlign:'left', transition:'all 0.15s' }}>
             <Avatar name={c.name} size={38} />
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
@@ -1065,40 +1044,33 @@ function MessagesPage() {
               </div>
               <p style={{ fontSize:12, color:C.muted, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.last}</p>
             </div>
-            {c.unread > 0 && <span style={{ minWidth:18, height:18, borderRadius:999, background:C.accent, color:'#fff', fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 3px', flexShrink:0 }}>{c.unread}</span>}
           </button>
         ))}
       </div>
-
-      {/* Chat area */}
       <div style={{ flex:1, display:'flex', flexDirection:'column' }}>
-        {/* Chat header */}
         <div style={{ padding:'14px 20px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:12 }}>
           <Avatar name={convo.name} size={36} />
-          <div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type }}>{convo.name}</p>
-            <p style={{ fontSize:11, color:C.success }}>● Online</p>
-          </div>
+          <div><p style={{ fontSize:14, fontWeight:800, color:C.type }}>{convo.name}</p><p style={{ fontSize:11, color:C.muted }}>{convo.role}</p></div>
         </div>
-        {/* Messages */}
         <div style={{ flex:1, overflowY:'auto', padding:20, display:'flex', flexDirection:'column', gap:12 }}>
-          {convo.msgs.map((m, i) => (
-            <div key={i} style={{ display:'flex', justifyContent: m.from === 'me' ? 'flex-end' : 'flex-start' }}>
-              <div style={{ maxWidth:'70%', padding:'10px 14px', borderRadius: m.from === 'me' ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: m.from === 'me' ? C.primary : '#F2F4F5', color: m.from === 'me' ? '#fff' : C.type }}>
-                <p style={{ fontSize:13, lineHeight:1.55, fontFamily:'Manrope,sans-serif' }}>{m.text}</p>
-                <p style={{ fontSize:10, marginTop:4, opacity:0.65, textAlign:'right' }}>{m.time}</p>
+          {messages.length === 0 && <p style={{ textAlign:'center', color:C.muted, fontSize:13 }}>No messages yet — say hello!</p>}
+          {messages.map((m: any) => {
+            const mine = m.sender_id === clientId
+            return (
+              <div key={m.id} style={{ display:'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+                <div style={{ maxWidth:'70%', padding:'10px 14px', borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: mine ? C.primary : '#F2F4F5', color: mine ? '#fff' : C.type }}>
+                  <p style={{ fontSize:13, lineHeight:1.55, fontFamily:'Manrope,sans-serif' }}>{m.text}</p>
+                  <p style={{ fontSize:10, marginTop:4, opacity:0.65, textAlign:'right' }}>{m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : ''}</p>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
-        {/* Input */}
         <div style={{ padding:'12px 20px', borderTop:`1px solid ${C.border}`, display:'flex', gap:10, alignItems:'center' }}>
           <input value={msg} onChange={e => setMsg(e.target.value)} placeholder="Type a message…"
-            onKeyDown={e => { if (e.key === 'Enter' && msg.trim()) setMsg('') }}
+            onKeyDown={e => { if (e.key === 'Enter' && msg.trim()) handleSend() }}
             style={{ flex:1, padding:'10px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:13, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none' }} />
-          <button onClick={() => setMsg('')} style={{ width:40, height:40, borderRadius:12, border:'none', background:C.primary, cursor:'pointer', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', opacity: msg.trim() ? 1 : 0.5 }}>
-            {I.send}
-          </button>
+          <button onClick={handleSend} style={{ width:40, height:40, borderRadius:12, border:'none', background:C.primary, cursor:'pointer', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', opacity: msg.trim() ? 1 : 0.5 }}>{I.send}</button>
         </div>
       </div>
     </div>
@@ -1108,15 +1080,7 @@ function MessagesPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // NOTIFICATIONS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function NotificationsPage() {
-  const notifs = [
-    { title:'Application Received',   detail:'Priya Senanayake applied to your Home Wellness Visit.', time:'30 min ago', type:'request',  unread:true  },
-    { title:'Visit Reminder',         detail:'Chamari arrives tomorrow at 10:30 AM for Hospital Companion.', time:'1 hr ago',  type:'visit',    unread:true  },
-    { title:'Payment Due',            detail:'Invoice #INV-2025-014 due in 3 days. Amount: LKR 4,500.', time:'4 hr ago',  type:'payment',  unread:false },
-    { title:'Review Request',         detail:"How was Nimal Perera's service on Jan 10? Share your experience.", time:'1 day ago', type:'review',   unread:false },
-    { title:'Task Completed',         detail:'Chamari completed the Home Wellness Visit on 12 Jan.', time:'2 days ago', type:'task',     unread:false },
-    { title:'System Update',          detail:'ReadyPal app has been updated with new features and improvements.', time:'3 days ago', type:'system', unread:false },
-  ]
+function NotificationsPage({ notifs }: { notifs: any[] }) {
   const typeColor: Record<string,string> = { request:C.primary, visit:C.accent, payment:C.warning, review:C.info, task:C.success, system:C.muted }
 
   return (
@@ -1129,6 +1093,11 @@ function NotificationsPage() {
         <button style={{ fontSize:12, fontWeight:700, color:C.primary, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Mark all as read</button>
       </div>
       <Card style={{ padding:0, overflow:'hidden' }}>
+        {notifs.length === 0 && (
+          <div style={{ padding:'40px 20px', textAlign:'center', color:C.muted, fontSize:13 }}>
+            No notifications yet.
+          </div>
+        )}
         {notifs.map((n, i) => (
           <div key={i} style={{ display:'flex', gap:12, padding:'16px 20px', borderBottom: i < notifs.length-1 ? `1px solid ${C.border}` : 'none', background: n.unread ? `${typeColor[n.type]}04` : 'transparent', cursor:'pointer', transition:'background 0.15s' }}
             onMouseEnter={e => e.currentTarget.style.background = '#FAFAFA'}
@@ -1154,16 +1123,9 @@ function NotificationsPage() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // AGENTS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function AgentsPage() {
+function AgentsPage({ agents }: { agents: any[] }) {
   const [view, setView] = useState<'grid'|'list'>('grid')
-  const agents = [
-    { name:'Chamari Dissanayake', rating:4.9, jobs:48, langs:['Sinhala','English'], dist:'3.2 km', loc:'Colombo 07', avail:true,  services:['Home Visits','Medical Escort','Grocery'] },
-    { name:'Priya Senanayake',    rating:4.7, jobs:31, langs:['Tamil','English'],   dist:'5.1 km', loc:'Kandy',       avail:true,  services:['Medication','Hospital Companion'] },
-    { name:'Nimal Perera',        rating:4.8, jobs:62, langs:['Sinhala'],           dist:'7.8 km', loc:'Colombo 02',  avail:false, services:['Hospital Escort','Transport'] },
-    { name:'Ruwan Fernando',      rating:4.6, jobs:19, langs:['Sinhala','English'],  dist:'4.4 km', loc:'Negombo',    avail:true,  services:['Home Visits','Bill Payments'] },
-    { name:'Kavindra Jayasuriya', rating:4.5, jobs:27, langs:['Sinhala','Tamil'],    dist:'6.2 km', loc:'Galle',      avail:true,  services:['Daily Check-ins','Emergency'] },
-    { name:'Sanduni Weerasekara', rating:4.8, jobs:35, langs:['English','Sinhala'],  dist:'2.8 km', loc:'Colombo 03', avail:true,  services:['Nursing Assist','Medication'] },
-  ]
+  const navigate = useNavigate()
   const Stars = ({ n }: { n: number }) => (
     <div style={{ display:'flex', gap:2 }}>
       {[1,2,3,4,5].map(i => <svg key={i} width="11" height="11" viewBox="0 0 12 12" fill={i<=Math.round(n)?'#F59E0B':'#E4E8EA'}><path d="M6 1l1.5 3 3.5.5-2.5 2.5.6 3.5L6 9 2.9 10.5l.6-3.5L1 4.5 4.5 4z"/></svg>)}
@@ -1184,7 +1146,12 @@ function AgentsPage() {
       </div>
 
       <div style={{ display:'grid', gridTemplateColumns: view==='grid' ? 'repeat(3,1fr)' : '1fr', gap:16 }} className="agents-grid-page">
-        {agents.map(a => (
+        {agents.length === 0 && (
+          <div style={{ gridColumn:'1/-1', padding:'40px 20px', textAlign:'center', color:C.muted, fontSize:13 }}>
+            No agents yet — hire someone through a care request to see them here.
+          </div>
+        )}
+        {agents.map((a: any) => (
           <Card key={a.name} hover style={{ padding:20 }}>
             <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:14 }}>
               <Avatar name={a.name} size={48} />
@@ -1203,12 +1170,12 @@ function AgentsPage() {
               {a.avail && <Badge label="Available" color={C.success} />}
             </div>
             <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginBottom:12 }}>
-              {a.langs.map(l => <Badge key={l} label={l} color={C.sub} bg="#F2F4F5" />)}
-              {a.services.slice(0,2).map(s => <Badge key={s} label={s} color={C.primary} />)}
+              {a.langs.map((l: any) => <Badge key={l} label={l} color={C.sub} bg="#F2F4F5" />)}
+              {a.services.slice(0,2).map((s: any) => <Badge key={s} label={s} color={C.primary} />)}
             </div>
             <div style={{ display:'flex', gap:8 }}>
               <button style={{ flex:1, padding:'8px', borderRadius:10, border:'none', background:C.primary, cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Book Now</button>
-              <button style={{ flex:1, padding:'8px', borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.type, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>View Profile</button>
+              <button onClick={() => navigate(`/agents/${a.id}`)} style={{ flex:1, padding:'8px', borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.type, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>View Profile</button>
             </div>
           </Card>
         ))}
@@ -1221,12 +1188,34 @@ function AgentsPage() {
 // SETTINGS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 function SettingsPage() {
-  const [name, setName] = useState('Mohamed Ihsan')
-  const [email, setEmail] = useState('m.ihsan@email.com')
-  const [phone, setPhone] = useState('+61 4XX XXX XXX')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
   const [notifs, setNotifs] = useState({ email:true, sms:true, push:false })
   const [lang, setLang] = useState('English')
-  const saved = false
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    getCurrentProfile().then(p => {
+      setName(p.full_name || '')
+      setEmail(p.email || '')
+      setPhone(p.phone || '')
+    }).catch(console.error)
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await updateProfile({ full_name: name, phone })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const Toggle = ({ on, set }: { on: boolean; set: () => void }) => (
     <button onClick={set} style={{ width:40, height:22, borderRadius:11, background: on ? C.primary : C.border, position:'relative', border:'none', cursor:'pointer', transition:'background 0.2s', flexShrink:0 }}>
@@ -1274,7 +1263,7 @@ function SettingsPage() {
           </div>
         </div>
         <div style={{ marginTop:20, display:'flex', gap:10 }}>
-          <button style={{ padding:'10px 20px', borderRadius:12, border:'none', background:C.primary, cursor:'pointer', color:'#fff', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Save Changes</button>
+          <button onClick={handleSave} disabled={saving} style={{ padding:'10px 20px', borderRadius:12, border:'none', background:C.primary, cursor:saving?'not-allowed':'pointer', color:'#fff', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', opacity:saving?0.7:1 }}>{saving ? 'Saving...' : saved ? 'Saved!' : 'Save Changes'}</button>
           <button style={{ padding:'10px 20px', borderRadius:12, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.sub, fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Cancel</button>
         </div>
       </Card>
@@ -1336,19 +1325,44 @@ export default function ClientDashboard() {
   const [page, setPage] = useState<DashPage>('overview')
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNav, setMobileNav] = useState(false)
+  const [allRequests, setAllRequests] = useState<any[]>([])
+  const [overview, setOverview] = useState<any>(null)
+  const [people, setPeople] = useState<any[]>([])
+  const [notifs, setNotifs] = useState<any[]>([])
+  const [paymentsData, setPaymentsData] = useState<any>({ summary:{walletBalance:0,outstanding:0,paid:0,openInvoices:0}, history:[] })
+  const [reviews, setReviews] = useState<any[]>([])
+  const [myAgents, setMyAgents] = useState<any[]>([])
+  const [clientId, setClientId] = useState('')
+const [conversations, setConversations] = useState<any[]>([])
+
+useEffect(() => {
+  supabase.auth.getUser().then(({ data }) => {
+    if (data.user) {
+      setClientId(data.user.id)
+      getDashboardOverview(data.user.id).then(setOverview).catch(console.error)
+      getAllCareRequests(data.user.id).then(setAllRequests).catch(console.error)
+      getBeneficiaries(data.user.id).then(setPeople).catch(console.error)
+      getAllNotifications(data.user.id).then(setNotifs).catch(console.error)
+      getPaymentsData(data.user.id).then(setPaymentsData).catch(console.error)
+      getMyReviews(data.user.id).then(setReviews).catch(console.error)
+      getMyAgents(data.user.id).then(setMyAgents).catch(console.error)
+      getMyConversations(data.user.id).then(setConversations).catch(console.error)
+    }
+  })
+}, [])
 
   const setPage2 = (p: DashPage) => { setPage(p); setMobileNav(false); window.scrollTo({ top:0, behavior:'smooth' }) }
 
   const renderPage = () => {
     switch (page) {
-      case 'overview':      return <OverviewPage />
-      case 'requests':      return <RequestsPage />
-      case 'beneficiaries': return <BeneficiariesPage />
-      case 'agents':        return <AgentsPage />
-      case 'messages':      return <MessagesPage />
-      case 'notifications': return <NotificationsPage />
-      case 'payments':      return <PaymentsPage />
-      case 'reviews':       return <ReviewsPage />
+      case 'overview':      return overview ? <OverviewPage overview={overview} /> : <p style={{padding:32}}>Loading...</p>
+      case 'requests': return <RequestsPage allRequests={allRequests} />
+      case 'beneficiaries': return <BeneficiariesPage people={people} />
+      case 'agents': return <AgentsPage agents={myAgents} />
+      case 'messages': return <MessagesPage conversations={conversations} clientId={clientId} />
+      case 'notifications': return <NotificationsPage notifs={notifs} />
+      case 'payments': return <PaymentsPage data={paymentsData} />
+      case 'reviews': return <ReviewsPage reviews={reviews} />
       case 'settings':      return <SettingsPage />
       default:              return <PlaceholderPage page={page} />
     }
