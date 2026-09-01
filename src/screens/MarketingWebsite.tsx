@@ -2,6 +2,7 @@ import {
   useState, useEffect, useRef, useCallback,
   type ReactNode, type CSSProperties, type PointerEvent as RE,
 } from 'react'
+import { useNavigate } from 'react-router-dom'
 import logoFull from '@/imports/20260723_170707.png'
 import logoIcon from '@/imports/20260723_164632.png'
 import logoWhite from '@/imports/20260723_165045.png'
@@ -237,6 +238,7 @@ function Navbar({ nav, cur }: { nav: (p: Page) => void; cur: Page }) {
   const scrollP = useScrollProgress(120)
   const lerp = (a: number, b: number, t: number) => a + (b - a) * t
   const [mob, setMob] = useState(false)
+  const navigate = useNavigate()
 
   const links: [string, Page][] = [
     ['How It Works','how-it-works'],['Services','services'],
@@ -279,8 +281,8 @@ function Navbar({ nav, cur }: { nav: (p: Page) => void; cur: Page }) {
         }}>
           <span>🌐</span> EN
         </div>
-        <Btn variant="ghost" size="sm" onClick={() => nav('home')}>Log in</Btn>
-        <Btn variant="primary" size="sm" onClick={() => nav('home')}>Get Started</Btn>
+        <Btn variant="ghost" size="sm" onClick={() => navigate('/auth?mode=login')}>Log in</Btn>
+        <Btn variant="primary" size="sm" onClick={() => navigate('/auth?mode=signup')}>Get Started</Btn>
       </div>
 
       {/* Mobile hamburger */}
@@ -307,8 +309,8 @@ function Navbar({ nav, cur }: { nav: (p: Page) => void; cur: Page }) {
             }}>{label}</button>
           ))}
           <div style={{ marginTop:12, display:'flex', gap:10 }}>
-            <Btn variant="secondary" size="md" fullWidth onClick={() => setMob(false)}>Log in</Btn>
-            <Btn variant="primary" size="md" fullWidth onClick={() => setMob(false)}>Get Started</Btn>
+            <Btn variant="secondary" size="md" fullWidth onClick={() => { setMob(false); navigate('/auth?mode=login') }}>Log in</Btn>
+            <Btn variant="primary" size="md" fullWidth onClick={() => { setMob(false); navigate('/auth?mode=signup') }}>Get Started</Btn>
           </div>
         </div>
       )}
@@ -406,6 +408,7 @@ function Footer({ nav }: { nav: (p: Page) => void }) {
 //  HOME PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 function HomePage({ nav }: { nav: (p: Page) => void }) {
+  const navigate = useNavigate()
   // Parallax hero state
   const [mouse, setMouse] = useState({ x: 0, y: 0 })
   const heroRef = useRef<HTMLDivElement>(null)
@@ -482,7 +485,7 @@ function HomePage({ nav }: { nav: (p: Page) => void }) {
               ReadyPal connects Sri Lankan families abroad with verified, compassionate care agents who look after your elderly parents — just as you would.
             </p>
             <div style={{ display:'flex', flexWrap:'wrap', gap:12, marginBottom:40 }}>
-              <Btn variant="primary" size="lg" onClick={() => nav('how-it-works')}>Post a Care Request</Btn>
+              <Btn variant="primary" size="lg" onClick={() => navigate('/auth?mode=signup&intent=care-request')}>Post a Care Request</Btn>
               <Btn variant="outline" size="lg" onClick={() => nav('how-it-works')}>See How It Works</Btn>
             </div>
             {/* Trust badges */}
@@ -844,7 +847,7 @@ function HomePage({ nav }: { nav: (p: Page) => void }) {
             Join 3,200+ families who trust ReadyPal to care for their parents back home. Start your first care request in under 5 minutes.
           </p>
           <div style={{ display:'flex', justifyContent:'center', flexWrap:'wrap', gap:14 }}>
-            <Btn variant="primary" size="xl" onClick={() => nav('how-it-works')}>Create Your First Care Request</Btn>
+            <Btn variant="primary" size="xl" onClick={() => navigate('/auth?mode=signup&intent=care-request')}>Create Your First Care Request</Btn>
             <Btn variant="outline" size="xl" onClick={() => nav('how-it-works')}>Learn More</Btn>
           </div>
         </div>
@@ -950,6 +953,7 @@ function AboutPage({ nav }: { nav: (p: Page) => void }) {
 //  HOW IT WORKS PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 function HowItWorksPage({ nav }: { nav: (p: Page) => void }) {
+  const navigate = useNavigate()
   const [tab, setTab] = useState<'family'|'agent'>('family')
   return (
     <div style={{ paddingTop:90 }}>
@@ -1033,7 +1037,7 @@ function HowItWorksPage({ nav }: { nav: (p: Page) => void }) {
       </section>
 
       <section style={{ padding:'64px 32px', background:'#F9F9F9', textAlign:'center' }}>
-        <Btn variant="primary" size="xl" onClick={() => nav(tab === 'family' ? 'home' : 'become-agent')}>
+        <Btn variant="primary" size="xl" onClick={() => tab === 'family' ? navigate('/auth?mode=signup&intent=care-request') : nav('become-agent')}>
           {tab === 'family' ? 'Post Your First Care Request →' : 'Apply to Become an Agent →'}
         </Btn>
       </section>
@@ -1045,6 +1049,7 @@ function HowItWorksPage({ nav }: { nav: (p: Page) => void }) {
 //  BECOME AN AGENT PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 function BecomeAgentPage({ nav }: { nav: (p: Page) => void }) {
+  const navigate = useNavigate()
   return (
     <div style={{ paddingTop:90 }}>
       {/* Hero */}
@@ -1061,7 +1066,7 @@ function BecomeAgentPage({ nav }: { nav: (p: Page) => void }) {
             <p style={{ fontSize:17, lineHeight:1.7, color:'rgba(255,255,255,0.85)', marginBottom:36 }}>
               Join 2,400+ verified ReadyPal agents across Sri Lanka. Flexible hours, reliable income, and the profound satisfaction of helping families stay connected.
             </p>
-            <Btn variant="glass-dark" size="xl">Apply Now — It's Free</Btn>
+            <Btn variant="glass-dark" size="xl" onClick={() => navigate('/auth?mode=signup&role=agent')}>Apply Now — It's Free</Btn>
           </div>
           <IGCard dark style={{ borderRadius:24, padding:32 }}>
             <p style={{ fontSize:14, fontWeight:600, color:'rgba(255,255,255,0.55)', marginBottom:16 }}>Monthly earnings snapshot</p>
@@ -1115,7 +1120,7 @@ function BecomeAgentPage({ nav }: { nav: (p: Page) => void }) {
           <p style={{ fontSize:16, color:'#6B7E85', lineHeight:1.7, marginBottom:32 }}>
             Applications take 10 minutes. Verification typically takes 3–5 business days. Our team guides you every step of the way.
           </p>
-          <Btn variant="primary" size="xl">Start Your Application →</Btn>
+          <Btn variant="primary" size="xl" onClick={() => navigate('/auth?mode=signup&role=agent')}>Start Your Application →</Btn>
         </div>
       </section>
     </div>
@@ -1126,6 +1131,7 @@ function BecomeAgentPage({ nav }: { nav: (p: Page) => void }) {
 //  SERVICES PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 function ServicesPage({ nav }: { nav: (p: Page) => void }) {
+  const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('All')
   const services = [
@@ -1182,7 +1188,7 @@ function ServicesPage({ nav }: { nav: (p: Page) => void }) {
               <Chip>{s.cat}</Chip>
               <h3 style={{ fontSize:16, fontWeight:800, color:'#2C3E43', margin:'10px 0 8px' }}>{s.title}</h3>
               <p style={{ fontSize:14, color:'#6B7E85', lineHeight:1.65, marginBottom:16 }}>{s.desc}</p>
-              <Btn variant="outline" size="sm">Request This Service</Btn>
+              <Btn variant="outline" size="sm" onClick={() => navigate('/auth?mode=signup&intent=care-request')}>Request This Service</Btn>
             </IGCard>
           ))}
           {filtered.length === 0 && (
@@ -1289,6 +1295,7 @@ function ContactPage() {
 //  PRICING PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 function PricingPage({ nav }: { nav: (p: Page) => void }) {
+  const navigate = useNavigate()
   return (
     <div style={{ paddingTop:90 }}>
       <section style={{ padding:'80px 32px 48px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
@@ -1326,7 +1333,11 @@ function PricingPage({ nav }: { nav: (p: Page) => void }) {
                     </div>
                   ))}
                 </div>
-                <Btn variant={p.primary ? 'primary' : 'outline'} size="md" fullWidth>{p.cta}</Btn>
+                <Btn variant={p.primary ? 'primary' : 'outline'} size="md" fullWidth onClick={
+                  p.cta === 'Create Free Account' ? () => navigate('/auth?mode=signup') :
+                  p.cta === 'Start a Care Request' ? () => navigate('/auth?mode=signup&intent=care-request') :
+                  undefined
+                }>{p.cta}</Btn>
               </IGCard>
             </div>
           ))}
@@ -1342,7 +1353,7 @@ function PricingPage({ nav }: { nav: (p: Page) => void }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  FAQ PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
-function FAQPage() {
+function FAQPage({ nav }: { nav: (p: Page) => void }) {
   const [open, setOpen] = useState<number|null>(null)
   const groups = [
     {
@@ -1379,7 +1390,7 @@ function FAQPage() {
       <section style={{ padding:'80px 32px 48px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
         <Chip>FAQ</Chip>
         <h1 style={{ fontSize:'clamp(30px,5vw,50px)', fontWeight:900, color:'#2C3E43', marginTop:16, marginBottom:16, letterSpacing:'-0.025em' }}>Frequently asked questions</h1>
-        <p style={{ fontSize:17, color:'#4A5E65', maxWidth:500, margin:'0 auto' }}>Can't find the answer you're looking for? <button onClick={() => {}} style={{ color:'#00737A', fontWeight:700, background:'none', border:'none', cursor:'pointer' }}>Contact our team.</button></p>
+        <p style={{ fontSize:17, color:'#4A5E65', maxWidth:500, margin:'0 auto' }}>Can't find the answer you're looking for? <button onClick={() => nav('contact')} style={{ color:'#00737A', fontWeight:700, background:'none', border:'none', cursor:'pointer' }}>Contact our team.</button></p>
       </section>
       <section style={{ padding:'48px 32px 80px', background:'#fff' }}>
         <div style={{ maxWidth:780, margin:'0 auto', display:'flex', flexDirection:'column', gap:48 }}>
@@ -1502,7 +1513,7 @@ export default function MarketingWebsite() {
       case 'services':      return <ServicesPage nav={nav} />
       case 'contact':       return <ContactPage />
       case 'pricing':       return <PricingPage nav={nav} />
-      case 'faq':           return <FAQPage />
+      case 'faq':           return <FAQPage nav={nav} />
       case 'privacy':       return <LegalPage title="Privacy Policy" sections={privacySections} />
       case 'terms':         return <LegalPage title="Terms & Conditions" sections={termsSections} />
       case '404':           return <NotFoundPage nav={nav} />

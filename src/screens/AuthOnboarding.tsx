@@ -1,4 +1,6 @@
 import { supabase } from '../lib/supabaseClient'
+import { getMyProfile, getMyAgentDetails } from '../lib/api'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 
 import {
@@ -497,7 +499,7 @@ function WelcomeScreen({ go }: { go: (s: AuthScreen) => void }) {
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
-function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
+function LoginScreen({ go, onAuthenticated }: { go: (s: AuthScreen) => void; onAuthenticated: () => void | Promise<void> }) {
   const [email, setEmail] = useState('')
   const [pass, setPass] = useState('')
   const [show, setShow] = useState(false)
@@ -509,7 +511,7 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
   if (!email || !pass) { setError('Please fill in all fields.'); return }
   setError(''); setLoading(true)
 
-  const { data, error: authError } = await supabase.auth.signInWithPassword({
+  const { error: authError } = await supabase.auth.signInWithPassword({
     email,
     password: pass,
   })
@@ -521,14 +523,8 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
     return
   }
 
-  // Check the user's role to route them correctly
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', data.user.id)
-    .single()
-
-  go(profile?.role === 'agent' ? 'agent-1' : 'client-1')
+  // Real stored role/status is the source of truth for where to land — not the URL.
+  onAuthenticated()
   }
 
 
@@ -597,8 +593,11 @@ function LoginScreen({ go }: { go: (s: AuthScreen) => void }) {
 }
 
 // ─── Role select ──────────────────────────────────────────────────────────────
-function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
-  const [role, setRole] = useState<'client'|'agent'|null>(null)
+function RoleSelectScreen({ go, role, setRole }: {
+  go: (s: AuthScreen) => void
+  role: 'client'|'agent'|null
+  setRole: (r: 'client'|'agent'|null) => void
+}) {
   const roles = [
     {
       key: 'client' as const,
@@ -657,7 +656,7 @@ function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
         ))}
       </div>
 
-      <Btn variant="primary" size="lg" fullWidth disabled={!role} onClick={() => role && go(role === 'client' ? 'client-1' : 'agent-1')}>
+      <Btn variant="primary" size="lg" fullWidth disabled={!role} onClick={() => role && go('client-1')}>
         Continue {Ico.arrowR}
       </Btn>
     </AuthShell>
@@ -665,7 +664,11 @@ function RoleSelectScreen({ go }: { go: (s: AuthScreen) => void }) {
 }
 
 // ─── Client Step 1 — Personal Info ───────────────────────────────────────────
-function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
+// Also used for Care Agent signup: it's the only step that actually creates
+// the Supabase account. Agents skip straight to the real CareAgentOnboarding
+// wizard afterwards instead of the client-2..5 mock steps.
+function ClientStep1({ go, role = 'client' }: { go: (s: AuthScreen) => void; role?: 'client'|'agent' }) {
+  const navigate = useNavigate()
   const [f, setF] = useState({ firstName:'', lastName:'', email:'', phone:'', country:'', password:'', confirm:'' })
   const [showP, setShowP] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -691,11 +694,15 @@ function ClientStep1({ go }: { go: (s: AuthScreen) => void }) {
     }
 
     if (data.user) {
-      await supabase.from('profiles').update({ phone: f.phone, role: 'client' }).eq('id', data.user.id)
+      await supabase.from('profiles').update({ phone: f.phone, role }).eq('id', data.user.id)
     }
 
     setLoading(false)
-    go('client-2')
+    if (role === 'agent') {
+      navigate('/agent/onboarding')
+    } else {
+      go('client-2')
+    }
   }
 
   return (
@@ -834,6 +841,9 @@ function ClientStep4({ go }: { go: (s: AuthScreen) => void }) {
 
 // ─── Client Step 5 — Welcome / Success ───────────────────────────────────────
 function ClientStep5({ go }: { go: (s: AuthScreen) => void }) {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const dashboardDestination = searchParams.get('intent') === 'care-request' ? '/request/new' : '/dashboard'
   return (
     <AuthShell left={<LeftPanel icon={Ico.checkCircle} title="You're all set!" desc="Your ReadyPal family account is ready. Post your first care request in minutes." facts={['Browse 2,400+ verified agents','Real-time visit reports','Secure escrow payments']} />}>
       <div style={{ textAlign:'center', padding:'20px 0' }}>
@@ -846,7 +856,7 @@ function ClientStep5({ go }: { go: (s: AuthScreen) => void }) {
           Your account has been created. You can now post your first care request and connect with a verified care agent in Sri Lanka.
         </p>
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          <Btn variant="primary" size="lg" fullWidth onClick={() => go('welcome')}>Go to Dashboard</Btn>
+          <Btn variant="primary" size="lg" fullWidth onClick={() => navigate(dashboardDestination)}>Go to Dashboard</Btn>
           <Btn variant="ghost" size="md" fullWidth onClick={() => go('welcome')}>Explore the platform first</Btn>
         </div>
       </div>
@@ -1476,18 +1486,56 @@ function DevNav({ current, go }: { current: AuthScreen; go: (s: AuthScreen) => v
 // ROOT
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function AuthOnboarding() {
-  const [screen, setScreen] = useState<AuthScreen>('welcome')
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const modeParam = searchParams.get('mode')
+  const roleParam = searchParams.get('role')
+  const intentParam = searchParams.get('intent')
+
+  const [screen, setScreen] = useState<AuthScreen>(() =>
+    modeParam === 'login' ? 'login' : modeParam === 'signup' ? 'role-select' : 'welcome'
+  )
+  const [signupRole, setSignupRole] = useState<'client'|'agent'|null>(roleParam === 'agent' ? 'agent' : null)
+
   const go = useCallback((s: AuthScreen) => {
     setScreen(s)
     window.scrollTo({ top:0, behavior:'smooth' })
   }, [])
 
+  // Entry query params (mode/role/intent) are entry intent only. Once a user
+  // is authenticated, their real stored profile role + agent application
+  // status are the source of truth for where they land — never the URL.
+  const routeAuthenticatedUser = useCallback(async () => {
+    try {
+      const profile = await getMyProfile()
+      if (profile?.role === 'agent') {
+        const agentDetails = await getMyAgentDetails()
+        navigate(agentDetails?.application_status === 'approved' ? '/agent/agentdashboard' : '/agent/onboarding')
+      } else {
+        navigate(intentParam === 'care-request' ? '/request/new' : '/dashboard')
+      }
+    } catch (err) {
+      console.error('Failed to resolve authenticated destination:', err)
+      navigate('/dashboard')
+    }
+  }, [navigate, intentParam])
+
+  // Don't trap an already-authenticated user on the auth screen — send them
+  // straight to their real destination (still honouring care-request intent).
+  useEffect(() => {
+    let cancelled = false
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!cancelled && session?.user) routeAuthenticatedUser()
+    })
+    return () => { cancelled = true }
+  }, [routeAuthenticatedUser])
+
   const render = () => {
     switch (screen) {
       case 'welcome':         return <WelcomeScreen go={go} />
-      case 'login':           return <LoginScreen go={go} />
-      case 'role-select':     return <RoleSelectScreen go={go} />
-      case 'client-1':        return <ClientStep1 go={go} />
+      case 'login':           return <LoginScreen go={go} onAuthenticated={routeAuthenticatedUser} />
+      case 'role-select':     return <RoleSelectScreen go={go} role={signupRole} setRole={setSignupRole} />
+      case 'client-1':        return <ClientStep1 go={go} role={signupRole ?? 'client'} />
       case 'client-2':        return <ClientStep2 go={go} />
       case 'client-3':        return <ClientStep3 go={go} />
       case 'client-4':        return <ClientStep4 go={go} />
