@@ -1,4 +1,6 @@
 import { getCurrentProfile, updateProfile } from '../lib/api'
+import { supabase } from '../lib/supabaseClient'
+import { useNavigate } from 'react-router-dom'
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -41,6 +43,7 @@ const I: Record<string, ReactNode> = {
   sun:      <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="3" stroke="currentColor" strokeWidth="1.2"/><path d="M7.5 1v1.5M7.5 12.5V14M1 7.5h1.5M12.5 7.5H14M3.2 3.2l1 1M10.8 10.8l1 1M10.8 3.2l-1 1M3.2 10.8l-1 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
   moon:     <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M12.5 9.5A6 6 0 0 1 5.5 2.5a6 6 0 1 0 7 7z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>,
   monitor:  <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1.5" y="2" width="12" height="8.5" rx="1.5" stroke="currentColor" strokeWidth="1.2"/><path d="M5 13.5h5M7.5 10.5v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
+  logout:   <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M6 13H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M10 10.5L13.5 7 10 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M13.5 7H5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
@@ -1089,10 +1092,13 @@ function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
 export default function AccountSettings() {
+  const navigate = useNavigate()
   const [section, setSection] = useState<Section>('home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profile, setProfile] = useState<any>(null)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
 
   useEffect(() => {
     getCurrentProfile().then(setProfile).catch(console.error)
@@ -1101,6 +1107,21 @@ export default function AccountSettings() {
   const showToast = (msg:string) => {
     setToast(msg)
     setTimeout(()=>setToast(null), 2800)
+  }
+
+  const handleLogout = async () => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    setLogoutError('')
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      setLoggingOut(false)
+      setLogoutError(error.message || "Couldn't log out. Please try again.")
+      return
+    }
+    // Replace history so the authenticated dashboard/settings can't be
+    // reached again via the browser's Back button after logging out.
+    navigate('/auth?mode=login', { replace: true })
   }
 
   const save = async (fields: Record<string, any>) => {
@@ -1160,6 +1181,16 @@ export default function AccountSettings() {
             })}
           </div>
         ))}
+
+        {/* Log out */}
+        <div style={{ marginTop:'auto', padding:'12px 20px 20px', borderTop:`1px solid ${C.border}` }}>
+          {logoutError && <p style={{ fontSize:11, color:C.error, marginBottom:8, fontFamily:'Manrope,sans-serif' }}>{logoutError}</p>}
+          <button onClick={handleLogout} disabled={loggingOut}
+            style={{ width:'100%', display:'flex', gap:10, alignItems:'center', justifyContent:'center', padding:'10px 12px', borderRadius:10, border:`1.5px solid ${C.error}30`, background:`${C.error}06`, cursor:loggingOut?'not-allowed':'pointer', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, color:C.error, opacity:loggingOut?0.7:1, transition:'all 0.15s' }}>
+            <span style={{ display:'flex', flexShrink:0 }}>{I.logout}</span>
+            {loggingOut ? 'Logging out…' : 'Log Out'}
+          </button>
+        </div>
       </div>
 
       {/* Mobile top nav */}
@@ -1185,6 +1216,16 @@ export default function AccountSettings() {
                 ))}
               </div>
             ))}
+
+            {/* Log out */}
+            <div style={{ padding:'12px 20px 20px', borderTop:`1px solid ${C.border}`, marginTop:8 }}>
+              {logoutError && <p style={{ fontSize:11, color:C.error, marginBottom:8, fontFamily:'Manrope,sans-serif' }}>{logoutError}</p>}
+              <button onClick={handleLogout} disabled={loggingOut}
+                style={{ width:'100%', display:'flex', gap:10, alignItems:'center', justifyContent:'center', padding:'10px 12px', borderRadius:10, border:`1.5px solid ${C.error}30`, background:`${C.error}06`, cursor:loggingOut?'not-allowed':'pointer', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, color:C.error, opacity:loggingOut?0.7:1, transition:'all 0.15s' }}>
+                <span style={{ display:'flex', flexShrink:0 }}>{I.logout}</span>
+                {loggingOut ? 'Logging out…' : 'Log Out'}
+              </button>
+            </div>
           </div>
         </div>
       )}

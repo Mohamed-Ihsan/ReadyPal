@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabaseClient'
-import { getMyProfile, getMyAgentDetails } from '../lib/api'
+import { getMyProfile, getMyAgentDetails, updateProfile } from '../lib/api'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 
@@ -663,38 +663,156 @@ function RoleSelectScreen({ go, role, setRole }: {
   )
 }
 
+// ─── Client signup shared state ───────────────────────────────────────────────
+// Owned by the AuthOnboarding parent (not by each step) so Back/Forward
+// navigation between client-1..4 never loses data, and edits to a previous
+// step are reflected on the way back through.
+type ClientSignupData = {
+  // Step 1 — Personal Information
+  firstName: string
+  lastName: string
+  email: string
+  phone: string             // raw local-format input, e.g. "0771234567"
+  country: string           // Country of Residence
+  password: string          // cleared immediately after the account is created
+  confirmPassword: string   // cleared immediately after the account is created
+  accountCreated: boolean   // guards against calling supabase.auth.signUp() twice
+
+  // Step 2 — Communication Preferences (no matching DB columns yet — see report)
+  notifyEmail: boolean
+  notifySms: boolean
+  notifyPush: boolean
+  language: string
+  timezone: string
+
+  // Step 3 — Emergency Contact
+  emergencyName: string
+  emergencyRelationship: string
+  emergencyPhone: string
+  emergencyEmail: string
+
+  // Step 4 — Phone Verification
+  phoneE164: string         // normalized number the current OTP was sent to
+  phoneCallingCode: string  // calling code used for phoneE164, for masking
+}
+
+const DEFAULT_CLIENT_SIGNUP_DATA: ClientSignupData = {
+  firstName: '', lastName: '', email: '', phone: '', country: '',
+  password: '', confirmPassword: '', accountCreated: false,
+  notifyEmail: true, notifySms: true, notifyPush: false, language: '', timezone: '',
+  emergencyName: '', emergencyRelationship: '', emergencyPhone: '', emergencyEmail: '',
+  phoneE164: '', phoneCallingCode: '',
+}
+
+// Calling codes verified against ITU-T E.164 country codes for every country
+// already offered in the Country of Residence selector, plus Sri Lanka.
+const COUNTRY_CALLING_CODES: Record<string, string> = {
+  'Sri Lanka': '+94',
+  'Australia': '+61',
+  'United Kingdom': '+44',
+  'Canada': '+1',
+  'United States': '+1',
+  'New Zealand': '+64',
+  'Germany': '+49',
+  'France': '+33',
+  'UAE': '+971',
+  'Singapore': '+65',
+  'Malaysia': '+60',
+}
+const CLIENT_COUNTRIES = Object.keys(COUNTRY_CALLING_CODES)
+
+// Normalizes a local-format number (e.g. "0771234567") into E.164 (e.g.
+// "+94771234567") for the given Country of Residence — strips the local
+// trunk "0" so we never produce a malformed "+940771234567".
+function normalizePhoneE164(country: string, rawPhone: string): string {
+  const code = COUNTRY_CALLING_CODES[country] ?? ''
+  const digits = rawPhone.replace(/\D/g, '').replace(/^0+/, '')
+  return code && digits ? `${code}${digits}` : ''
+}
+
+// Masks a normalized E.164 number for display, e.g. "+94771234567" ->
+// "+94 77 *** 4567". Falls back to the raw value if it's too short to mask.
+function maskPhoneE164(e164: string, callingCode: string): string {
+  if (!e164) return ''
+  const national = callingCode && e164.startsWith(callingCode) ? e164.slice(callingCode.length) : e164.replace(/^\+/, '')
+  const code = callingCode || `+${e164.replace(/^\+/, '').slice(0, e164.length - national.length)}`
+  if (national.length <= 6) return `${code} ${national}`
+  const head = national.slice(0, 2)
+  const tail = national.slice(-4)
+  const stars = '*'.repeat(Math.max(national.length - head.length - tail.length, 3))
+  return `${code} ${head} ${stars} ${tail}`
+}
+
 // ─── Client Step 1 — Personal Info ───────────────────────────────────────────
 // Also used for Care Agent signup: it's the only step that actually creates
 // the Supabase account. Agents skip straight to the real CareAgentOnboarding
 // wizard afterwards instead of the client-2..5 mock steps.
-function ClientStep1({ go, role = 'client' }: { go: (s: AuthScreen) => void; role?: 'client'|'agent' }) {
+//
+// Account creation is idempotent from the UI's perspective: `data.accountCreated`
+// guards supabase.auth.signUp() so Back → edit → Continue updates the existing
+// profile instead of creating a second auth user. Email becomes read-only once
+// the account exists — changing an authenticated user's email requires
+// Supabase's separate email-change/re-verification flow, which is out of
+// scope here, so locking it down is the safest option.
+function ClientStep1({ go, role = 'client', data, onChange }: {
+  go: (s: AuthScreen) => void
+  role?: 'client'|'agent'
+  data: ClientSignupData
+  onChange: (patch: Partial<ClientSignupData>) => void
+}) {
   const navigate = useNavigate()
-  const [f, setF] = useState({ firstName:'', lastName:'', email:'', phone:'', country:'', password:'', confirm:'' })
   const [showP, setShowP] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const up = (k: keyof typeof f) => (v: string) => setF(prev => ({ ...prev, [k]: v }))
-  const countries = ['Australia','United Kingdom','Canada','United States','New Zealand','Germany','France','UAE','Singapore','Malaysia']
+  const up = (k: keyof ClientSignupData) => (v: string) => onChange({ [k]: v } as Partial<ClientSignupData>)
+  const callingCode = data.country ? COUNTRY_CALLING_CODES[data.country] : ''
 
   const submit = async () => {
-    if (f.password !== f.confirm) { setError('Passwords do not match.'); return }
-    if (!f.email || !f.password) { setError('Please fill in all required fields.'); return }
+    if (!data.firstName.trim() || !data.lastName.trim() || !data.email.trim() || !data.phone.trim()) {
+      setError('Please fill in all required fields.'); return
+    }
+    if (!data.country) { setError('Please select your country of residence.'); return }
+    if (!data.accountCreated && (!data.password || data.password !== data.confirmPassword)) {
+      setError('Passwords do not match.'); return
+    }
     setError(''); setLoading(true)
 
-    const { data, error: signUpError } = await supabase.auth.signUp({
-      email: f.email,
-      password: f.password,
-      options: { data: { full_name: `${f.firstName} ${f.lastName}` } },
-    })
+    const fullName = `${data.firstName} ${data.lastName}`.trim()
+    const normalizedPhone = normalizePhoneE164(data.country, data.phone)
 
-    if (signUpError) {
+    try {
+      if (!data.accountCreated) {
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+          email: data.email,
+          password: data.password,
+          options: { data: { full_name: fullName } },
+        })
+        if (signUpError) throw signUpError
+
+        if (signUpData.user) {
+          await supabase.from('profiles').update({
+            full_name: fullName,
+            phone: normalizedPhone || null,
+            nationality: data.country,
+            role,
+          }).eq('id', signUpData.user.id)
+        }
+
+        // Password is only ever needed for the initial signUp() call — clear
+        // it from shared state immediately so it never lingers in memory or
+        // gets re-displayed if the user returns to this step.
+        onChange({ accountCreated: true, password: '', confirmPassword: '' })
+      } else {
+        await updateProfile({
+          full_name: fullName,
+          phone: normalizedPhone || null,
+          nationality: data.country,
+        })
+      }
+    } catch (err) {
       setLoading(false)
-      setError(signUpError.message)
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
       return
-    }
-
-    if (data.user) {
-      await supabase.from('profiles').update({ phone: f.phone, role }).eq('id', data.user.id)
     }
 
     setLoading(false)
@@ -712,17 +830,23 @@ function ClientStep1({ go, role = 'client' }: { go: (s: AuthScreen) => void; rol
       <h1 style={{ fontSize:22, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:20 }}>Personal Information</h1>
       <div style={{ display:'flex', flexDirection:'column', gap:13 }}>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <FloatInput label="First Name" value={f.firstName} onChange={up('firstName')} />
-          <FloatInput label="Last Name" value={f.lastName} onChange={up('lastName')} />
+          <FloatInput label="First Name" value={data.firstName} onChange={up('firstName')} />
+          <FloatInput label="Last Name" value={data.lastName} onChange={up('lastName')} />
         </div>
-        <FloatInput label="Email Address" type="email" value={f.email} onChange={up('email')} icon={Ico.mail} hint="We'll send a verification email." />
-        <FloatInput label="Phone Number" type="tel" value={f.phone} onChange={up('phone')} icon={Ico.phone} hint="+61 for Australia, +44 for UK…" />
-        <Select label="Country of Residence" value={f.country} onChange={up('country')} options={countries} icon={Ico.globe} />
-        <FloatInput label="Password" type={showP ? 'text' : 'password'} value={f.password} onChange={up('password')} icon={Ico.lock} iconRight={showP ? Ico.eyeOff : Ico.eye} onIconRight={() => setShowP(v => !v)} />
-        <PasswordStrength value={f.password} />
-        <FloatInput label="Confirm Password" type={showP ? 'text' : 'password'} value={f.confirm} onChange={up('confirm')}
-          icon={Ico.lock}
-          error={f.confirm && f.confirm !== f.password ? 'Passwords do not match.' : undefined} />
+        <FloatInput label="Email Address" type="email" value={data.email} onChange={up('email')} icon={Ico.mail} disabled={data.accountCreated}
+          hint={data.accountCreated ? "Email can't be changed after your account is created." : "We'll send a verification email."} />
+        <FloatInput label="Phone Number" type="tel" value={data.phone} onChange={up('phone')} icon={Ico.phone}
+          hint={callingCode ? `Local number, e.g. 0771234567 — we'll save it as ${callingCode}…` : 'Select your country to see the format.'} />
+        <Select label="Country of Residence" value={data.country} onChange={up('country')} options={CLIENT_COUNTRIES} icon={Ico.globe} />
+        {!data.accountCreated && (
+          <>
+            <FloatInput label="Password" type={showP ? 'text' : 'password'} value={data.password} onChange={up('password')} icon={Ico.lock} iconRight={showP ? Ico.eyeOff : Ico.eye} onIconRight={() => setShowP(v => !v)} />
+            <PasswordStrength value={data.password} />
+            <FloatInput label="Confirm Password" type={showP ? 'text' : 'password'} value={data.confirmPassword} onChange={up('confirmPassword')}
+              icon={Ico.lock}
+              error={data.confirmPassword && data.confirmPassword !== data.password ? 'Passwords do not match.' : undefined} />
+          </>
+        )}
         {error && <InlineAlert type="error" message={error} />}
         <Btn variant="primary" size="lg" fullWidth onClick={submit} loading={loading}>Continue {Ico.arrowR}</Btn>
       </div>
@@ -731,15 +855,21 @@ function ClientStep1({ go, role = 'client' }: { go: (s: AuthScreen) => void; rol
 }
 
 // ─── Client Step 2 — Communication Preferences ────────────────────────────────
-function ClientStep2({ go }: { go: (s: AuthScreen) => void }) {
-  const [prefs, setPrefs] = useState({ email:true, sms:true, push:false })
-  const [lang, setLang] = useState('')
-  const [tz, setTz] = useState('')
-  const toggle = (k: keyof typeof prefs) => setPrefs(p => ({ ...p, [k]: !p[k] }))
-  const channels: [keyof typeof prefs, string, ReactNode][] = [
-    ['email', 'Email Notifications', Ico.mail],
-    ['sms',   'SMS Alerts',          Ico.phone],
-    ['push',  'Push Notifications',  Ico.info],
+// No `profiles` columns exist yet for notification channels, language or
+// timezone (verified in src/lib/api.ts and AccountSettings.tsx's own
+// NotificationSettings, which is local-state-only too). Values are kept in
+// shared signup state so Back/Forward preserves them; nothing is persisted
+// here until a schema decision is made.
+function ClientStep2({ go, data, onChange }: {
+  go: (s: AuthScreen) => void
+  data: ClientSignupData
+  onChange: (patch: Partial<ClientSignupData>) => void
+}) {
+  const toggle = (k: 'notifyEmail'|'notifySms'|'notifyPush') => onChange({ [k]: !data[k] } as Partial<ClientSignupData>)
+  const channels: ['notifyEmail'|'notifySms'|'notifyPush', string, ReactNode][] = [
+    ['notifyEmail', 'Email Notifications', Ico.mail],
+    ['notifySms',   'SMS Alerts',          Ico.phone],
+    ['notifyPush',  'Push Notifications',  Ico.info],
   ]
   return (
     <AuthShell left={<LeftPanel icon={Ico.globe} title="Stay connected." desc="Customise how and when we reach you with care updates for your loved one." />}>
@@ -751,24 +881,24 @@ function ClientStep2({ go }: { go: (s: AuthScreen) => void }) {
         {channels.map(([k, label, icon]) => (
           <button key={k} onClick={() => toggle(k)} style={{
             display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 16px',
-            borderRadius:14, border:`1.5px solid ${prefs[k] ? C.primary : C.border}`,
-            background: prefs[k] ? `${C.primary}07` : '#fff', cursor:'pointer', transition:'all 0.15s',
+            borderRadius:14, border:`1.5px solid ${data[k] ? C.primary : C.border}`,
+            background: data[k] ? `${C.primary}07` : '#fff', cursor:'pointer', transition:'all 0.15s',
           }}>
             <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-              <span style={{ color: prefs[k] ? C.primary : C.muted }}>{icon}</span>
+              <span style={{ color: data[k] ? C.primary : C.muted }}>{icon}</span>
               <span style={{ fontSize:14, fontWeight:600, color:C.type, fontFamily:'Manrope,sans-serif' }}>{label}</span>
             </div>
             {/* Toggle */}
-            <div style={{ width:38, height:22, borderRadius:11, background: prefs[k] ? C.primary : C.border, position:'relative', transition:'background 0.2s', flexShrink:0 }}>
-              <div style={{ position:'absolute', top:3, left: prefs[k] ? 19 : 3, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.15)' }} />
+            <div style={{ width:38, height:22, borderRadius:11, background: data[k] ? C.primary : C.border, position:'relative', transition:'background 0.2s', flexShrink:0 }}>
+              <div style={{ position:'absolute', top:3, left: data[k] ? 19 : 3, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.15)' }} />
             </div>
           </button>
         ))}
         <div style={{ marginTop:8 }}>
           <p style={{ fontSize:13, fontWeight:600, color:C.sub, marginBottom:10 }}>Language & Timezone</p>
           <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-            <Select label="Preferred Language" value={lang} onChange={setLang} options={['English','සිංහල (Sinhala)','தமிழ் (Tamil)']} icon={Ico.globe} />
-            <Select label="Time Zone" value={tz} onChange={setTz} options={['AEST (GMT+10) — Sydney','BST (GMT+1) — London','EST (GMT-5) — Toronto','PST (GMT-8) — Vancouver','IST (GMT+5:30) — India','SGT (GMT+8) — Singapore']} icon={Ico.clock} />
+            <Select label="Preferred Language" value={data.language} onChange={v => onChange({ language: v })} options={['English','සිංහල (Sinhala)','தமிழ் (Tamil)']} icon={Ico.globe} />
+            <Select label="Time Zone" value={data.timezone} onChange={v => onChange({ timezone: v })} options={['SLST (GMT+5:30) — Colombo','AEST (GMT+10) — Sydney','BST (GMT+1) — London','EST (GMT-5) — Toronto','PST (GMT-8) — Vancouver','IST (GMT+5:30) — India','SGT (GMT+8) — Singapore']} icon={Ico.clock} />
           </div>
         </div>
         <Btn variant="primary" size="lg" fullWidth onClick={() => go('client-3')}>Continue {Ico.arrowR}</Btn>
@@ -778,9 +908,75 @@ function ClientStep2({ go }: { go: (s: AuthScreen) => void }) {
 }
 
 // ─── Client Step 3 — Emergency Contact ───────────────────────────────────────
-function ClientStep3({ go }: { go: (s: AuthScreen) => void }) {
-  const [f, setF] = useState({ name:'', relationship:'', phone:'', email:'' })
-  const up = (k: keyof typeof f) => (v: string) => setF(p => ({ ...p, [k]: v }))
+// `profiles.emergency_contact` is an existing jsonb column already used by
+// AccountSettings.tsx as `{ name, phone }`. Relationship and email are added
+// as extra keys on that same object (safe for jsonb, and AccountSettings only
+// ever reads `.name`/`.phone` back out) rather than inventing new columns.
+//
+// Continuing from this step is also the deliberate trigger point for sending
+// the phone-verification OTP (see ClientStep4) — not step 4's mount, and not
+// on every render.
+function ClientStep3({ go, data, onChange }: {
+  go: (s: AuthScreen) => void
+  data: ClientSignupData
+  onChange: (patch: Partial<ClientSignupData>) => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const up = (k: keyof ClientSignupData) => (v: string) => onChange({ [k]: v } as Partial<ClientSignupData>)
+
+  // Requests a fresh phone-verification OTP for the number captured in Step 1,
+  // via the authenticated phone-change flow (the account already exists by
+  // this point in the flow). Returns the E.164 number on success, or null if
+  // sending failed (error is left on screen for retry).
+  const requestVerification = async (): Promise<string | null> => {
+    const callingCode = data.country ? COUNTRY_CALLING_CODES[data.country] : ''
+    const e164 = normalizePhoneE164(data.country, data.phone)
+    if (!e164 || !callingCode) {
+      setError('We need a valid phone number from Step 1 before we can verify it.')
+      return null
+    }
+    const { error: otpError } = await supabase.auth.updateUser({ phone: e164 })
+    if (otpError) {
+      setError(otpError.message)
+      return null
+    }
+    onChange({ phoneE164: e164, phoneCallingCode: callingCode })
+    return e164
+  }
+
+  const continueToVerification = async () => {
+    setError(''); setLoading(true)
+    try {
+      if (data.emergencyName || data.emergencyPhone || data.emergencyRelationship || data.emergencyEmail) {
+        await updateProfile({
+          emergency_contact: {
+            name: data.emergencyName,
+            phone: data.emergencyPhone,
+            relationship: data.emergencyRelationship,
+            email: data.emergencyEmail || null,
+          },
+        })
+      }
+      const sent = await requestVerification()
+      if (!sent) { setLoading(false); return }
+    } catch (err) {
+      setLoading(false)
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
+      return
+    }
+    setLoading(false)
+    go('client-4')
+  }
+
+  const skip = async () => {
+    setError(''); setLoading(true)
+    const sent = await requestVerification()
+    setLoading(false)
+    if (!sent) return
+    go('client-4')
+  }
+
   return (
     <AuthShell left={<LeftPanel icon={Ico.phone} title="Who do we call in an emergency?" desc="We'll contact this person if we cannot reach you and there's a care issue with your loved one." />}>
       <button onClick={() => go('client-2')} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.sub, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:600, marginBottom:24, padding:0 }}>{Ico.arrowL} Back</button>
@@ -788,52 +984,89 @@ function ClientStep3({ go }: { go: (s: AuthScreen) => void }) {
       <h1 style={{ fontSize:22, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:6 }}>Emergency Contact</h1>
       <p style={{ fontSize:14, color:C.sub, marginBottom:20 }}>This information is only used in genuine emergencies.</p>
       <div style={{ display:'flex', flexDirection:'column', gap:13 }}>
-        <FloatInput label="Full Name" value={f.name} onChange={up('name')} icon={Ico.user} hint="e.g. Nimal Perera" />
-        <Select label="Relationship" value={f.relationship} onChange={up('relationship')} options={['Spouse / Partner','Sibling','Son / Daughter','Friend','Colleague','Other']} />
-        <FloatInput label="Phone Number" type="tel" value={f.phone} onChange={up('phone')} icon={Ico.phone} />
-        <FloatInput label="Email Address (Optional)" type="email" value={f.email} onChange={up('email')} icon={Ico.mail} />
-        <Btn variant="primary" size="lg" fullWidth onClick={() => go('client-4')}>Continue {Ico.arrowR}</Btn>
-        <Btn variant="ghost" size="md" fullWidth onClick={() => go('client-4')}>Skip for now</Btn>
+        <FloatInput label="Full Name" value={data.emergencyName} onChange={up('emergencyName')} icon={Ico.user} hint="e.g. Nimal Perera" />
+        <Select label="Relationship" value={data.emergencyRelationship} onChange={up('emergencyRelationship')} options={['Spouse / Partner','Sibling','Son / Daughter','Friend','Colleague','Other']} />
+        <FloatInput label="Phone Number" type="tel" value={data.emergencyPhone} onChange={up('emergencyPhone')} icon={Ico.phone} />
+        <FloatInput label="Email Address (Optional)" type="email" value={data.emergencyEmail} onChange={up('emergencyEmail')} icon={Ico.mail} />
+        {error && <InlineAlert type="error" message={error} />}
+        <Btn variant="primary" size="lg" fullWidth onClick={continueToVerification} loading={loading}>Continue {Ico.arrowR}</Btn>
+        <Btn variant="ghost" size="md" fullWidth onClick={skip} disabled={loading}>Skip for now</Btn>
       </div>
     </AuthShell>
   )
 }
 
 // ─── Client Step 4 — OTP Verification ────────────────────────────────────────
-function ClientStep4({ go }: { go: (s: AuthScreen) => void }) {
+// Real Supabase phone verification for the already-authenticated user: the
+// OTP was requested by ClientStep3 via `supabase.auth.updateUser({ phone })`,
+// and is confirmed here via `supabase.auth.verifyOtp({ phone, token, type:
+// 'phone_change' })` — the verification type Supabase uses for confirming a
+// phone number change on an existing authenticated user (rather than a
+// phone-only signup). There is no local/fake OTP comparison anywhere in this
+// step; Step 5 is only reachable once Supabase confirms the code.
+function ClientStep4({ go, data }: { go: (s: AuthScreen) => void; data: ClientSignupData }) {
   const [otp, setOtp] = useState(['','','','','',''])
   const [expired, setExpired] = useState(false)
   const [error, setError] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [resending, setResending] = useState(false)
+  const [resendCount, setResendCount] = useState(0)
   const filled = otp.every(v => v !== '')
-  const verify = () => {
-    if (otp.join('') === '000000') { setError('Incorrect OTP. Please try again.'); return }
+
+  const verify = async () => {
+    if (verifying) return
+    setVerifying(true); setError('')
+    const { error: verifyError } = await supabase.auth.verifyOtp({
+      phone: data.phoneE164,
+      token: otp.join(''),
+      type: 'phone_change',
+    })
+    setVerifying(false)
+    if (verifyError) { setError(verifyError.message); return }
     go('client-5')
   }
+
+  const resend = async () => {
+    if (resending) return
+    setResending(true); setError('')
+    const { error: resendError } = await supabase.auth.resend({
+      type: 'phone_change',
+      phone: data.phoneE164,
+    })
+    setResending(false)
+    if (resendError) { setError(resendError.message); return }
+    setOtp(['','','','','',''])
+    setExpired(false)
+    setResendCount(c => c + 1) // remounts <Countdown> below to restart the timer
+  }
+
+  const masked = data.phoneE164 ? maskPhoneE164(data.phoneE164, data.phoneCallingCode) : 'your phone'
+
   return (
     <AuthShell left={<LeftPanel icon={Ico.shield} title="One last check." desc="We've sent a 6-digit code to your mobile number to confirm it's really you." />}>
       <button onClick={() => go('client-3')} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.sub, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:600, marginBottom:24, padding:0 }}>{Ico.arrowL} Back</button>
       <StepBar current={4} total={5} label="Verification" />
       <h1 style={{ fontSize:22, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:6 }}>Enter Verification Code</h1>
-      <p style={{ fontSize:14, color:C.sub, marginBottom:28 }}>Sent to <strong>+61 4XX XXX XXX</strong>. Check your messages.</p>
+      <p style={{ fontSize:14, color:C.sub, marginBottom:28 }}>Sent to <strong>{masked}</strong>. Check your messages.</p>
       {error && <InlineAlert type="error" message={error} />}
       <div style={{ marginBottom:28 }}>
         <OTPInput value={otp} onChange={setOtp} error={!!error} />
       </div>
       <div style={{ textAlign:'center', marginBottom:24 }}>
         {expired ? (
-          <button onClick={() => setExpired(false)} style={{ display:'inline-flex', alignItems:'center', gap:6, color:C.primary, fontWeight:700, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:13 }}>
-            {Ico.refresh} Resend code
+          <button onClick={resend} disabled={resending} style={{ display:'inline-flex', alignItems:'center', gap:6, color:C.primary, fontWeight:700, background:'none', border:'none', cursor: resending ? 'not-allowed' : 'pointer', fontFamily:'Manrope,sans-serif', fontSize:13, opacity: resending ? 0.6 : 1 }}>
+            {Ico.refresh} {resending ? 'Resending…' : 'Resend code'}
           </button>
         ) : (
           <p style={{ fontSize:13, color:C.sub, fontFamily:'Manrope,sans-serif' }}>
-            Code expires in <Countdown seconds={120} onDone={() => setExpired(true)} />
+            Code expires in <Countdown key={resendCount} seconds={120} onDone={() => setExpired(true)} />
           </p>
         )}
       </div>
-      <Btn variant="primary" size="lg" fullWidth disabled={!filled} onClick={verify}>Verify & Continue</Btn>
+      <Btn variant="primary" size="lg" fullWidth disabled={!filled} loading={verifying} onClick={verify}>Verify & Continue</Btn>
       <p style={{ textAlign:'center', fontSize:12, color:C.muted, marginTop:16 }}>
         Prefer a call?&nbsp;
-        <button style={{ color:C.primary, fontWeight:700, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12 }}>Request voice call</button>
+        <button disabled title="Voice call verification isn't available yet." style={{ color:C.primary, fontWeight:700, background:'none', border:'none', cursor:'not-allowed', opacity:0.5, fontFamily:'Manrope,sans-serif', fontSize:12 }}>Request voice call</button>
       </p>
     </AuthShell>
   )
@@ -1497,6 +1730,13 @@ export default function AuthOnboarding() {
   )
   const [signupRole, setSignupRole] = useState<'client'|'agent'|null>(roleParam === 'agent' ? 'agent' : null)
 
+  // Shared client-signup state — owned here (not inside each step) so Back/
+  // Forward navigation across client-1..4 never loses previously entered data.
+  const [clientData, setClientData] = useState<ClientSignupData>(DEFAULT_CLIENT_SIGNUP_DATA)
+  const updateClientData = useCallback((patch: Partial<ClientSignupData>) => {
+    setClientData(prev => ({ ...prev, ...patch }))
+  }, [])
+
   const go = useCallback((s: AuthScreen) => {
     setScreen(s)
     window.scrollTo({ top:0, behavior:'smooth' })
@@ -1535,10 +1775,10 @@ export default function AuthOnboarding() {
       case 'welcome':         return <WelcomeScreen go={go} />
       case 'login':           return <LoginScreen go={go} onAuthenticated={routeAuthenticatedUser} />
       case 'role-select':     return <RoleSelectScreen go={go} role={signupRole} setRole={setSignupRole} />
-      case 'client-1':        return <ClientStep1 go={go} role={signupRole ?? 'client'} />
-      case 'client-2':        return <ClientStep2 go={go} />
-      case 'client-3':        return <ClientStep3 go={go} />
-      case 'client-4':        return <ClientStep4 go={go} />
+      case 'client-1':        return <ClientStep1 go={go} role={signupRole ?? 'client'} data={clientData} onChange={updateClientData} />
+      case 'client-2':        return <ClientStep2 go={go} data={clientData} onChange={updateClientData} />
+      case 'client-3':        return <ClientStep3 go={go} data={clientData} onChange={updateClientData} />
+      case 'client-4':        return <ClientStep4 go={go} data={clientData} />
       case 'client-5':        return <ClientStep5 go={go} />
       case 'agent-1':         return <AgentStep1 go={go} />
       case 'agent-2':         return <AgentStep2 go={go} />
