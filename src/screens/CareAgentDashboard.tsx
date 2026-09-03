@@ -1,8 +1,10 @@
 ﻿import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { supabase } from '../lib/supabaseClient'
 import {
   getCurrentUser,
   getMyProfile,
+  updateProfile,
   getMyAgentDetails,
   getMyAgentSkills,
   getMyCertifications,
@@ -52,6 +54,8 @@ const I: Record<string,ReactNode> = {
   trophy:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 1.5h4v5a2 2 0 0 1-4 0v-5zM2 2.5h3v3a3 3 0 0 1-3-3zM12 2.5H9v3a3 3 0 0 0 3-3z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round"/><path d="M7 8.5v2.5M5 12.5h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
   target:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2"/><circle cx="7" cy="7" r="3" stroke="currentColor" strokeWidth="1.1"/><circle cx="7" cy="7" r=".8" fill="currentColor"/></svg>,
   shield:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5l5 1.8v3.8C12 10.8 9.5 13 7 14 4.5 13 2 10.8 2 7.1V3.3L7 1.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>,
+  settings: <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.2"/><path d="M7 1.5v1.5M7 11v1.5M1.5 7h1.5M11 7h1.5M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M10.1 3.9L11.2 2.8M2.8 11.2l1.1-1.1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
+  logout:   <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M6 13H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M10 10.5L13.5 7 10 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M13.5 7H5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
@@ -1386,6 +1390,218 @@ function ActivityTimeline({ notifications, loading, error }:{ notifications:any[
   )
 }
 
+// ─── Settings ─────────────────────────────────────────────────────────────────
+// Account-level settings for Care Agents: identity fields already backed by
+// the real `profiles` table, a real Supabase Auth password change, and
+// logout. Deliberately separate from AgentProfileMgmt.tsx (professional/
+// public profile — headline, bio, skills, services, experience): this view
+// only covers account/security/preferences/logout, never professional
+// profile data. Notification/app preferences have no backing table yet, so
+// that section stays an honest placeholder instead of a toggle that quietly
+// discards its value.
+function AgentSettings({ onToast }:{ onToast:(m:string)=>void }) {
+  const navigate = useNavigate()
+  const [profile, setProfile] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        setLoading(true)
+        setLoadError('')
+        const data = await getMyProfile()
+        if(!cancelled) setProfile(data)
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load account settings:', err)
+        setLoadError("We couldn't load your account settings. Please try again.")
+      } finally {
+        if(!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  // ─── Account details (real, persisted via profiles.full_name / preferred_name) ───
+  const [editingName, setEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  const [preferredDraft, setPreferredDraft] = useState('')
+  const [savingName, setSavingName] = useState(false)
+  const [nameError, setNameError] = useState('')
+
+  const startEditingName = () => {
+    setNameDraft(profile?.full_name ?? '')
+    setPreferredDraft(profile?.preferred_name ?? '')
+    setNameError('')
+    setEditingName(true)
+  }
+  const saveName = async () => {
+    setSavingName(true)
+    setNameError('')
+    try {
+      const fields = { full_name: nameDraft.trim(), preferred_name: preferredDraft.trim() }
+      await updateProfile(fields)
+      setProfile((p:any)=>({ ...p, ...fields }))
+      setEditingName(false)
+      onToast('Account details saved')
+    } catch(err) {
+      console.error('Failed to save account details:', err)
+      setNameError("Couldn't save your details. Please try again.")
+    } finally {
+      setSavingName(false)
+    }
+  }
+
+  // ─── Password change (real, via supabase.auth.updateUser) ─────────────────
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [changingPassword, setChangingPassword] = useState(false)
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordSuccess, setPasswordSuccess] = useState(false)
+
+  const changePassword = async () => {
+    if(changingPassword) return
+    setPasswordError('')
+    setPasswordSuccess(false)
+    if(newPassword.length < 6) { setPasswordError('Password must be at least 6 characters.'); return }
+    if(newPassword !== confirmPassword) { setPasswordError('Passwords do not match.'); return }
+    setChangingPassword(true)
+    const { error: pwError } = await supabase.auth.updateUser({ password: newPassword })
+    setChangingPassword(false)
+    if(pwError) {
+      setPasswordError(pwError.message || "Couldn't update your password. Please try again.")
+      return
+    }
+    setNewPassword('')
+    setConfirmPassword('')
+    setPasswordSuccess(true)
+    onToast('Password updated')
+  }
+
+  // ─── Logout ─────────────────────────────────────────────────────────────
+  // Auth-only: signs out of Supabase and redirects. Never touches profile,
+  // agent application/onboarding, or booking/job rows.
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
+
+  const handleLogout = async () => {
+    if(loggingOut) return
+    setLoggingOut(true)
+    setLogoutError('')
+    const { error: logoutErr } = await supabase.auth.signOut()
+    if(logoutErr) {
+      setLoggingOut(false)
+      setLogoutError(logoutErr.message || "Couldn't log out. Please try again.")
+      return
+    }
+    // Replace history so the authenticated dashboard can't be reached again
+    // via the browser's Back button after logging out.
+    navigate('/auth?mode=login', { replace:true })
+  }
+
+  if(loading) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Settings</h2>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your settings…</p>
+      </div>
+    )
+  }
+
+  if(loadError) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Settings</h2>
+        <p style={{ fontSize:13, color:C.error }}>{loadError}</p>
+      </div>
+    )
+  }
+
+  const inputStyle: CSSProperties = { width:'100%', padding:'9px 12px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', background:'#FAFAFA', boxSizing:'border-box' as const }
+
+  return (
+    <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
+      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Settings</h2>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Manage your account, security, and sign-in — for your professional profile, skills, and services, go to Profile instead.</p>
+
+      {/* Account */}
+      <Card style={{ padding:24, marginBottom:16 }}>
+        <SectionTitle title="Account" action={editingName?undefined:'Edit'} onAction={editingName?undefined:startEditingName} />
+        {editingName ? (
+          <div>
+            <div style={{ marginBottom:12 }}>
+              <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:5 }}>Full Name</p>
+              <input value={nameDraft} onChange={e=>setNameDraft(e.target.value)} style={{ ...inputStyle, border:`1.5px solid ${C.primary}` }} />
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:5 }}>Preferred Name</p>
+              <input value={preferredDraft} onChange={e=>setPreferredDraft(e.target.value)} style={{ ...inputStyle, border:`1.5px solid ${C.primary}` }} />
+            </div>
+            {nameError && <p style={{ fontSize:11, color:C.error, marginBottom:10 }}>{nameError}</p>}
+            <div style={{ display:'flex', gap:8 }}>
+              <Btn label={savingName?'Saving…':'Save'} small disabled={savingName} onClick={saveName} />
+              <Btn label="Cancel" variant="ghost" small disabled={savingName} onClick={()=>{ setEditingName(false); setNameError('') }} />
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:2 }}>Full Name</p>
+              <p style={{ fontSize:13, color:C.type }}>{profile?.full_name?.trim() || <span style={{color:C.muted,fontStyle:'italic'}}>Not set</span>}</p>
+            </div>
+            <div style={{ padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:2 }}>Preferred Name</p>
+              <p style={{ fontSize:13, color:C.type }}>{profile?.preferred_name?.trim() || <span style={{color:C.muted,fontStyle:'italic'}}>Not set</span>}</p>
+            </div>
+            <div style={{ padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:2 }}>Email</p>
+              <p style={{ fontSize:13, color:C.type }}>{profile?.email || '—'}</p>
+            </div>
+            <div style={{ padding:'10px 0 0' }}>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:2 }}>Phone</p>
+              <p style={{ fontSize:13, color:C.type }}>{profile?.phone || <span style={{color:C.muted,fontStyle:'italic'}}>Not set</span>}</p>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Security */}
+      <Card style={{ padding:24, marginBottom:16 }}>
+        <SectionTitle title="Security" />
+        <p style={{ fontSize:12, color:C.muted, marginBottom:14 }}>Change your password. You'll stay signed in on this device.</p>
+        <div style={{ display:'flex', flexDirection:'column', gap:10, maxWidth:360 }}>
+          <input type="password" placeholder="New password" value={newPassword} onChange={e=>{ setNewPassword(e.target.value); setPasswordSuccess(false) }} style={inputStyle} />
+          <input type="password" placeholder="Confirm new password" value={confirmPassword} onChange={e=>{ setConfirmPassword(e.target.value); setPasswordSuccess(false) }} style={inputStyle} />
+          {passwordError && <p style={{ fontSize:11, color:C.error }}>{passwordError}</p>}
+          {passwordSuccess && <p style={{ fontSize:11, color:C.success, fontWeight:700 }}>Password updated successfully.</p>}
+          <div>
+            <Btn label={changingPassword?'Updating…':'Update Password'} variant="secondary" small disabled={changingPassword||!newPassword||!confirmPassword} onClick={changePassword} />
+          </div>
+        </div>
+      </Card>
+
+      {/* Preferences — no notification/preference columns exist yet, so this
+          stays an honest placeholder rather than a toggle that silently
+          discards its value. */}
+      <Card style={{ padding:24, marginBottom:16 }}>
+        <SectionTitle title="Preferences" />
+        <p style={{ fontSize:12, color:C.muted }}>Notification and app preferences aren't available yet — this section is coming soon.</p>
+      </Card>
+
+      {/* Sign out */}
+      <Card style={{ padding:24, border:`1.5px solid ${C.error}20` }}>
+        <SectionTitle title="Sign Out" />
+        <p style={{ fontSize:12, color:C.muted, marginBottom:14 }}>Sign out of your Care Agent account on this device.</p>
+        {logoutError && <p style={{ fontSize:11, color:C.error, marginBottom:10 }}>{logoutError}</p>}
+        <Btn label={loggingOut?'Logging out…':'Log Out'} variant="danger" icon={I.logout} disabled={loggingOut} onClick={handleLogout} />
+      </Card>
+    </div>
+  )
+}
+
 // ─── Emergency Panel ──────────────────────────────────────────────────────────
 function EmergencyPanel({ onToast }:{ onToast:(m:string)=>void }) {
   return (
@@ -1440,7 +1656,7 @@ function EmergencyPanel({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'home'|'schedule'|'activeTask'|'invitations'|'calendar'|'performance'|'earnings'|'notifications'|'messages'|'goals'|'profile'|'serviceAreas'|'statusCenter'|'timeline'|'emergency'
+type SubView = 'home'|'schedule'|'activeTask'|'invitations'|'calendar'|'performance'|'earnings'|'notifications'|'messages'|'goals'|'profile'|'serviceAreas'|'statusCenter'|'timeline'|'settings'|'emergency'
 
 const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'home',        l:'Dashboard',       icon:I.target,    group:'Overview' },
@@ -1457,6 +1673,7 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'serviceAreas',l:'Service Areas',   icon:I.map,       group:'Settings' },
   { k:'statusCenter',l:'Status Center',   icon:I.shield,    group:'Settings' },
   { k:'timeline',    l:'Activity Log',    icon:I.clock,     group:'Settings' },
+  { k:'settings',    l:'Settings',        icon:I.settings,  group:'Settings' },
   { k:'emergency',   l:'Emergency Panel', icon:I.sos,       group:'Emergency' },
 ]
 
@@ -1631,6 +1848,7 @@ export default function CareAgentDashboard() {
       case 'serviceAreas':return <ServiceAreas onToast={showToast} />
       case 'statusCenter':return <StatusCenter status={status} setStatus={setStatus} onToast={showToast} />
       case 'timeline':    return <ActivityTimeline notifications={notifications} loading={notifLoading} error={notifError} />
+      case 'settings':    return <AgentSettings onToast={showToast} />
       case 'emergency':   return <EmergencyPanel onToast={showToast} />
       default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
                              agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}

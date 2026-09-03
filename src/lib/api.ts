@@ -1881,6 +1881,121 @@ export async function getBeneficiaryDocuments(beneficiaryId: string) {
   return data ?? []
 }
 
+// The "beneficiary-documents" bucket is private, so file_url stores the
+// storage object path (never a public URL) — mirroring the same convention
+// already used for the private "verification-documents" bucket elsewhere in
+// this file. Callers must resolve a path to a real URL via
+// getBeneficiaryDocumentUrl() at click time rather than using it as a href.
+function safeStorageFileName(name: string): string {
+  const trimmed = name.trim() || "document"
+  return trimmed.replace(/[^a-zA-Z0-9.\-_]/g, "_")
+}
+
+const BENEFICIARY_DOCUMENT_ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"]
+const BENEFICIARY_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
+
+// Uploads a real file to Supabase Storage, then inserts the matching
+// beneficiary_documents row — only after the storage write succeeds. Ownership
+// is verified explicitly (the beneficiary must belong to the authenticated
+// client) in addition to whatever RLS enforces, so one client can never
+// attach a document to another client's beneficiary. If the row insert fails
+// after the file was already uploaded, the orphaned storage object is
+// removed rather than left behind.
+export async function uploadBeneficiaryDocument(
+  beneficiaryId: string,
+  file: File,
+  documentType: string,
+  expiryDate?: string | null
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data: beneficiary, error: beneficiaryError } = await supabase
+    .from("beneficiaries")
+    .select("id")
+    .eq("id", beneficiaryId)
+    .eq("client_id", user.id)
+    .maybeSingle()
+
+  if (beneficiaryError) {
+    throw beneficiaryError
+  }
+
+  if (!beneficiary) {
+    throw new Error("You don't have access to this beneficiary")
+  }
+
+  if (!file) {
+    throw new Error("Please select a file")
+  }
+
+  if (!BENEFICIARY_DOCUMENT_ALLOWED_TYPES.includes(file.type)) {
+    throw new Error("Only PDF, JPG and PNG files are allowed")
+  }
+
+  if (file.size > BENEFICIARY_DOCUMENT_MAX_BYTES) {
+    throw new Error("File must be smaller than 10MB")
+  }
+
+  const path = `${user.id}/${beneficiaryId}/${crypto.randomUUID()}-${safeStorageFileName(file.name)}`
+
+  const { error: uploadError } = await supabase.storage
+    .from("beneficiary-documents")
+    .upload(path, file, {
+      contentType: file.type,
+      cacheControl: "3600",
+    })
+
+  if (uploadError) {
+    console.error("Beneficiary document storage upload failed:", { path, bucket: "beneficiary-documents", error: uploadError })
+    throw uploadError
+  }
+
+  const { data, error: insertError } = await supabase
+    .from("beneficiary_documents")
+    .insert({
+      beneficiary_id: beneficiaryId,
+      name: file.name,
+      type: documentType,
+      file_url: path,
+      expiry_date: expiryDate || null,
+    })
+    .select()
+    .single()
+
+  if (insertError) {
+    console.error("beneficiary_documents insert failed after a successful storage upload:", { path, beneficiaryId, error: insertError })
+    // Storage upload succeeded but the row failed — don't leave an orphaned
+    // file behind. Best-effort: a cleanup failure here doesn't change the
+    // fact that the original insert failed, so the original error still wins.
+    const { error: cleanupError } = await supabase.storage.from("beneficiary-documents").remove([path])
+    if (cleanupError) {
+      console.error("Failed to clean up orphaned beneficiary document after failed insert:", cleanupError)
+    }
+    throw insertError
+  }
+
+  return data
+}
+
+// beneficiary-documents is a private bucket, so a stored path is only ever
+// opened via a short-lived signed URL generated at click time — never a
+// public URL, and never by flipping the bucket to public.
+export async function getBeneficiaryDocumentUrl(path: string) {
+  const { data, error } = await supabase.storage
+    .from("beneficiary-documents")
+    .createSignedUrl(path, 300)
+
+  if (error) {
+    throw error
+  }
+
+  return data.signedUrl
+}
+
 // support_tickets has no booking_id column, so job context is folded into
 // the subject text by the caller rather than a real relation. category is
 // NOT NULL with no confirmed CHECK constraint, so a stable, truthful,
@@ -1911,6 +2026,28 @@ export async function createSupportTicket(subject: string) {
   }
 
   return data
+}
+
+// Scoped to the authenticated user's own tickets — same table
+// createSupportTicket already writes to.
+export async function getMySupportTickets() {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("support_tickets")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
 }
 
 
@@ -2572,20 +2709,49 @@ export async function getDashboardOverview(clientId: string) {
     .in('status', ['open','applied','shortlisted','assigned','in_progress'])
 
   const today = new Date().toISOString().slice(0, 10)
-  const { count: upcomingVisits } = await supabase
+  const { count: upcomingVisitsCount } = await supabase
     .from('bookings')
     .select('*', { count: 'exact', head: true })
     .eq('client_id', clientId)
     .in('status', ['confirmed','assigned'])
     .gte('scheduled_date', today)
 
+  // Real upcoming visit rows (not just the count above) so the dashboard's
+  // "Upcoming Visits" panel can show actual bookings instead of fabricated
+  // sample data.
+  const { data: upcomingVisitRows } = await supabase
+    .from('bookings')
+    .select(`
+      id, status, scheduled_date, scheduled_time, duration, location,
+      care_request:care_requests(title, service_type),
+      beneficiary:beneficiaries!beneficiary_id(name, preferred_name),
+      agent:profiles!agent_id(full_name)
+    `)
+    .eq('client_id', clientId)
+    .in('status', ['confirmed','assigned'])
+    .gte('scheduled_date', today)
+    .order('scheduled_date', { ascending: true })
+    .order('scheduled_time', { ascending: true })
+    .limit(8)
+
   return {
     fullName: profile?.full_name || 'there',
     requests: mappedRequests,
     notifications: (notifs || []).map((n: any) => ({
-      title: n.title, detail: n.body, time: n.created_at, unread: !n.read, color: '#00737A',
+      id: n.id, title: n.title, detail: n.body, time: n.created_at, unread: !n.read, color: '#00737A',
     })),
-    counts: { upcomingVisits: upcomingVisits || 0, activeRequests: activeRequests || 0 },
+    upcomingVisits: (upcomingVisitRows || []).map((b: any) => ({
+      id: b.id,
+      title: b.care_request?.title || b.care_request?.service_type || 'Care Visit',
+      agent: b.agent?.full_name || 'Care Agent',
+      beneficiary: b.beneficiary?.preferred_name || b.beneficiary?.name || '',
+      date: b.scheduled_date || '',
+      time: b.scheduled_time || '',
+      duration: b.duration || '',
+      location: b.location || '',
+      status: b.status,
+    })),
+    counts: { upcomingVisits: upcomingVisitsCount || 0, activeRequests: activeRequests || 0 },
   }
 }
 
@@ -2630,6 +2796,7 @@ export async function getAllNotifications(clientId: string) {
 
   const validTypes = ['request', 'visit', 'payment', 'review', 'task', 'system']
   return (data || []).map((n: any) => ({
+    id: n.id,
     title: n.title || 'Notification',
     detail: n.body || '',
     time: n.created_at ? new Date(n.created_at).toLocaleString() : '',
@@ -2706,6 +2873,61 @@ export async function getMyAgents(clientId: string) {
   return agents
 }
 
+// beneficiaries.conditions/medications/pref_languages/emergency_contacts have
+// no confirmed column type (jsonb vs text vs text[] could not be verified
+// against the live schema) — the same uncertainty already documented and
+// handled defensively in JobManagement.tsx's BeneficiaryInfo rendering.
+// These mirror that exact normalization so both the agent and client sides
+// treat the columns identically instead of assuming a shape.
+function toStringList(value: unknown): string[] {
+  if (value == null) return []
+  if (Array.isArray(value)) return value.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).filter(Boolean)
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    if (!trimmed) return []
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) return parsed.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).filter(Boolean)
+    } catch { /* not JSON — treat as plain text below */ }
+    return trimmed.split(",").map((s) => s.trim()).filter(Boolean)
+  }
+  if (typeof value === "object") return Object.values(value as Record<string, unknown>).map((v) => (typeof v === "string" ? v : JSON.stringify(v)))
+  return [String(value)]
+}
+
+type EmergencyContactRow = { name?: string; relationship?: string; phone?: string; email?: string }
+function toContactList(value: unknown): EmergencyContactRow[] {
+  let arr: unknown[] = []
+  if (Array.isArray(value)) arr = value
+  else if (typeof value === "string") {
+    try { const p = JSON.parse(value); if (Array.isArray(p)) arr = p } catch { /* not JSON */ }
+  } else if (value && typeof value === "object") arr = [value]
+  return arr.filter((x) => x && typeof x === "object").map((x) => x as EmergencyContactRow)
+}
+
+// Shared by getBeneficiariesFull and getBeneficiaryById so both read the
+// same real columns the same way.
+function mapBeneficiaryRow(r: any, upcoming: any, careHistory: any[]) {
+  const careStatusMap: Record<string, string> = { assigned:'In Progress', confirmed:'In Progress', in_progress:'In Progress', completed:'Completed', cancelled:'Cancelled', rescheduled:'In Progress' }
+  return {
+    id: r.id, name: r.name, preferred: r.preferred_name || r.name, dob: r.dob || '', age: r.age || 0,
+    gender: r.gender || '', relationship: r.relationship || '', nic: r.nic || '', province: r.province || '',
+    city: r.city || '', address: r.address || '', postalCode: r.postal_code || '', landmark: r.landmark || '',
+    bloodGroup: r.blood_group || '', allergies: r.allergies || '', conditions: toStringList(r.conditions),
+    medications: toStringList(r.medications), doctor: r.doctor || '', hospital: r.hospital || '', mobility: r.mobility || '',
+    vision: r.vision || '', hearing: r.hearing || '', memory: r.memory || '', medNotes: r.med_notes || '',
+    emergencyContacts: toContactList(r.emergency_contacts), prefLang: toStringList(r.pref_languages), prefGender: r.pref_gender || '',
+    dietary: r.dietary || '', religious: r.religious || '', visitTimes: r.visit_times || '', commPref: r.comm_pref || '',
+    specialReq: r.special_req || '', documents: [] as any[], careHistory, notes: [] as any[],
+    status: r.status || 'active',
+    careStatus: upcoming ? (careStatusMap[upcoming.status] || 'Open Request') : 'Open Request',
+    assignedAgent: (upcoming?.profiles as any)?.full_name || '—',
+    nextVisit: upcoming?.scheduled_date ? `${upcoming.scheduled_date}${upcoming.scheduled_time ? ' · ' + upcoming.scheduled_time : ''}` : '—',
+    rating: 0,
+    createdAt: r.created_at || null,
+  }
+}
+
 export async function getBeneficiariesFull(clientId: string) {
   const { data: rows } = await supabase
     .from('beneficiaries')
@@ -2728,27 +2950,64 @@ export async function getBeneficiariesFull(clientId: string) {
     }
   }
 
-  const careStatusMap: Record<string, string> = { assigned:'In Progress', confirmed:'In Progress', in_progress:'In Progress', completed:'Completed', cancelled:'Cancelled', rescheduled:'In Progress' }
-
   return (rows || []).map((r: any) => {
     const bks = bookingsByBene[r.id] || []
     const today = new Date().toISOString().slice(0, 10)
     const upcoming = bks.find((b: any) => b.scheduled_date >= today) || bks[bks.length - 1]
-    return {
-      id: r.id, name: r.name, preferred: r.preferred_name || r.name, dob: r.dob || '', age: r.age || 0,
-      gender: r.gender || '', relationship: r.relationship || '', nic: r.nic || '', province: r.province || '',
-      city: r.city || '', address: r.address || '', postalCode: r.postal_code || '', landmark: r.landmark || '',
-      bloodGroup: r.blood_group || '', allergies: r.allergies || '', conditions: r.conditions || [],
-      medications: r.medications || [], doctor: r.doctor || '', hospital: r.hospital || '', mobility: r.mobility || '',
-      vision: r.vision || '', hearing: r.hearing || '', memory: r.memory || '', medNotes: r.med_notes || '',
-      emergencyContacts: r.emergency_contacts || [], prefLang: r.pref_languages || [], prefGender: r.pref_gender || '',
-      dietary: r.dietary || '', religious: r.religious || '', visitTimes: r.visit_times || '', commPref: r.comm_pref || '',
-      specialReq: r.special_req || '', documents: [], careHistory: [], notes: [],
-      status: r.status || 'active',
-      careStatus: upcoming ? (careStatusMap[upcoming.status] || 'Open Request') : 'Open Request',
-      assignedAgent: (upcoming?.profiles as any)?.full_name || '—',
-      nextVisit: upcoming?.scheduled_date ? `${upcoming.scheduled_date}${upcoming.scheduled_time ? ' · ' + upcoming.scheduled_time : ''}` : '—',
-      rating: 0,
-    }
+    return mapBeneficiaryRow(r, upcoming, [])
   })
+}
+
+// Fetches one beneficiary directly (not via the bulk list) so a detail view
+// reload/deep-link always reads fresh from Supabase rather than depending on
+// previously-loaded list state. Scoped to the authenticated client in
+// addition to RLS. Includes real completed-booking care history and the
+// same upcoming-booking-derived care status as getBeneficiariesFull.
+export async function getBeneficiaryById(id: string, clientId: string) {
+  const { data: row, error } = await supabase
+    .from('beneficiaries')
+    .select('*')
+    .eq('id', id)
+    .eq('client_id', clientId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!row) return null
+
+  const { data: bookings } = await supabase
+    .from('bookings')
+    .select('status, scheduled_date, scheduled_time, payment_amount, care_request:care_requests(title, service_type), profiles!agent_id(full_name)')
+    .eq('beneficiary_id', id)
+    .order('scheduled_date', { ascending: false })
+
+  const today = new Date().toISOString().slice(0, 10)
+  const rows = bookings || []
+  const upcomingCandidates = rows.filter((b: any) => b.scheduled_date >= today && ['assigned','confirmed','in_progress'].includes(b.status))
+  const upcoming = upcomingCandidates[upcomingCandidates.length - 1] || rows[0]
+
+  const careHistory = rows
+    .filter((b: any) => b.status === 'completed')
+    .map((b: any) => ({
+      date: b.scheduled_date || '',
+      service: b.care_request?.title || b.care_request?.service_type || 'Care Visit',
+      agent: (b.profiles as any)?.full_name || 'Care Agent',
+      cost: b.payment_amount != null ? `LKR ${Number(b.payment_amount).toLocaleString()}` : '',
+    }))
+
+  return mapBeneficiaryRow(row, upcoming, careHistory)
+}
+
+// Update is scoped to the beneficiary id AND the authenticated client, in
+// addition to RLS — a client can never update another client's beneficiary.
+export async function updateBeneficiary(id: string, fields: Record<string, any>, clientId: string) {
+  const { data, error } = await supabase
+    .from('beneficiaries')
+    .update(fields)
+    .eq('id', id)
+    .eq('client_id', clientId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
 }

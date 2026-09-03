@@ -1091,7 +1091,7 @@ function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
-export default function AccountSettings({ embedded = false }: { embedded?: boolean } = {}) {
+export default function AccountSettings({ embedded = false, onProfileUpdated }: { embedded?: boolean; onProfileUpdated?: (fields: Record<string, any>) => void } = {}) {
   const navigate = useNavigate()
   const [section, setSection] = useState<Section>('home')
   const [toast, setToast] = useState<string|null>(null)
@@ -1127,6 +1127,7 @@ export default function AccountSettings({ embedded = false }: { embedded?: boole
   const save = async (fields: Record<string, any>) => {
     await updateProfile(fields)
     setProfile((p: any) => ({ ...p, ...fields }))
+    onProfileUpdated?.(fields)
     showToast('Saved')
   }
 

@@ -1,6 +1,10 @@
-import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, type ReactNode, type CSSProperties, type ChangeEvent } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
-import { getBeneficiariesFull } from '../lib/api'
+import {
+  getBeneficiariesFull, getBeneficiaryById, createBeneficiary, updateBeneficiary,
+  getBeneficiaryDocuments, uploadBeneficiaryDocument, getBeneficiaryDocumentUrl,
+} from '../lib/api'
 import logoFull from '@/imports/20260723_170707.png'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -128,118 +132,49 @@ function SelectField({ label, value, onChange, options, icon }: { label:string; 
   )
 }
 
-function Toggle({ label, sub, on, set }: { label:string; sub?:string; on:boolean; set:()=>void }) {
-  return (
-    <div onClick={set} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 14px', borderRadius:12, border:`1px solid ${on?C.primary:C.border}`, background:on?`${C.primary}06`:'#FAFAFA', cursor:'pointer', transition:'all 0.18s' }}>
-      <div><p style={{fontSize:13,fontWeight:700,color:C.type,fontFamily:'Manrope,sans-serif'}}>{label}</p>{sub&&<p style={{fontSize:11,color:C.muted,marginTop:1}}>{sub}</p>}</div>
-      <div style={{width:40,height:22,borderRadius:11,background:on?C.primary:C.border,position:'relative',flexShrink:0,transition:'background 0.18s',marginLeft:12}}>
-        <div style={{position:'absolute',top:3,left:on?21:3,width:16,height:16,borderRadius:'50%',background:'#fff',transition:'left 0.18s',boxShadow:'0 1px 3px rgba(0,0,0,0.15)'}} />
-      </div>
-    </div>
-  )
-}
-
-// ─── Status helpers ───────────────────────────────────────────────────────────
-const HEALTH_COLOR: Record<string,string> = { 'Stable':'#22C55E','Good':'#3B82F6','Needs Attention':'#F59E0B','Critical':'#EF4444','Unknown':C.muted }
-function HealthBadge({ s }: { s:string }) {
-  const c = HEALTH_COLOR[s]??C.muted
-  return <Badge label={s} color={c} />
-}
-
 // ─── Beneficiary data ─────────────────────────────────────────────────────────
+// medications/conditions/prefLang are plain string lists and emergencyContacts
+// use {name,relationship,phone,email?} — matching the real, defensively-
+// normalized shape api.ts now returns (see toStringList/toContactList in
+// getBeneficiariesFull/getBeneficiaryById), not a speculative structured shape.
 type Beneficiary = {
   id:string; name:string; preferred:string; dob:string; age:number; gender:string; relationship:string
   nic:string; province:string; city:string; address:string; postalCode:string; landmark:string
-  bloodGroup:string; allergies:string; conditions:string[]; medications:{name:string;dose:string;freq:string}[]
+  bloodGroup:string; allergies:string; conditions:string[]; medications:string[]
   doctor:string; hospital:string; mobility:string; vision:string; hearing:string; memory:string; medNotes:string
-  emergencyContacts:{name:string;rel:string;phone:string;email:string;preferred:string}[]
+  emergencyContacts:{name?:string;relationship?:string;phone?:string;email?:string}[]
   prefLang:string[]; prefGender:string; dietary:string; religious:string; visitTimes:string; commPref:string; specialReq:string
-  documents:{name:string;type:string;date:string;expiry?:string;size:string}[]
-  careHistory:{date:string;service:string;agent:string;rating:number;notes:string;cost:string}[]
+  documents:{id:string;name:string;type:string;date:string;expiry?:string;url?:string}[]
+  careHistory:{date:string;service:string;agent:string;cost:string}[]
   notes:{id:string;title:string;body:string;pinned:boolean;private:boolean;date:string}[]
   status:'active'|'pending'|'archived'
   careStatus:string; assignedAgent:string; nextVisit:string; rating:number
+  createdAt?:string|null
 }
 
-const BENEFICIARIES: Beneficiary[] = [
-  {
-    id:'b1', name:'Amara Fernando', preferred:'Amara', dob:'12 Mar 1951', age:74, gender:'Female', relationship:'Mother',
-    nic:'512xxx', province:'Western', city:'Colombo 07', address:'14/3 Temple Road', postalCode:'00700', landmark:'Near Cargills FoodCity',
-    bloodGroup:'B+', allergies:'Penicillin', conditions:['Type 2 Diabetes','Hypertension','Mild Arthritis'],
-    medications:[{name:'Metformin',dose:'500mg',freq:'Twice daily'},{name:'Amlodipine',dose:'5mg',freq:'Once daily'},{name:'Losartan',dose:'50mg',freq:'Once daily'}],
-    doctor:'Dr. Priyantha Senanayake', hospital:'Nawaloka Hospital, Colombo', mobility:'Independent with walking stick', vision:'Reading glasses required', hearing:'Normal', memory:'Mild forgetfulness',
-    medNotes:'Annual HbA1c check due in March. Allergic to Penicillin — carry medical alert card.',
-    emergencyContacts:[{name:'Mohamed Ihsan',rel:'Son',phone:'+61 412 345 678',email:'m.ihsan@email.com',preferred:'Phone'},{name:'Fathima Ihsan',rel:'Daughter-in-law',phone:'+61 412 345 679',email:'f.ihsan@email.com',preferred:'Email'}],
-    prefLang:['Sinhala','English'], prefGender:'Female', dietary:'Diabetic-friendly', religious:'Buddhist — avoid beef', visitTimes:'Morning (8–11 AM)', commPref:'WhatsApp',
-    specialReq:'Prefers female caregivers. Enjoys conversation.',
-    documents:[{name:'National Identity Card',type:'NIC',date:'Jan 2024',size:'1.2 MB'},{name:'Nawaloka Medical Report',type:'Medical',date:'Nov 2024',expiry:'Nov 2025',size:'3.4 MB'},{name:'Metformin Prescription',type:'Prescription',date:'Dec 2024',expiry:'Mar 2025',size:'0.8 MB'},{name:'Insurance Policy',type:'Insurance',date:'Jul 2023',expiry:'Jul 2025',size:'2.1 MB'}],
-    careHistory:[{date:'12 Jan 2025',service:'Home Wellness Visit',agent:'Chamari Dissanayake',rating:5,notes:'Great visit. Blood pressure checked, medication dispensed correctly.',cost:'LKR 2,250'},{date:'10 Jan 2025',service:'Hospital Companion',agent:'Nimal Perera',rating:5,notes:'Nawaloka check-up went smoothly. Doctor satisfied with progress.',cost:'LKR 3,000'},{date:'5 Jan 2025',service:'Medication Collection',agent:'Priya Senanayake',rating:4,notes:'Collected 3 medications on time. All correct.',cost:'LKR 1,200'}],
-    notes:[{id:'n1',title:'Morning routine',body:"Amara prefers tea before any activity. Always ring the bell twice — she moves slowly to the door.",pinned:true,private:false,date:'10 Jan 2025'},{id:'n2',title:'Doctor visit summary',body:'Dr. Senanayake recommends reducing salt intake and walking 15 mins daily.',pinned:false,private:false,date:'11 Jan 2025'}],
-    status:'active', careStatus:'In Progress', assignedAgent:'Chamari Dissanayake', nextVisit:'15 Jan 2025 · 9:00 AM', rating:4.9,
-  },
-  {
-    id:'b2', name:'Nimal Perera', preferred:'Nimal', dob:'3 Jun 1944', age:81, gender:'Male', relationship:'Father',
-    nic:'443xxx', province:'Central', city:'Kandy', address:'78 Kandy Road, Peradeniya', postalCode:'20400', landmark:'Near Peradeniya University',
-    bloodGroup:'O+', allergies:'Sulfonamides', conditions:['Cataracts (post-surgery)','Hypertension','Arthritis'],
-    medications:[{name:'Amlodipine',dose:'10mg',freq:'Once daily'},{name:'Timolol Eye Drops',dose:'0.5%',freq:'Twice daily'}],
-    doctor:'Dr. Kamal Jayawardena', hospital:'Kandy General Hospital', mobility:'Needs support on stairs', vision:'Post-cataract surgery — improving', hearing:'Mild loss left ear', memory:'Normal',
-    medNotes:'Post-cataract recovery ongoing. Next ophthalmologist follow-up 20 Jan 2025.',
-    emergencyContacts:[{name:'Rohan Perera',rel:'Son',phone:'+44 77 1234 5678',email:'r.perera@email.com',preferred:'Phone'}],
-    prefLang:['Sinhala'], prefGender:'No Preference', dietary:'Low sodium', religious:'Buddhist', visitTimes:'Late morning (10 AM–12 PM)', commPref:'Phone call',
-    specialReq:'Needs help with eye drops twice daily.',
-    documents:[{name:'National Identity Card',type:'NIC',date:'Feb 2024',size:'1.0 MB'},{name:'Kandy Hospital Eye Report',type:'Medical',date:'Dec 2024',expiry:'Dec 2025',size:'2.2 MB'}],
-    careHistory:[{date:'10 Jan 2025',service:'Hospital Companion',agent:'Nimal Perera (agent)',rating:5,notes:'Ophthalmologist visit at Kandy General. Eye healing well.',cost:'LKR 3,000'}],
-    notes:[{id:'n3',title:'Eye drop reminder',body:'Eye drops must be administered at 8 AM and 8 PM exactly. Store in cool, dark place.',pinned:true,private:false,date:'5 Jan 2025'}],
-    status:'active', careStatus:'Open Request', assignedAgent:'—', nextVisit:'20 Jan 2025 · 10:30 AM', rating:4.7,
-  },
-  {
-    id:'b3', name:'Kamala Fernando', preferred:'Kamala', dob:'18 Aug 1957', age:68, gender:'Female', relationship:'Aunt',
-    nic:'574xxx', province:'Southern', city:'Galle', address:'32 Fort Road', postalCode:'80000', landmark:'Opposite Dutch Fort entrance',
-    bloodGroup:'A+', allergies:'None known', conditions:['Mild Arthritis'],
-    medications:[{name:'Ibuprofen',dose:'400mg',freq:'As needed'}],
-    doctor:'Dr. Sunita Herath', hospital:'Karapitiya Teaching Hospital', mobility:'Fully independent', vision:'Normal', hearing:'Normal', memory:'Excellent',
-    medNotes:'Very active and independent. Needs transport only.',
-    emergencyContacts:[{name:'Dilshan Fernando',rel:'Nephew',phone:'+1 647 555 0123',email:'d.fernando@email.com',preferred:'WhatsApp'}],
-    prefLang:['Sinhala','English'], prefGender:'No Preference', dietary:'Vegetarian', religious:'Buddhist', visitTimes:'Flexible', commPref:'WhatsApp',
-    specialReq:'Occasionally needs grocery runs and transport to temple on Poya days.',
-    documents:[{name:'National Identity Card',type:'NIC',date:'Mar 2024',size:'0.9 MB'}],
-    careHistory:[{date:'8 Jan 2025',service:'Transportation',agent:'Ruwan Fernando',rating:4,notes:'Transport to Karapitiya Hospital. Punctual and helpful.',cost:'LKR 1,800'}],
-    notes:[],
-    status:'active', careStatus:'Completed', assignedAgent:'Ruwan Fernando', nextVisit:'—', rating:4.6,
-  },
-  {
-    id:'b4', name:'Sunil Jayasinghe', preferred:'Sunil', dob:'27 Nov 1947', age:78, gender:'Male', relationship:'Grandfather',
-    nic:'475xxx', province:'North Western', city:'Kurunegala', address:'5 Rajapihilla Rd', postalCode:'60000', landmark:'Near Kurunegala Lake',
-    bloodGroup:'AB+', allergies:'Aspirin', conditions:['Heart Disease','Type 2 Diabetes','Hypertension','Mild Dementia'],
-    medications:[{name:'Warfarin',dose:'5mg',freq:'Once daily'},{name:'Metformin',dose:'1000mg',freq:'Twice daily'},{name:'Atenolol',dose:'50mg',freq:'Once daily'}],
-    doctor:'Dr. Asanka Wijetunge', hospital:'Kurunegala Teaching Hospital', mobility:'Uses wheelchair outdoors', vision:'Thick glasses', hearing:'Hearing aid right ear', memory:'Moderate dementia — familiar faces recognised',
-    medNotes:'Warfarin dosage requires INR monitoring monthly. Do not give Aspirin or NSAIDs.',
-    emergencyContacts:[{name:'Anjali Jayasinghe',rel:'Granddaughter',phone:'+61 433 777 888',email:'a.jaya@email.com',preferred:'Phone'},{name:'Pradeep Jayasinghe',rel:'Son',phone:'+61 411 222 333',email:'p.jaya@email.com',preferred:'Email'}],
-    prefLang:['Sinhala'], prefGender:'Male', dietary:'Diabetic, low salt, no spicy', religious:'Buddhist — strict observance', visitTimes:'Morning only (7–10 AM)', commPref:'Phone call',
-    specialReq:'Responds well to familiar faces. Introduce yourself calmly. Medication must be given in correct order.',
-    documents:[{name:'National Identity Card',type:'NIC',date:'Jan 2024',size:'1.1 MB'},{name:'Cardiology Report',type:'Medical',date:'Oct 2024',expiry:'Oct 2025',size:'4.2 MB'},{name:'Warfarin INR Record',type:'Medical',date:'Dec 2024',size:'0.5 MB'}],
-    careHistory:[{date:'7 Jan 2025',service:'Daily Check-in',agent:'Suresh Kumara',rating:5,notes:'Morning check-in. Medications given, BP checked, short walk taken.',cost:'LKR 800'}],
-    notes:[{id:'n4',title:'Medication protocol',body:'IMPORTANT: Warfarin must be given after breakfast. Never on empty stomach. Record time in log book.',pinned:true,private:false,date:'3 Jan 2025'},{id:'n5',title:'Dementia notes',body:'Responds well to his favourite Baila music. Gets anxious near 5 PM (sundowning). Keep lights on.',pinned:true,private:true,date:'5 Jan 2025'}],
-    status:'active', careStatus:'In Progress', assignedAgent:'Suresh Kumara', nextVisit:'14 Jan 2025 · 7:30 AM', rating:4.8,
-  },
-]
-
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type View = 'dashboard' | 'profile' | 'add-wizard'
+type View = 'dashboard' | 'profile' | 'add-wizard' | 'edit-wizard'
 type ProfileTab = 'overview'|'medical'|'documents'|'care-history'|'emergency'|'notes'|'timeline'
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BENEFICIARY DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════════
-function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void; onAdd:()=>void; beneficiaries: Beneficiary[] }) {
+function Dashboard({ onView, onAdd, onEdit, onArchive, onRestore, onNewRequest, beneficiaries, loading, error }: {
+  onView:(id:string)=>void; onAdd:()=>void; onEdit:(id:string)=>void; onArchive:(id:string)=>void; onRestore:(id:string)=>void; onNewRequest:()=>void
+  beneficiaries: Beneficiary[]; loading:boolean; error:string
+}) {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState('Alphabetical')
   const [filterDrawer, setFilterDrawer] = useState(false)
   const [genderFilter, setGenderFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [moreMenuId, setMoreMenuId] = useState<string|null>(null)
+  const [showArchived, setShowArchived] = useState(false)
 
-  const filtered = beneficiaries.filter(b => {
+  const archivedCount = beneficiaries.filter(b => b.status === 'archived').length
+  const visible = beneficiaries.filter(b => showArchived ? b.status === 'archived' : b.status !== 'archived')
+
+  const filtered = visible.filter(b => {
     const q = search.toLowerCase()
     const matchSearch = !q || b.name.toLowerCase().includes(q) || b.city.toLowerCase().includes(q) || b.relationship.toLowerCase().includes(q) || b.conditions.join(' ').toLowerCase().includes(q)
     const matchGender = !genderFilter || b.gender === genderFilter
@@ -247,12 +182,34 @@ function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void;
     return matchSearch && matchGender && matchStatus
   }).sort((a,b) => sort==='Alphabetical' ? a.name.localeCompare(b.name) : sort==='Oldest' ? a.age - b.age : b.age - a.age)
 
+  // Every value here is derived from the real beneficiaries already loaded
+  // from Supabase (careStatus itself comes from real bookings) — no fetched
+  // or fabricated counts for unrelated entities like care requests/documents.
+  const activeTotal = beneficiaries.filter(b => b.status !== 'archived').length
   const summaryStats = [
-    { label:'Total Beneficiaries', value:beneficiaries.length, color:C.primary, icon:I.users },
-    { label:'Active Care Requests', value:2, color:C.accent, icon:I.requests },
-    { label:'Upcoming Visits', value:3, color:C.info, icon:I.calendar },
-    { label:'Pending Documents', value:1, color:C.warning, icon:I.doc },
+    { label:'Total Beneficiaries', value:activeTotal, color:C.primary, icon:I.users },
+    { label:'In Active Care',      value:beneficiaries.filter(b => b.status!=='archived' && b.careStatus==='In Progress').length, color:C.accent, icon:I.requests },
+    { label:'Open Requests',       value:beneficiaries.filter(b => b.status!=='archived' && b.careStatus==='Open Request').length, color:C.info, icon:I.calendar },
+    { label:'Archived',            value:archivedCount, color:C.warning, icon:I.archive },
   ]
+
+  if (loading) {
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:24, padding:'28px 28px 60px' }}>
+        <h1 style={{ fontSize:24, fontWeight:900, color:C.type, letterSpacing:'-0.025em', fontFamily:'Manrope,sans-serif' }}>Beneficiaries</h1>
+        <p style={{ fontSize:13, color:C.muted }}>Loading your beneficiaries…</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={{ display:'flex', flexDirection:'column', gap:24, padding:'28px 28px 60px' }}>
+        <h1 style={{ fontSize:24, fontWeight:900, color:C.type, letterSpacing:'-0.025em', fontFamily:'Manrope,sans-serif' }}>Beneficiaries</h1>
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      </div>
+    )
+  }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:24, padding:'28px 28px 60px' }}>
@@ -291,6 +248,11 @@ function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void;
         <select value={sort} onChange={e=>setSort(e.target.value)} style={{ padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontSize:12, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif', background:'transparent', cursor:'pointer', outline:'none' }}>
           {['Alphabetical','Newest','Oldest'].map(o=><option key={o}>{o}</option>)}
         </select>
+        {archivedCount>0 && (
+          <button onClick={()=>setShowArchived(v=>!v)} style={{ display:'flex', alignItems:'center', gap:6, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${showArchived?C.primary:C.border}`, background:showArchived?`${C.primary}08`:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:showArchived?C.primary:C.sub, fontFamily:'Manrope,sans-serif' }}>
+            {I.archive} {showArchived?'Viewing Archived':`Archived (${archivedCount})`}
+          </button>
+        )}
       </div>
 
       {/* Filter drawer */}
@@ -325,9 +287,19 @@ function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void;
             <div style={{ width:72, height:72, borderRadius:'50%', background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 16px', color:C.primary }}>
               {I.users}
             </div>
-            <h3 style={{ fontSize:16, fontWeight:800, color:C.type, marginBottom:6 }}>No beneficiaries found</h3>
-            <p style={{ fontSize:13, color:C.muted, marginBottom:20 }}>Try adjusting your search or filters.</p>
-            <Btn label="Clear Search" variant="secondary" onClick={()=>setSearch('')} />
+            {visible.length === 0 ? (
+              <>
+                <h3 style={{ fontSize:16, fontWeight:800, color:C.type, marginBottom:6 }}>{showArchived ? 'No archived beneficiaries' : 'No beneficiaries yet'}</h3>
+                <p style={{ fontSize:13, color:C.muted, marginBottom:20 }}>{showArchived ? '' : 'Add the first person you\'d like to arrange care for.'}</p>
+                {!showArchived && <Btn label="Add Beneficiary" variant="primary" icon={I.plus} onClick={onAdd} />}
+              </>
+            ) : (
+              <>
+                <h3 style={{ fontSize:16, fontWeight:800, color:C.type, marginBottom:6 }}>No beneficiaries found</h3>
+                <p style={{ fontSize:13, color:C.muted, marginBottom:20 }}>Try adjusting your search or filters.</p>
+                <Btn label="Clear Search" variant="secondary" onClick={()=>setSearch('')} />
+              </>
+            )}
           </Card>
         )
         : (
@@ -344,10 +316,13 @@ function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void;
                     <div style={{ position:'absolute', top:16, right:16 }}>
                       <button onClick={e=>{e.stopPropagation();setMoreMenuId(moreMenuId===b.id?null:b.id)}} style={{ width:30,height:30,borderRadius:8,border:`1px solid ${C.border}`,background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted }}>{I.moreV}</button>
                       {moreMenuId===b.id && (
-                        <div style={{ position:'absolute',top:34,right:0,background:'#fff',borderRadius:12,border:`1px solid ${C.border}`,boxShadow:'0 8px 24px rgba(0,0,0,0.10)',zIndex:50,minWidth:160,padding:6 }} onClick={e=>e.stopPropagation()}>
-                          {[{icon:I.eye,label:'View Profile',fn:()=>onView(b.id)},{icon:I.edit,label:'Edit',fn:()=>{}},{icon:I.requests,label:'Create Request',fn:()=>{}},{icon:I.archive,label:'Archive',fn:()=>{}},{icon:I.trash,label:'Delete',fn:()=>{},danger:true}].map(item=>(
-                            <button key={item.label} onClick={()=>{item.fn();setMoreMenuId(null)}} style={{ width:'100%',display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,border:'none',background:'transparent',cursor:'pointer',fontSize:13,fontWeight:600,color:item.danger?C.error:C.type,fontFamily:'Manrope,sans-serif',textAlign:'left' as const }}>
-                              <span style={{color:item.danger?C.error:C.muted,display:'flex'}}>{item.icon}</span>{item.label}
+                        <div style={{ position:'absolute',top:34,right:0,background:'#fff',borderRadius:12,border:`1px solid ${C.border}`,boxShadow:'0 8px 24px rgba(0,0,0,0.10)',zIndex:50,minWidth:170,padding:6 }} onClick={e=>e.stopPropagation()}>
+                          {(b.status==='archived'
+                            ? [{icon:I.eye,label:'View Profile',fn:()=>onView(b.id)},{icon:I.archive,label:'Restore',fn:()=>onRestore(b.id)}]
+                            : [{icon:I.eye,label:'View Profile',fn:()=>onView(b.id)},{icon:I.edit,label:'Edit',fn:()=>onEdit(b.id)},{icon:I.requests,label:'Create Request',fn:onNewRequest},{icon:I.archive,label:'Archive',fn:()=>onArchive(b.id),danger:true}]
+                          ).map(item=>(
+                            <button key={item.label} onClick={()=>{item.fn();setMoreMenuId(null)}} style={{ width:'100%',display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,border:'none',background:'transparent',cursor:'pointer',fontSize:13,fontWeight:600,color:(item as any).danger?C.error:C.type,fontFamily:'Manrope,sans-serif',textAlign:'left' as const }}>
+                              <span style={{color:(item as any).danger?C.error:C.muted,display:'flex'}}>{item.icon}</span>{item.label}
                             </button>
                           ))}
                         </div>
@@ -402,9 +377,15 @@ function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void;
                       <button onClick={()=>onView(b.id)} style={{ flex:1, padding:'8px', borderRadius:10, border:'none', background:`${C.primary}10`, cursor:'pointer', color:C.primary, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
                         {I.eye} View Profile
                       </button>
-                      <button style={{ flex:1, padding:'8px', borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.sub, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
-                        {I.requests} New Request
-                      </button>
+                      {b.status==='archived' ? (
+                        <button onClick={()=>onRestore(b.id)} style={{ flex:1, padding:'8px', borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.sub, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
+                          {I.archive} Restore
+                        </button>
+                      ) : (
+                        <button onClick={onNewRequest} style={{ flex:1, padding:'8px', borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.sub, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
+                          {I.requests} New Request
+                        </button>
+                      )}
                     </div>
                   </div>
                 </Card>
@@ -427,9 +408,13 @@ function Dashboard({ onView, onAdd, beneficiaries }: { onView:(id:string)=>void;
 // ══════════════════════════════════════════════════════════════════════════════
 // BENEFICIARY PROFILE
 // ══════════════════════════════════════════════════════════════════════════════
-function Profile({ b, onBack }: { b:Beneficiary; onBack:()=>void }) {
+function Profile({ b, onBack, onEdit, onArchive, onRestore, onNewRequest, documents, documentsLoading, documentsError, onDocumentUploaded }: {
+  b:Beneficiary; onBack:()=>void; onEdit:()=>void; onArchive:()=>Promise<void>; onRestore:()=>void; onNewRequest:()=>void
+  documents:Beneficiary['documents']; documentsLoading:boolean; documentsError:string; onDocumentUploaded:()=>void
+}) {
   const [tab, setTab] = useState<ProfileTab>('overview')
   const [showDelete, setShowDelete] = useState(false)
+  const [archiving, setArchiving] = useState(false)
 
   const tabs: {key:ProfileTab;label:string;icon:ReactNode}[] = [
     {key:'overview',     label:'Overview',         icon:I.users},
@@ -453,9 +438,15 @@ function Profile({ b, onBack }: { b:Beneficiary; onBack:()=>void }) {
             {I.chevronL} Beneficiaries
           </button>
           <div style={{ display:'flex', gap:8 }}>
-            <button style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(255,255,255,0.12)', cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.edit} Edit</button>
-            <button style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(255,255,255,0.12)', cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.requests} New Request</button>
-            <button onClick={()=>setShowDelete(true)} style={{ width:34, height:34, borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(239,68,68,0.20)', cursor:'pointer', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center' }}>{I.trash}</button>
+            {b.status==='archived' ? (
+              <button onClick={onRestore} style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(255,255,255,0.12)', cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.archive} Restore</button>
+            ) : (
+              <>
+                <button onClick={onEdit} style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(255,255,255,0.12)', cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.edit} Edit</button>
+                <button onClick={onNewRequest} style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(255,255,255,0.12)', cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.requests} New Request</button>
+                <button onClick={()=>setShowDelete(true)} style={{ width:34, height:34, borderRadius:10, border:'1.5px solid rgba(255,255,255,0.28)', background:'rgba(239,68,68,0.20)', cursor:'pointer', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center' }}>{I.archive}</button>
+              </>
+            )}
           </div>
         </div>
 
@@ -489,28 +480,31 @@ function Profile({ b, onBack }: { b:Beneficiary; onBack:()=>void }) {
       {/* Tab content */}
       <div style={{ flex:1, padding:'24px 28px 60px', background:C.bg, overflowY:'auto' }}>
         {tab==='overview'    && <OverviewTab b={b} />}
-        {tab==='medical'     && <MedicalTab b={b} />}
-        {tab==='documents'   && <DocumentsTab b={b} />}
+        {tab==='medical'     && <MedicalTab b={b} onEdit={onEdit} />}
+        {tab==='documents'   && <DocumentsTab beneficiaryId={b.id} documents={documents} loading={documentsLoading} error={documentsError} onUploaded={onDocumentUploaded} />}
         {tab==='care-history'&& <CareHistoryTab b={b} />}
-        {tab==='emergency'   && <EmergencyTab b={b} />}
+        {tab==='emergency'   && <EmergencyTab b={b} onEdit={onEdit} />}
         {tab==='notes'       && <NotesTab b={b} />}
         {tab==='timeline'    && <TimelineTab b={b} />}
       </div>
 
-      {/* Delete modal */}
+      {/* Archive confirmation modal — this app has no verified-safe hard
+          delete for beneficiaries (they may be referenced by care_requests/
+          bookings), so "Delete" archives via the real beneficiaries.status
+          column instead of removing the row. */}
       {showDelete && (
         <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <div onClick={()=>setShowDelete(false)} style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.40)', backdropFilter:'blur(3px)' }} />
+          <div onClick={()=>!archiving && setShowDelete(false)} style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.40)', backdropFilter:'blur(3px)' }} />
           <Card style={{ padding:32, maxWidth:420, width:'90%', position:'relative', zIndex:1 }}>
-            <div style={{ width:52, height:52, borderRadius:'50%', background:`${C.error}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.error, margin:'0 auto 16px' }}>{I.trash}</div>
-            <h3 style={{ fontSize:18, fontWeight:900, color:C.type, textAlign:'center', fontFamily:'Manrope,sans-serif', marginBottom:8 }}>Delete Beneficiary?</h3>
-            <p style={{ fontSize:13, color:C.muted, textAlign:'center', lineHeight:1.6, marginBottom:24 }}>This will permanently delete <strong>{b.name}'s</strong> profile, including all medical records, care history, and documents. This cannot be undone.</p>
-            <div style={{ marginBottom:16 }}>
-              <SelectField label="Reason for deletion" value="" onChange={()=>{}} options={['Beneficiary passed away','No longer requires care','Duplicate profile','Other']} />
-            </div>
+            <div style={{ width:52, height:52, borderRadius:'50%', background:`${C.error}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.error, margin:'0 auto 16px' }}>{I.archive}</div>
+            <h3 style={{ fontSize:18, fontWeight:900, color:C.type, textAlign:'center', fontFamily:'Manrope,sans-serif', marginBottom:8 }}>Archive Beneficiary?</h3>
+            <p style={{ fontSize:13, color:C.muted, textAlign:'center', lineHeight:1.6, marginBottom:24 }}><strong>{b.name}</strong> will be removed from your active beneficiaries list. Their profile, medical records, and care history are kept and can be restored later from Archived.</p>
             <div style={{ display:'flex', gap:10 }}>
-              <Btn label="Cancel" variant="secondary" onClick={()=>setShowDelete(false)} />
-              <button style={{ flex:1, padding:'10px', borderRadius:10, border:'none', background:C.error, cursor:'pointer', color:'#fff', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Delete Permanently</button>
+              <Btn label="Cancel" variant="secondary" onClick={()=>setShowDelete(false)} disabled={archiving} />
+              <button onClick={async ()=>{ setArchiving(true); await onArchive(); setArchiving(false); setShowDelete(false) }} disabled={archiving}
+                style={{ flex:1, padding:'10px', borderRadius:10, border:'none', background:C.error, cursor:archiving?'not-allowed':'pointer', color:'#fff', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', opacity:archiving?0.7:1 }}>
+                {archiving?'Archiving…':'Archive Beneficiary'}
+              </button>
             </div>
           </Card>
         </div>
@@ -580,7 +574,7 @@ function OverviewTab({ b }: { b:Beneficiary }) {
 }
 
 // ─── Medical Tab ──────────────────────────────────────────────────────────────
-function MedicalTab({ b }: { b:Beneficiary }) {
+function MedicalTab({ b, onEdit }: { b:Beneficiary; onEdit:()=>void }) {
   const healthItems = [
     { label:'Mobility',  val:b.mobility  },
     { label:'Vision',    val:b.vision    },
@@ -604,19 +598,20 @@ function MedicalTab({ b }: { b:Beneficiary }) {
         <Card style={{ padding:22 }}>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
             <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Conditions</h3>
-            <button style={{ background:'none', border:'none', cursor:'pointer', color:C.primary, display:'flex', alignItems:'center', gap:4, fontSize:12, fontWeight:700 }}>{I.plus} Add</button>
+            <button onClick={onEdit} style={{ background:'none', border:'none', cursor:'pointer', color:C.primary, display:'flex', alignItems:'center', gap:4, fontSize:12, fontWeight:700 }}>{I.edit} Edit</button>
           </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {b.conditions.map((c,i)=>(
-              <div key={i} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderRadius:10, background:`${C.error}06`, border:`1px solid ${C.error}18` }}>
-                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          {b.conditions.length===0 ? (
+            <p style={{ fontSize:13, color:C.muted }}>No conditions on file.</p>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {b.conditions.map((c,i)=>(
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', borderRadius:10, background:`${C.error}06`, border:`1px solid ${C.error}18` }}>
                   <div style={{ width:8, height:8, borderRadius:'50%', background:C.error, flexShrink:0 }} />
                   <p style={{ fontSize:13, fontWeight:600, color:C.type }}>{c}</p>
                 </div>
-                <button style={{ background:'none', border:'none', cursor:'pointer', color:C.muted }}>{I.edit}</button>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </Card>
 
         {/* Allergies */}
@@ -645,32 +640,20 @@ function MedicalTab({ b }: { b:Beneficiary }) {
         <div style={{ padding:22, gridColumn:'span 2', background:'#fff', borderRadius:16, border:`1px solid ${C.border}`, boxShadow:'0 1px 4px rgba(44,62,67,0.06)' }} className="bm-full-col">
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
             <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Medications</h3>
-            <button style={{ background:'none', border:'none', cursor:'pointer', color:C.primary, display:'flex', alignItems:'center', gap:4, fontSize:12, fontWeight:700 }}>{I.plus} Add Medication</button>
+            <button onClick={onEdit} style={{ background:'none', border:'none', cursor:'pointer', color:C.primary, display:'flex', alignItems:'center', gap:4, fontSize:12, fontWeight:700 }}>{I.edit} Edit</button>
           </div>
-          <div style={{ overflowX:'auto' }}>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontFamily:'Manrope,sans-serif' }}>
-              <thead>
-                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
-                  {['Medication','Dosage','Frequency',''].map(h=><th key={h} style={{ padding:'10px 12px', textAlign:'left', fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.05em' }}>{h}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {b.medications.map((m,i)=>(
-                  <tr key={i} style={{ borderBottom:`1px solid ${C.border}` }}>
-                    <td style={{ padding:'12px', display:'flex', alignItems:'center', gap:10 }}>
-                      <div style={{ width:32, height:32, borderRadius:8, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary }}>{I.pill}</div>
-                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{m.name}</p>
-                    </td>
-                    <td style={{ padding:'12px', fontSize:13, color:C.type, fontWeight:600 }}>{m.dose}</td>
-                    <td style={{ padding:'12px' }}><Badge label={m.freq} color={C.primary} /></td>
-                    <td style={{ padding:'12px' }}>
-                      <button style={{ background:'none', border:'none', cursor:'pointer', color:C.muted }}>{I.edit}</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {b.medications.length===0 ? (
+            <p style={{ fontSize:13, color:C.muted }}>No medications on file.</p>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {b.medications.map((m,i)=>(
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:10, background:'#F9FAFB', border:`1px solid ${C.border}` }}>
+                  <div style={{ width:32, height:32, borderRadius:8, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, flexShrink:0 }}>{I.pill}</div>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{m}</p>
+                </div>
+              ))}
+            </div>
+          )}
           {b.medNotes && (
             <div style={{ marginTop:14, padding:14, borderRadius:12, background:`${C.info}06`, border:`1px solid ${C.info}18`, display:'flex', gap:10 }}>
               <span style={{ color:C.info, flexShrink:0, display:'flex' }}>{I.info}</span>
@@ -684,18 +667,114 @@ function MedicalTab({ b }: { b:Beneficiary }) {
 }
 
 // ─── Documents Tab ────────────────────────────────────────────────────────────
-function DocumentsTab({ b }: { b:Beneficiary }) {
-  const typeColor: Record<string,string> = { NIC:C.primary, Medical:C.error, Prescription:C.accent, Insurance:C.success, Other:C.muted }
-  const today = new Date('2025-01-13')
+// Real read (getBeneficiaryDocuments) and real write (uploadBeneficiaryDocument)
+// against the confirmed "beneficiary-documents" private Storage bucket +
+// beneficiary_documents table. Because the bucket is private, file_url is a
+// storage path, never a usable href directly — "Open" resolves it to a
+// short-lived signed URL at click time via getBeneficiaryDocumentUrl().
+// Delete is intentionally not implemented: no DELETE policy for either the
+// bucket or the table has been confirmed.
+const DOCUMENT_TYPE_OPTIONS = ['NIC', 'Medical', 'Prescription', 'Insurance', 'Doctor Recommendation', 'Other']
+
+function DocumentsTab({ beneficiaryId, documents, loading, error, onUploaded }: {
+  beneficiaryId:string; documents:Beneficiary['documents']; loading:boolean; error:string; onUploaded:()=>void
+}) {
+  const typeColor: Record<string,string> = { NIC:C.primary, Medical:C.error, Prescription:C.accent, Insurance:C.success, 'Doctor Recommendation':C.info, Other:C.muted }
+  const today = new Date()
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [docType, setDocType] = useState('NIC')
+  const [expiryDate, setExpiryDate] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const [openingId, setOpeningId] = useState<string | null>(null)
+  const [openError, setOpenError] = useState('')
+
+  const validateFile = (file: File): string | null => {
+    if (!['application/pdf','image/jpeg','image/png'].includes(file.type)) return 'Only PDF, JPG and PNG files are allowed'
+    if (file.size > 10 * 1024 * 1024) return 'File must be smaller than 10MB'
+    return null
+  }
+
+  const onFileSelected = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const err = validateFile(file)
+    setUploadError(err || '')
+    setPendingFile(err ? null : file)
+  }
+
+  const confirmUpload = async () => {
+    if (!pendingFile || uploading) return
+    setUploading(true)
+    setUploadError('')
+    try {
+      await uploadBeneficiaryDocument(beneficiaryId, pendingFile, docType, expiryDate || undefined)
+      setPendingFile(null)
+      setExpiryDate('')
+      onUploaded()
+    } catch (err: any) {
+      console.error('Failed to upload beneficiary document:', err)
+      setUploadError(err?.message || "Couldn't upload this document. Please try again.")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const openDocument = async (d: Beneficiary['documents'][number]) => {
+    if (!d.url) return
+    setOpeningId(d.id)
+    setOpenError('')
+    try {
+      const signedUrl = await getBeneficiaryDocumentUrl(d.url)
+      window.open(signedUrl, '_blank', 'noopener,noreferrer')
+    } catch (err: any) {
+      console.error('Failed to open beneficiary document:', err)
+      setOpenError(`Couldn't open "${d.name || 'this document'}". Please try again.`)
+    } finally {
+      setOpeningId(null)
+    }
+  }
+
+  if (loading) return <p style={{ fontSize:13, color:C.muted }}>Loading documents…</p>
+  if (error) return <p style={{ fontSize:13, color:C.error }}>{error}</p>
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+      <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={onFileSelected} style={{ display:'none' }} />
+
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-        <p style={{ fontSize:14, color:C.muted }}>{b.documents.length} document{b.documents.length!==1?'s':''}</p>
-        <Btn label="Upload Document" variant="primary" icon={I.upload} small />
+        <p style={{ fontSize:14, color:C.muted }}>{documents.length} document{documents.length!==1?'s':''}</p>
+        <Btn label="Upload Document" variant="primary" icon={I.upload} small onClick={()=>fileInputRef.current?.click()} />
       </div>
 
-      {b.documents.length === 0
+      {/* Pending upload confirmation */}
+      {pendingFile && (
+        <Card style={{ padding:18 }}>
+          <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:14 }}>
+            <div style={{ width:40, height:40, borderRadius:10, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, flexShrink:0 }}>{I.doc}</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{pendingFile.name}</p>
+              <p style={{ fontSize:11, color:C.muted }}>{(pendingFile.size/1024/1024).toFixed(2)} MB · Ready to upload</p>
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:14 }} className="bm-2col">
+            <SelectField label="Document Type" value={docType} onChange={setDocType} options={DOCUMENT_TYPE_OPTIONS} />
+            <FloatInput label="Expiry Date (optional)" value={expiryDate} onChange={setExpiryDate} type="date" />
+          </div>
+          {uploadError && <p style={{ fontSize:12, color:C.error, marginBottom:10 }}>{uploadError}</p>}
+          <div style={{ display:'flex', gap:8 }}>
+            <Btn label={uploading?'Uploading…':'Upload'} variant="primary" icon={I.upload} small disabled={uploading} onClick={confirmUpload} />
+            <Btn label="Cancel" variant="secondary" small disabled={uploading} onClick={()=>{ setPendingFile(null); setUploadError('') }} />
+          </div>
+        </Card>
+      )}
+      {!pendingFile && uploadError && <p style={{ fontSize:12, color:C.error }}>{uploadError}</p>}
+      {openError && <p style={{ fontSize:12, color:C.error }}>{openError}</p>}
+
+      {documents.length === 0
         ? (
           <Card style={{ padding:60, textAlign:'center' }}>
             <div style={{ width:64, height:64, borderRadius:'50%', background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 14px', color:C.primary }}>{I.doc}</div>
@@ -705,19 +784,18 @@ function DocumentsTab({ b }: { b:Beneficiary }) {
         )
         : (
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14 }} className="bm-2col">
-            {b.documents.map((d,i)=>{
+            {documents.map((d)=>{
               const cc = typeColor[d.type]??C.muted
-              const expiring = d.expiry ? (new Date(d.expiry+' 2025') < new Date(today.getTime()+60*24*3600000)) : false
+              const expiring = d.expiry ? (new Date(d.expiry) < new Date(today.getTime()+60*24*3600000)) : false
               return (
-                <Card key={i} hover style={{ padding:18 }}>
+                <Card key={d.id} hover style={{ padding:18 }}>
                   <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
                     <div style={{ width:44, height:44, borderRadius:12, background:`${cc}12`, display:'flex', alignItems:'center', justifyContent:'center', color:cc, flexShrink:0 }}>{I.doc}</div>
                     <div style={{ flex:1, minWidth:0 }}>
-                      <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:3, fontFamily:'Manrope,sans-serif' }}>{d.name}</p>
+                      <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:3, fontFamily:'Manrope,sans-serif' }}>{d.name||'Untitled document'}</p>
                       <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:6 }}>
-                        <Badge label={d.type} color={cc} />
-                        <span style={{ fontSize:11, color:C.muted }}>{d.size}</span>
-                        <span style={{ fontSize:11, color:C.muted }}>Added {d.date}</span>
+                        {d.type && <Badge label={d.type} color={cc} />}
+                        {d.date && <span style={{ fontSize:11, color:C.muted }}>Added {d.date}</span>}
                       </div>
                       {d.expiry && (
                         <div style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 8px', borderRadius:6, background:expiring?`${C.warning}10`:`${C.success}08`, border:`1px solid ${expiring?C.warning:C.success}20` }}>
@@ -727,20 +805,15 @@ function DocumentsTab({ b }: { b:Beneficiary }) {
                       )}
                     </div>
                     <div style={{ display:'flex', gap:4, flexShrink:0 }}>
-                      <button style={{ width:30, height:30, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.eye}</button>
-                      <button style={{ width:30, height:30, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.download}</button>
-                      <button style={{ width:30, height:30, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.trash}</button>
+                      {d.url
+                        ? <button onClick={()=>openDocument(d)} disabled={openingId===d.id} title="Open" style={{ width:30, height:30, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:openingId===d.id?'wait':'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.download}</button>
+                        : <span title="No file available" style={{ width:30, height:30, borderRadius:8, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', color:C.border }}>{I.download}</span>
+                      }
                     </div>
                   </div>
                 </Card>
               )
             })}
-            {/* Upload zone */}
-            <Card hover style={{ padding:32, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', textAlign:'center', border:`2px dashed ${C.border}`, cursor:'pointer' }}>
-              <div style={{ width:44, height:44, borderRadius:12, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, marginBottom:10 }}>{I.upload}</div>
-              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Upload New</p>
-              <p style={{ fontSize:11, color:C.muted, marginTop:3 }}>PDF, JPG, PNG · Max 10 MB</p>
-            </Card>
           </div>
         )
       }
@@ -749,17 +822,14 @@ function DocumentsTab({ b }: { b:Beneficiary }) {
 }
 
 // ─── Care History Tab ─────────────────────────────────────────────────────────
+// Derived from this beneficiary's real completed bookings (getBeneficiaryById)
+// — no per-visit rating or notes are shown since neither is reliably
+// derivable from the confirmed schema (bookings has no notes column, and
+// linking reviews to a specific visit wasn't verified).
 function CareHistoryTab({ b }: { b:Beneficiary }) {
-  const Stars = ({ n }:{n:number}) => <div style={{display:'flex',gap:2}}>{[1,2,3,4,5].map(i=><svg key={i} width="11" height="11" viewBox="0 0 12 12" fill={i<=n?'#F59E0B':'#E4E8EA'}><path d="M6 1l1.5 3 3.5.5-2.5 2.5.6 3.5L6 9 2.9 10.5l.6-3.5L1 4.5 4.5 4z"/></svg>)}</div>
-
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-        <p style={{ fontSize:14, color:C.muted }}>{b.careHistory.length} visit{b.careHistory.length!==1?'s':''} recorded</p>
-        <div style={{ display:'flex', gap:8 }}>
-          <button style={{ padding:'7px 14px', borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>Export CSV</button>
-        </div>
-      </div>
+      <p style={{ fontSize:14, color:C.muted }}>{b.careHistory.length} visit{b.careHistory.length!==1?'s':''} recorded</p>
 
       {b.careHistory.length === 0
         ? (
@@ -776,16 +846,12 @@ function CareHistoryTab({ b }: { b:Beneficiary }) {
               <div style={{ flex:1 }}>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8, marginBottom:4 }}>
                   <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{h.service}</p>
-                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                    <Stars n={h.rating} />
-                    <Badge label={h.cost} color={C.success} />
-                  </div>
+                  {h.cost && <Badge label={h.cost} color={C.success} />}
                 </div>
-                <div style={{ display:'flex', gap:12, marginBottom:8, flexWrap:'wrap' }}>
+                <div style={{ display:'flex', gap:12, flexWrap:'wrap' }}>
                   <span style={{ fontSize:12, color:C.muted, display:'flex', alignItems:'center', gap:4 }}>{I.user} {h.agent}</span>
                   <span style={{ fontSize:12, color:C.muted, display:'flex', alignItems:'center', gap:4 }}>{I.calendar} {h.date}</span>
                 </div>
-                <p style={{ fontSize:13, color:C.sub, lineHeight:1.55 }}>{h.notes}</p>
               </div>
             </div>
           </Card>
@@ -796,12 +862,12 @@ function CareHistoryTab({ b }: { b:Beneficiary }) {
 }
 
 // ─── Emergency Contacts Tab ───────────────────────────────────────────────────
-function EmergencyTab({ b }: { b:Beneficiary }) {
+function EmergencyTab({ b, onEdit }: { b:Beneficiary; onEdit:()=>void }) {
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
         <p style={{ fontSize:14, color:C.muted }}>{b.emergencyContacts.length} contact{b.emergencyContacts.length!==1?'s':''}</p>
-        <Btn label="Add Contact" variant="primary" icon={I.plus} small />
+        <Btn label="Edit Contacts" variant="primary" icon={I.edit} small onClick={onEdit} />
       </div>
 
       {b.emergencyContacts.length === 0
@@ -810,28 +876,27 @@ function EmergencyTab({ b }: { b:Beneficiary }) {
             <div style={{ width:64, height:64, borderRadius:'50%', background:`${C.error}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 14px', color:C.error }}>{I.phone}</div>
             <h3 style={{ fontSize:15, fontWeight:800, color:C.type, marginBottom:6 }}>No emergency contacts</h3>
             <p style={{ fontSize:13, color:C.muted, marginBottom:16 }}>Add contacts who should be reached in an emergency.</p>
-            <Btn label="Add Contact" variant="primary" icon={I.plus} />
+            <Btn label="Add Contact" variant="primary" icon={I.plus} onClick={onEdit} />
           </Card>
         )
         : b.emergencyContacts.map((ec,i)=>(
           <Card key={i} style={{ padding:22 }}>
             <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-              <Avatar name={ec.name} size={52} bg={i===0?`${C.error}14`:undefined} />
+              <Avatar name={ec.name||'?'} size={52} bg={i===0?`${C.error}14`:undefined} />
               <div style={{ flex:1 }}>
                 <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:2 }}>
-                  <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{ec.name}</p>
+                  <p style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{ec.name||'Not provided'}</p>
                   {i===0&&<Badge label="Primary" color={C.error} />}
                 </div>
-                <p style={{ fontSize:13, color:C.muted, marginBottom:8 }}>{ec.rel}</p>
+                <p style={{ fontSize:13, color:C.muted, marginBottom:8 }}>{ec.relationship||'—'}</p>
                 <div style={{ display:'flex', gap:14, flexWrap:'wrap' }}>
-                  <span style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, color:C.type, fontWeight:600 }}>{I.phone} {ec.phone}</span>
-                  <span style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, color:C.type, fontWeight:600 }}>{I.mail} {ec.email}</span>
-                  <Badge label={`Prefers: ${ec.preferred}`} color={C.primary} />
+                  {ec.phone && <span style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, color:C.type, fontWeight:600 }}>{I.phone} {ec.phone}</span>}
+                  {ec.email && <span style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, color:C.type, fontWeight:600 }}>{I.mail} {ec.email}</span>}
                 </div>
               </div>
               <div style={{ display:'flex', gap:6, flexShrink:0 }}>
-                <button style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 14px', borderRadius:10, border:'none', background:`${C.success}10`, cursor:'pointer', color:C.success, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.phone} Call</button>
-                <button style={{ width:34, height:34, borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.edit}</button>
+                {ec.phone && <a href={`tel:${ec.phone}`} style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 14px', borderRadius:10, border:'none', background:`${C.success}10`, textDecoration:'none', color:C.success, fontSize:12, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>{I.phone} Call</a>}
+                <button onClick={onEdit} style={{ width:34, height:34, borderRadius:10, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.edit}</button>
               </div>
             </div>
           </Card>
@@ -842,87 +907,73 @@ function EmergencyTab({ b }: { b:Beneficiary }) {
 }
 
 // ─── Notes Tab ────────────────────────────────────────────────────────────────
+// Notes have no backing table anywhere in this codebase (no
+// beneficiary_notes table/API found) — the composer stays visible but
+// disabled rather than silently discarding what's typed as if it saved.
 function NotesTab({ b }: { b:Beneficiary }) {
-  const [newNote, setNewNote] = useState('')
-  const [noteTitle, setNoteTitle] = useState('')
-
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-      {/* Add note */}
       <Card style={{ padding:20 }}>
         <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:12, fontFamily:'Manrope,sans-serif' }}>New Note</p>
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          <FloatInput label="Title" value={noteTitle} onChange={setNoteTitle} />
-          <FloatInput label="Write a note…" value={newNote} onChange={setNewNote} multiline rows={3} />
-          <div style={{ display:'flex', gap:8 }}>
-            <Btn label="Save Note" variant="primary" icon={I.save} small onClick={()=>{setNewNote('');setNoteTitle('')}} />
+          <FloatInput label="Title" value="" onChange={()=>{}} />
+          <FloatInput label="Write a note…" value="" onChange={()=>{}} multiline rows={3} />
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <Btn label="Save Note" variant="primary" icon={I.save} small disabled />
+            <p style={{ fontSize:11, color:C.muted }}>Notes aren't saved yet — this feature isn't connected to a backend.</p>
           </div>
         </div>
       </Card>
 
-      {b.notes.length === 0
-        ? (
-          <Card style={{ padding:50, textAlign:'center' }}>
-            <div style={{ width:52, height:52, borderRadius:'50%', background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 12px', color:C.primary }}>{I.note}</div>
-            <h3 style={{ fontSize:15, fontWeight:800, color:C.type, marginBottom:6 }}>No notes yet</h3>
-            <p style={{ fontSize:13, color:C.muted }}>Add notes about preferences, routines, or observations.</p>
-          </Card>
-        )
-        : b.notes.map(n => (
-          <Card key={n.id} style={{ padding:20 }}>
-            <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:8 }}>
-              <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{n.title}</p>
-                {n.pinned && <Badge label="Pinned" color={C.accent} />}
-                {n.private && <Badge label="Private" color={C.muted} bg="#F2F4F5" />}
-              </div>
-              <div style={{ display:'flex', gap:4 }}>
-                <button style={{ width:28, height:28, borderRadius:7, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.edit}</button>
-                <button style={{ width:28, height:28, borderRadius:7, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted }}>{I.trash}</button>
-              </div>
-            </div>
-            <p style={{ fontSize:13, color:C.sub, lineHeight:1.65 }}>{n.body}</p>
-            <p style={{ fontSize:11, color:C.muted, marginTop:8 }}>{n.date}</p>
-          </Card>
-        ))
-      }
+      {b.notes.length === 0 && (
+        <Card style={{ padding:50, textAlign:'center' }}>
+          <div style={{ width:52, height:52, borderRadius:'50%', background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 12px', color:C.primary }}>{I.note}</div>
+          <h3 style={{ fontSize:15, fontWeight:800, color:C.type, marginBottom:6 }}>No notes yet</h3>
+          <p style={{ fontSize:13, color:C.muted }}>Care notes aren't available yet.</p>
+        </Card>
+      )}
     </div>
   )
 }
 
 // ─── Timeline Tab ─────────────────────────────────────────────────────────────
+// No dedicated activity-log table exists for beneficiaries, so this shows
+// only what can genuinely be derived: the real profile creation date and
+// real completed-booking events — never fabricated document/medical-record
+// events.
 function TimelineTab({ b }: { b:Beneficiary }) {
-  const events = [
-    { date:'13 Jan 2025', title:'Care Request Created',      detail:'Home Wellness Visit scheduled for 15 Jan', icon:I.requests, color:C.primary },
-    { date:'12 Jan 2025', title:'Care Visit Completed',      detail:'Home Wellness Visit by Chamari Dissanayake', icon:I.check, color:C.success },
-    { date:'10 Jan 2025', title:'Care Visit Completed',      detail:'Hospital Companion — Nawaloka Hospital', icon:I.check, color:C.success },
-    { date:'8 Jan 2025',  title:'Medical Record Updated',    detail:'Medications updated: Losartan dosage adjusted', icon:I.pill, color:C.accent },
-    { date:'5 Jan 2025',  title:'Document Uploaded',         detail:'Metformin Prescription uploaded', icon:I.doc, color:C.info },
-    { date:'1 Jan 2025',  title:'Care Request Created',      detail:'Hospital Companion request submitted', icon:I.requests, color:C.primary },
-    { date:'15 Dec 2024', title:'Emergency Contact Updated', detail:'Secondary contact added: Fathima Ihsan', icon:I.phone, color:C.warning },
-    { date:'5 Nov 2024',  title:'Beneficiary Profile Created',detail:`${b.name} added to ReadyPal`, icon:I.user, color:C.primary },
-  ]
+  const events: { date:string; title:string; detail:string; icon:ReactNode; color:string }[] = []
+  for (const h of b.careHistory) {
+    events.push({ date:h.date, title:'Care Visit Completed', detail:`${h.service} — ${h.agent}`, icon:I.check, color:C.success })
+  }
+  if (b.createdAt) {
+    events.push({ date:new Date(b.createdAt).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' }), title:'Beneficiary Profile Created', detail:`${b.name} added to ReadyPal`, icon:I.user, color:C.primary })
+  }
 
   return (
     <Card style={{ padding:24 }}>
       <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:20, fontFamily:'Manrope,sans-serif' }}>Activity Timeline</h3>
-      <div style={{ display:'flex', flexDirection:'column' }}>
-        {events.map((e,i)=>(
-          <div key={i} style={{ display:'flex', gap:14 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
-              <div style={{ width:32, height:32, borderRadius:'50%', background:`${e.color}12`, display:'flex', alignItems:'center', justifyContent:'center', color:e.color, flexShrink:0 }}>{e.icon}</div>
-              {i<events.length-1 && <div style={{ width:2, flex:1, minHeight:16, background:C.border, margin:'4px 0' }} />}
-            </div>
-            <div style={{ paddingBottom: i<events.length-1?20:0, flex:1 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:2 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>{e.title}</p>
-                <span style={{ fontSize:11, color:C.muted, flexShrink:0, marginLeft:8 }}>{e.date}</span>
+      {events.length === 0 ? (
+        <p style={{ fontSize:13, color:C.muted }}>No activity recorded yet.</p>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column' }}>
+          {events.map((e,i)=>(
+            <div key={i} style={{ display:'flex', gap:14 }}>
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+                <div style={{ width:32, height:32, borderRadius:'50%', background:`${e.color}12`, display:'flex', alignItems:'center', justifyContent:'center', color:e.color, flexShrink:0 }}>{e.icon}</div>
+                {i<events.length-1 && <div style={{ width:2, flex:1, minHeight:16, background:C.border, margin:'4px 0' }} />}
               </div>
-              <p style={{ fontSize:12, color:C.muted, lineHeight:1.5 }}>{e.detail}</p>
+              <div style={{ paddingBottom: i<events.length-1?20:0, flex:1 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:2 }}>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>{e.title}</p>
+                  <span style={{ fontSize:11, color:C.muted, flexShrink:0, marginLeft:8 }}>{e.date}</span>
+                </div>
+                <p style={{ fontSize:12, color:C.muted, lineHeight:1.5 }}>{e.detail}</p>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </Card>
   )
 }
@@ -959,37 +1010,45 @@ const ADD_STEPS = [
   {n:7,label:'Review'},
 ]
 
-function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
-  const [step, setStep] = useState(1)
-  const [data, setData] = useState<AddData>(defaultAdd)
-  const [done, setDone] = useState(false)
+// Turns the free-text "Medical Conditions" / "Current Medications" textareas
+// into the string-array shape getBeneficiariesFull() reads back
+// (conditions/medications), one entry per line or comma.
+function splitList(text: string): string[] {
+  return text.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean)
+}
 
-  const provinces = ['Western','Central','Southern','Northern','Eastern','North Western','North Central','Uva','Sabaragamuwa']
-  const cities: Record<string,string[]> = { Western:['Colombo','Gampaha','Kalutara'], Central:['Kandy','Matale','Nuwara Eliya'], Southern:['Galle','Matara','Hambantota'], 'North Western':['Kurunegala','Puttalam'] }
-  const langs = ['Sinhala','Tamil','English','Malay']
-  const genders = ['No Preference','Female','Male']
-
-  const total = 7
-  const next = () => step<total ? setStep(s=>s+1) : setDone(true)
-  const back = () => step>1 ? setStep(s=>s-1) : onBack()
-
-  if (done) {
-    return (
-      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:40, textAlign:'center' }}>
-        <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#00959E)`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 20px', boxShadow:`0 8px 28px ${C.primary}30` }}>
-          <svg width="36" height="36" viewBox="0 0 36 36" fill="none"><path d="M6 18l8 8 16-18" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </div>
-        <h2 style={{ fontSize:28, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:8, fontFamily:'Manrope,sans-serif' }}>Beneficiary Added!</h2>
-        <p style={{ fontSize:15, color:C.muted, maxWidth:400, lineHeight:1.6, marginBottom:32 }}><strong>{data.name||'The beneficiary'}</strong> has been added to your ReadyPal account. You can now create care requests for them.</p>
-        <div style={{ display:'flex', gap:12 }}>
-          <Btn label="View Profile" variant="primary" icon={I.eye} onClick={onDone} />
-          <Btn label="Back to Beneficiaries" variant="secondary" onClick={onBack} />
-        </div>
-      </div>
-    )
+// Maps a loaded Beneficiary (real, from getBeneficiaryById/getBeneficiariesFull)
+// back into the wizard's flat AddData shape, so Edit reuses the exact same
+// steps/UI as Add rather than a second form.
+function beneficiaryToAddData(b: Beneficiary): AddData {
+  const ec1 = b.emergencyContacts[0]
+  const ec2 = b.emergencyContacts[1]
+  return {
+    name:b.name, preferred:b.preferred===b.name?'':b.preferred, dob:b.dob, gender:b.gender, nic:b.nic, relationship:b.relationship,
+    province:b.province, city:b.city, address:b.address, postalCode:b.postalCode, landmark:b.landmark,
+    bloodGroup:b.bloodGroup, allergies:b.allergies, conditions:b.conditions.join(', '), medications:b.medications.join(', '),
+    doctor:b.doctor, hospital:b.hospital, mobility:b.mobility, vision:b.vision, hearing:b.hearing, memory:b.memory, medNotes:b.medNotes,
+    ec1Name:ec1?.name||'', ec1Rel:ec1?.relationship||'', ec1Phone:ec1?.phone||'', ec1Email:ec1?.email||'',
+    ec2Name:ec2?.name||'', ec2Rel:ec2?.relationship||'', ec2Phone:ec2?.phone||'', ec2Email:ec2?.email||'',
+    prefLang:b.prefLang, prefGender:b.prefGender||'No Preference', dietary:b.dietary, religious:b.religious, visitTimes:b.visitTimes, commPref:b.commPref, specialReq:b.specialReq,
   }
+}
 
-  const Shell = ({ title, sub, canNext=true, children }: { title:string; sub:string; canNext?:boolean; children:ReactNode }) => (
+// Module-scope (not declared inside AddWizard): defining these as inline
+// functions inside AddWizard's render body would give them a new function
+// identity on every re-render (i.e. every keystroke, since typing calls
+// setData). React treats a changed component identity as a different
+// component type and remounts the whole subtree — including the real
+// <input>/<textarea> DOM nodes — which is what was destroying focus after
+// every character. Keeping them at module scope keeps their identity
+// stable across renders, so React only patches props/DOM instead of
+// remounting.
+function AddWizardShell({ title, sub, canNext=true, children, step, total, saving, saveError, onClose, onBack, onNext }: {
+  title:string; sub:string; canNext?:boolean; children:ReactNode
+  step:number; total:number; saving:boolean; saveError:string
+  onClose:()=>void; onBack:()=>void; onNext:()=>void
+}) {
+  return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
       {/* Top bar */}
       <div style={{ height:58, borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', padding:'0 28px', gap:12, flexShrink:0 }}>
@@ -999,7 +1058,7 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
             <div key={s.n} style={{ flex:1, height:3, borderRadius:2, background: s.n<step?C.success:s.n===step?C.primary:C.border, transition:'all 0.3s' }} />
           ))}
         </div>
-        <button onClick={onBack} style={{ width:30,height:30,borderRadius:8,border:`1px solid ${C.border}`,background:'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted }}>{I.close}</button>
+        <button onClick={onClose} style={{ width:30,height:30,borderRadius:8,border:`1px solid ${C.border}`,background:'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted }}>{I.close}</button>
       </div>
       <div style={{ flex:1, overflowY:'auto', padding:'28px 28px 0' }}>
         <div style={{ maxWidth:640 }}>
@@ -1009,100 +1068,305 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
           <div style={{ height:28 }} />
         </div>
       </div>
+      {step===total && saveError && (
+        <div style={{ padding:'0 28px' }}>
+          <p style={{ fontSize:12, color:C.error, marginBottom:8 }}>{saveError}</p>
+        </div>
+      )}
       <div style={{ borderTop:`1px solid ${C.border}`, padding:'14px 28px', display:'flex', gap:10, background:C.surface, flexShrink:0 }}>
-        <Btn label={step===1?'Cancel':'Back'} variant="secondary" icon={I.chevronL} onClick={back} />
+        <Btn label={step===1?'Cancel':'Back'} variant="secondary" icon={I.chevronL} onClick={onBack} disabled={saving} />
         <div style={{ flex:1 }} />
-        <Btn label={step===total?'Save Beneficiary':'Continue'} variant="primary" icon={step===total?I.save:I.chevronR} onClick={next} disabled={!canNext} />
+        <Btn label={step===total?(saving?'Saving…':'Save Beneficiary'):'Continue'} variant="primary" icon={step===total?I.save:I.chevronR} onClick={onNext} disabled={!canNext || saving} />
       </div>
     </div>
   )
+}
 
-  const G2 = ({children}:{children:ReactNode}) => <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}} className="bm-2col">{children}</div>
+function AddWizardG2({ children }: { children:ReactNode }) {
+  return <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}} className="bm-2col">{children}</div>
+}
+
+// Same categories/types the standalone Documents tab uses, keyed by the real
+// beneficiary_documents.type value the box represents.
+const WIZARD_DOCUMENT_CATEGORIES: { type:string; label:string }[] = [
+  { type:'NIC', label:'National Identity Card (NIC)' },
+  { type:'Medical', label:'Medical Reports' },
+  { type:'Prescription', label:'Prescriptions' },
+  { type:'Insurance', label:'Insurance Documents' },
+  { type:'Doctor Recommendation', label:'Doctor Recommendation' },
+  { type:'Other', label:'Other' },
+]
+
+type WizardDocStatus = 'queued'|'uploading'|'uploaded'|'failed'
+type WizardDocItem = { file:File; status:WizardDocStatus; error?:string }
+
+function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; onDone:()=>void; clientId:string; existing?:Beneficiary }) {
+  const [step, setStep] = useState(1)
+  const [data, setData] = useState<AddData>(existing ? beneficiaryToAddData(existing) : defaultAdd)
+  const [done, setDone] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const provinces = ['Western','Central','Southern','Northern','Eastern','North Western','North Central','Uva','Sabaragamuwa']
+  const cities: Record<string,string[]> = { Western:['Colombo','Gampaha','Kalutara'], Central:['Kandy','Matale','Nuwara Eliya'], Southern:['Galle','Matara','Hambantota'], 'North Western':['Kurunegala','Puttalam'] }
+  const langs = ['Sinhala','Tamil','English','Malay']
+  const genders = ['No Preference','Female','Male']
+
+  const total = 7
+
+  // Documents step. In Add mode there's no real beneficiary id yet, so
+  // selected files are queued here and only actually uploaded after
+  // createBeneficiary returns a real id. In Edit mode (existing is set) a
+  // real id already exists, so files upload immediately when selected.
+  const [docQueue, setDocQueue] = useState<Record<string, WizardDocItem>>({})
+  const [docUploadResults, setDocUploadResults] = useState<{ type:string; name:string; ok:boolean; error?:string }[]>([])
+  const docFileInputRef = useRef<HTMLInputElement>(null)
+  const pendingDocTypeRef = useRef<string>('')
+
+  const validateDocFile = (file: File): string | null => {
+    if (!['application/pdf','image/jpeg','image/png'].includes(file.type)) return 'Only PDF, JPG and PNG files are allowed'
+    if (file.size > 10 * 1024 * 1024) return 'File must be smaller than 10MB'
+    return null
+  }
+
+  const triggerDocPicker = (type: string) => {
+    pendingDocTypeRef.current = type
+    docFileInputRef.current?.click()
+  }
+
+  const uploadDocNow = async (type: string, file: File) => {
+    if (!existing) return
+    setDocQueue(q => ({ ...q, [type]: { file, status:'uploading' } }))
+    try {
+      await uploadBeneficiaryDocument(existing.id, file, type)
+      setDocQueue(q => ({ ...q, [type]: { file, status:'uploaded' } }))
+    } catch (err: any) {
+      console.error('Failed to upload beneficiary document:', err)
+      setDocQueue(q => ({ ...q, [type]: { file, status:'failed', error: err?.message || 'Upload failed' } }))
+    }
+  }
+
+  const onDocFileSelected = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    const type = pendingDocTypeRef.current
+    if (!file || !type) return
+    const validationError = validateDocFile(file)
+    if (validationError) {
+      setDocQueue(q => ({ ...q, [type]: { file, status:'failed', error: validationError } }))
+      return
+    }
+    if (existing) {
+      uploadDocNow(type, file)
+    } else {
+      setDocQueue(q => ({ ...q, [type]: { file, status:'queued' } }))
+    }
+  }
+
+  const retryDocUpload = (type: string) => {
+    const item = docQueue[type]
+    if (!item) return
+    if (existing) {
+      uploadDocNow(type, item.file)
+    } else {
+      const validationError = validateDocFile(item.file)
+      setDocQueue(q => ({ ...q, [type]: validationError ? { ...item, status:'failed', error:validationError } : { ...item, status:'queued', error:undefined } }))
+    }
+  }
+
+  const clearDocQueue = (type: string) => setDocQueue(q => { const next = { ...q }; delete next[type]; return next })
+
+  const saveBeneficiary = async () => {
+    if (saving || !clientId) return
+    setSaving(true)
+    setSaveError('')
+    try {
+      const age = data.dob ? Math.max(0, Math.floor((Date.now() - new Date(data.dob).getTime()) / (365.25*24*3600*1000))) : null
+      const emergencyContacts = [
+        data.ec1Name ? { name: data.ec1Name, relationship: data.ec1Rel, phone: data.ec1Phone, email: data.ec1Email } : null,
+        data.ec2Name ? { name: data.ec2Name, relationship: data.ec2Rel, phone: data.ec2Phone, email: data.ec2Email } : null,
+      ].filter(Boolean)
+      const fields = {
+        name: data.name,
+        preferred_name: data.preferred || null,
+        dob: data.dob || null,
+        age,
+        gender: data.gender || null,
+        relationship: data.relationship || null,
+        nic: data.nic || null,
+        province: data.province || null,
+        city: data.city || null,
+        address: data.address || null,
+        postal_code: data.postalCode || null,
+        landmark: data.landmark || null,
+        blood_group: data.bloodGroup || null,
+        allergies: data.allergies || null,
+        conditions: splitList(data.conditions),
+        medications: splitList(data.medications),
+        doctor: data.doctor || null,
+        hospital: data.hospital || null,
+        mobility: data.mobility || null,
+        vision: data.vision || null,
+        hearing: data.hearing || null,
+        memory: data.memory || null,
+        med_notes: data.medNotes || null,
+        emergency_contacts: emergencyContacts,
+        pref_languages: data.prefLang,
+        pref_gender: data.prefGender || null,
+        dietary: data.dietary || null,
+        religious: data.religious || null,
+        visit_times: data.visitTimes || null,
+        comm_pref: data.commPref || null,
+        special_req: data.specialReq || null,
+      }
+      if (existing) {
+        await updateBeneficiary(existing.id, fields, clientId)
+        // Any documents in this step were already uploaded directly (a real
+        // id already existed), so there's nothing queued to flush here.
+      } else {
+        const created = await createBeneficiary({ ...fields, status: 'active' }, clientId)
+        // Only now does a real beneficiary id exist — upload any queued
+        // documents against it. A failed document never blocks the
+        // beneficiary itself from being reported as saved, but it is never
+        // silently reported as succeeded either.
+        const queued = Object.entries(docQueue).filter(([, item]) => item.status==='queued' || item.status==='failed')
+        const results: { type:string; name:string; ok:boolean; error?:string }[] = []
+        for (const [type, item] of queued) {
+          setDocQueue(q => ({ ...q, [type]: { ...item, status:'uploading', error:undefined } }))
+          try {
+            await uploadBeneficiaryDocument(created.id, item.file, type)
+            setDocQueue(q => ({ ...q, [type]: { ...item, status:'uploaded' } }))
+            results.push({ type, name:item.file.name, ok:true })
+          } catch (err: any) {
+            console.error(`Failed to upload queued document (${type}):`, err)
+            setDocQueue(q => ({ ...q, [type]: { ...item, status:'failed', error: err?.message || 'Upload failed' } }))
+            results.push({ type, name:item.file.name, ok:false, error: err?.message || 'Upload failed' })
+          }
+        }
+        setDocUploadResults(results)
+      }
+      setDone(true)
+    } catch (err: any) {
+      console.error('Failed to save beneficiary:', err)
+      setSaveError(err?.message || "Couldn't save this beneficiary. Please try again.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const next = () => step<total ? setStep(s=>s+1) : saveBeneficiary()
+  const back = () => step>1 ? setStep(s=>s-1) : onBack()
+
+  if (done) {
+    const failedDocs = docUploadResults.filter(r => !r.ok)
+    return (
+      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:40, textAlign:'center' }}>
+        <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#00959E)`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 20px', boxShadow:`0 8px 28px ${C.primary}30` }}>
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none"><path d="M6 18l8 8 16-18" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </div>
+        <h2 style={{ fontSize:28, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:8, fontFamily:'Manrope,sans-serif' }}>{existing?'Beneficiary Updated!':'Beneficiary Added!'}</h2>
+        <p style={{ fontSize:15, color:C.muted, maxWidth:400, lineHeight:1.6, marginBottom: failedDocs.length ? 16 : 32 }}><strong>{data.name||'The beneficiary'}</strong> {existing?'has been updated.':'has been added to your ReadyPal account. You can now create care requests for them.'}</p>
+        {failedDocs.length > 0 && (
+          <div style={{ maxWidth:400, width:'100%', textAlign:'left' as const, padding:14, borderRadius:12, background:`${C.warning}08`, border:`1px solid ${C.warning}30`, marginBottom:24 }}>
+            <p style={{ fontSize:12, fontWeight:800, color:C.warning, marginBottom:6 }}>{failedDocs.length} of {docUploadResults.length} document{docUploadResults.length!==1?'s':''} didn't upload</p>
+            {failedDocs.map(d => (
+              <p key={d.type} style={{ fontSize:11, color:C.sub, marginBottom:2 }}>{d.type} ({d.name}): {d.error}</p>
+            ))}
+            <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>The beneficiary itself was saved. You can add these documents from their profile's Documents tab.</p>
+          </div>
+        )}
+        <div style={{ display:'flex', gap:12 }}>
+          <Btn label="View Profile" variant="primary" icon={I.eye} onClick={onDone} />
+          <Btn label="Back to Beneficiaries" variant="secondary" onClick={onBack} />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <>
       {step===1 && (
-        <Shell title="Personal Information" sub="Tell us about the person who will receive care." canNext={!!data.name}>
-          <G2>
+        <AddWizardShell title="Personal Information" sub="Tell us about the person who will receive care." canNext={!!data.name} step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
+          <AddWizardG2>
             <FloatInput label="Full Name" value={data.name} onChange={v=>setData(d=>({...d,name:v}))} icon={I.user} required />
             <FloatInput label="Preferred Name" value={data.preferred} onChange={v=>setData(d=>({...d,preferred:v}))} hint="Nickname or short name" />
             <FloatInput label="Date of Birth" value={data.dob} onChange={v=>setData(d=>({...d,dob:v}))} type="date" icon={I.calendar} required />
             <SelectField label="Gender" value={data.gender} onChange={v=>setData(d=>({...d,gender:v}))} options={['Female','Male','Other','Prefer not to say']} />
             <SelectField label="Relationship to You" value={data.relationship} onChange={v=>setData(d=>({...d,relationship:v}))} options={['Mother','Father','Grandmother','Grandfather','Aunt','Uncle','Sibling','Other']} />
             <FloatInput label="NIC Number (optional)" value={data.nic} onChange={v=>setData(d=>({...d,nic:v}))} />
-          </G2>
-        </Shell>
+          </AddWizardG2>
+        </AddWizardShell>
       )}
 
       {step===2 && (
-        <Shell title="Address" sub="Where does this person live? This helps us match nearby care agents." canNext={!!data.address&&!!data.city}>
-          <G2>
+        <AddWizardShell title="Address" sub="Where does this person live? This helps us match nearby care agents." canNext={!!data.address&&!!data.city} step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
+          <AddWizardG2>
             <SelectField label="Province" value={data.province} onChange={v=>setData(d=>({...d,province:v,city:''}))} options={provinces} />
             <SelectField label="City / Town" value={data.city} onChange={v=>setData(d=>({...d,city:v}))} options={data.province?(cities[data.province]??[]):['Colombo','Kandy','Galle','Negombo','Kurunegala']} icon={I.pin} />
             <div style={{gridColumn:'span 2'}}><FloatInput label="Street Address" value={data.address} onChange={v=>setData(d=>({...d,address:v}))} icon={I.pin} required /></div>
             <FloatInput label="Postal Code" value={data.postalCode} onChange={v=>setData(d=>({...d,postalCode:v}))} />
             <FloatInput label="Nearby Landmark" value={data.landmark} onChange={v=>setData(d=>({...d,landmark:v}))} hint="e.g. Near Cargills, opposite temple" />
-          </G2>
+          </AddWizardG2>
           <div style={{ marginTop:14, borderRadius:14, overflow:'hidden', height:140, background:`linear-gradient(135deg,${C.primary}10,${C.accent}06)`, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', gap:10, color:C.primary }}>
             {I.pin}<p style={{ fontSize:13, fontWeight:700, color:C.type }}>Map preview will appear after saving</p>
           </div>
-        </Shell>
+        </AddWizardShell>
       )}
 
       {step===3 && (
-        <Shell title="Medical Information" sub="Help care agents understand health needs and medication routines.">
+        <AddWizardShell title="Medical Information" sub="Help care agents understand health needs and medication routines." step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
           <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-            <G2>
+            <AddWizardG2>
               <SelectField label="Blood Group" value={data.bloodGroup} onChange={v=>setData(d=>({...d,bloodGroup:v}))} options={['A+','A-','B+','B-','AB+','AB-','O+','O-','Unknown']} />
               <FloatInput label="Known Allergies" value={data.allergies} onChange={v=>setData(d=>({...d,allergies:v}))} hint="e.g. Penicillin, latex, nuts" />
-            </G2>
+            </AddWizardG2>
             <FloatInput label="Medical Conditions" value={data.conditions} onChange={v=>setData(d=>({...d,conditions:v}))} multiline rows={2} hint="e.g. Type 2 Diabetes, Hypertension, Arthritis" />
             <FloatInput label="Current Medications" value={data.medications} onChange={v=>setData(d=>({...d,medications:v}))} multiline rows={2} hint="e.g. Metformin 500mg twice daily, Amlodipine 5mg once daily" />
-            <G2>
+            <AddWizardG2>
               <FloatInput label="Family Doctor" value={data.doctor} onChange={v=>setData(d=>({...d,doctor:v}))} icon={I.user} />
               <FloatInput label="Hospital / Clinic" value={data.hospital} onChange={v=>setData(d=>({...d,hospital:v}))} />
               <SelectField label="Mobility" value={data.mobility} onChange={v=>setData(d=>({...d,mobility:v}))} options={['Fully Independent','Uses Walking Stick','Uses Walker','Uses Wheelchair','Bedridden']} />
               <SelectField label="Vision" value={data.vision} onChange={v=>setData(d=>({...d,vision:v}))} options={['Normal','Reading Glasses','Bifocals','Partially Impaired','Severely Impaired']} />
               <SelectField label="Hearing" value={data.hearing} onChange={v=>setData(d=>({...d,hearing:v}))} options={['Normal','Mild Loss','Moderate Loss','Hearing Aid','Severely Impaired']} />
               <SelectField label="Memory / Cognition" value={data.memory} onChange={v=>setData(d=>({...d,memory:v}))} options={['Normal','Mild Forgetfulness','Mild Dementia','Moderate Dementia','Severe Dementia']} />
-            </G2>
+            </AddWizardG2>
             <FloatInput label="Special Medical Notes" value={data.medNotes} onChange={v=>setData(d=>({...d,medNotes:v}))} multiline rows={3} hint="e.g. Medication must be given after meals. Carry allergy alert card." />
           </div>
-        </Shell>
+        </AddWizardShell>
       )}
 
       {step===4 && (
-        <Shell title="Emergency Contacts" sub="Who should we contact in an emergency?" canNext={!!data.ec1Name&&!!data.ec1Phone}>
+        <AddWizardShell title="Emergency Contacts" sub="Who should we contact in an emergency?" canNext={!!data.ec1Name&&!!data.ec1Phone} step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
           <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
             <div style={{ padding:20, borderRadius:16, border:`1.5px solid ${C.border}`, background:'#FAFAFA' }}>
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16 }}>
                 <Badge label="Primary Contact" color={C.error} />
               </div>
-              <G2>
+              <AddWizardG2>
                 <FloatInput label="Full Name" value={data.ec1Name} onChange={v=>setData(d=>({...d,ec1Name:v}))} icon={I.user} required />
                 <SelectField label="Relationship" value={data.ec1Rel} onChange={v=>setData(d=>({...d,ec1Rel:v}))} options={['Son','Daughter','Spouse','Sibling','Friend','Other']} />
                 <FloatInput label="Phone Number" value={data.ec1Phone} onChange={v=>setData(d=>({...d,ec1Phone:v}))} icon={I.phone} type="tel" required />
                 <FloatInput label="Email Address" value={data.ec1Email} onChange={v=>setData(d=>({...d,ec1Email:v}))} icon={I.mail} type="email" />
-              </G2>
+              </AddWizardG2>
             </div>
             <div style={{ padding:20, borderRadius:16, border:`1px solid ${C.border}`, background:'#FAFAFA' }}>
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16 }}>
                 <Badge label="Secondary Contact" color={C.muted} bg="#F2F4F5" />
                 <span style={{ fontSize:12, color:C.muted }}>(optional)</span>
               </div>
-              <G2>
+              <AddWizardG2>
                 <FloatInput label="Full Name" value={data.ec2Name} onChange={v=>setData(d=>({...d,ec2Name:v}))} icon={I.user} />
                 <SelectField label="Relationship" value={data.ec2Rel} onChange={v=>setData(d=>({...d,ec2Rel:v}))} options={['Son','Daughter','Spouse','Sibling','Friend','Other']} />
                 <FloatInput label="Phone Number" value={data.ec2Phone} onChange={v=>setData(d=>({...d,ec2Phone:v}))} icon={I.phone} type="tel" />
                 <FloatInput label="Email Address" value={data.ec2Email} onChange={v=>setData(d=>({...d,ec2Email:v}))} icon={I.mail} type="email" />
-              </G2>
+              </AddWizardG2>
             </div>
           </div>
-        </Shell>
+        </AddWizardShell>
       )}
 
       {step===5 && (
-        <Shell title="Care Preferences" sub="These preferences help us match the right care agent for your loved one.">
+        <AddWizardShell title="Care Preferences" sub="These preferences help us match the right care agent for your loved one." step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
           <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
             <div>
               <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:10, fontFamily:'Manrope,sans-serif' }}>Languages Spoken</p>
@@ -1119,36 +1383,62 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
                 {genders.map(g=><button key={g} onClick={()=>setData(d=>({...d,prefGender:g}))} style={{ flex:1,padding:'10px',borderRadius:12,border:`2px solid ${data.prefGender===g?C.primary:C.border}`,background:data.prefGender===g?`${C.primary}08`:'#FAFAFA',cursor:'pointer',fontFamily:'Manrope,sans-serif',fontSize:13,fontWeight:700,color:data.prefGender===g?C.primary:C.sub,transition:'all 0.15s' }}>{g}</button>)}
               </div>
             </div>
-            <G2>
+            <AddWizardG2>
               <FloatInput label="Dietary Restrictions" value={data.dietary} onChange={v=>setData(d=>({...d,dietary:v}))} hint="e.g. Diabetic-friendly, vegetarian" />
               <FloatInput label="Religious Requirements" value={data.religious} onChange={v=>setData(d=>({...d,religious:v}))} hint="e.g. Buddhist, avoid beef" />
               <SelectField label="Preferred Visit Times" value={data.visitTimes} onChange={v=>setData(d=>({...d,visitTimes:v}))} options={['Early Morning (6–8 AM)','Morning (8–11 AM)','Late Morning (10 AM–12 PM)','Afternoon (12–4 PM)','Evening (4–7 PM)','Flexible']} icon={I.clock} />
               <SelectField label="Communication Preference" value={data.commPref} onChange={v=>setData(d=>({...d,commPref:v}))} options={['WhatsApp','Phone Call','SMS','Email','In-App Chat']} />
-            </G2>
+            </AddWizardG2>
             <FloatInput label="Special Requests" value={data.specialReq} onChange={v=>setData(d=>({...d,specialReq:v}))} multiline rows={3} hint="Any additional notes for care agents" />
           </div>
-        </Shell>
+        </AddWizardShell>
       )}
 
       {step===6 && (
-        <Shell title="Documents" sub="Upload key documents now, or add them later from the profile.">
+        <AddWizardShell title="Documents" sub={existing ? "Upload documents now — they're saved immediately." : "Upload key documents now, or add them later from the profile."} step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
+          <input ref={docFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={onDocFileSelected} style={{ display:'none' }} />
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="bm-2col">
-            {['National Identity Card (NIC)','Medical Reports','Prescriptions','Insurance Documents','Hospital Letters','Other'].map(name=>(
-              <div key={name} style={{ border:`2px dashed ${C.border}`, borderRadius:14, padding:'22px 18px', textAlign:'center', cursor:'pointer', background:'#FAFAFA', transition:'all 0.18s' }}
-                onMouseEnter={e=>{e.currentTarget.style.borderColor=C.primary;e.currentTarget.style.background=`${C.primary}04`}}
-                onMouseLeave={e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.background='#FAFAFA'}}>
-                <div style={{ width:36,height:36,borderRadius:10,background:`${C.primary}10`,display:'flex',alignItems:'center',justifyContent:'center',color:C.primary,margin:'0 auto 8px' }}>{I.upload}</div>
-                <p style={{ fontSize:12,fontWeight:700,color:C.type,fontFamily:'Manrope,sans-serif',marginBottom:3 }}>{name}</p>
-                <p style={{ fontSize:11,color:C.muted }}>PDF, JPG, PNG · Max 10 MB</p>
-              </div>
-            ))}
+            {WIZARD_DOCUMENT_CATEGORIES.map(cat=>{
+              const item = docQueue[cat.type]
+              const clickable = !item || item.status==='failed'
+              const borderColor = item?.status==='failed' ? C.error : item?.status==='uploaded' ? C.success : C.border
+              return (
+                <div key={cat.type} onClick={()=>{ if (clickable) triggerDocPicker(cat.type) }}
+                  style={{ border:`2px dashed ${borderColor}`, borderRadius:14, padding:'18px', textAlign:'center', cursor:clickable?'pointer':'default', background:'#FAFAFA', transition:'all 0.18s', position:'relative' }}
+                  onMouseEnter={e=>{ if(clickable){ e.currentTarget.style.borderColor=C.primary; e.currentTarget.style.background=`${C.primary}04` } }}
+                  onMouseLeave={e=>{ e.currentTarget.style.borderColor=borderColor; e.currentTarget.style.background='#FAFAFA' }}>
+                  <div style={{ width:36,height:36,borderRadius:10,background:`${item?.status==='uploaded'?C.success:item?.status==='failed'?C.error:C.primary}10`,display:'flex',alignItems:'center',justifyContent:'center',color:item?.status==='uploaded'?C.success:item?.status==='failed'?C.error:C.primary,margin:'0 auto 8px' }}>
+                    {item?.status==='uploaded' ? I.check : I.upload}
+                  </div>
+                  <p style={{ fontSize:12,fontWeight:700,color:C.type,fontFamily:'Manrope,sans-serif',marginBottom:3 }}>{cat.label}</p>
+                  {!item && <p style={{ fontSize:11,color:C.muted }}>PDF, JPG, PNG · Max 10 MB</p>}
+                  {item && (
+                    <>
+                      <p style={{ fontSize:11, color:C.sub, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{item.file.name}</p>
+                      <p style={{ fontSize:11, fontWeight:700, marginTop:2, color: item.status==='uploaded'?C.success : item.status==='failed'?C.error : item.status==='uploading'?C.primary : C.muted }}>
+                        {item.status==='uploaded' ? 'Uploaded' : item.status==='failed' ? (item.error || 'Upload failed') : item.status==='uploading' ? 'Uploading…' : existing ? 'Uploading…' : 'Queued — uploads after Save'}
+                      </p>
+                      {item.status==='failed' && (
+                        <button onClick={e=>{ e.stopPropagation(); retryDocUpload(cat.type) }} style={{ marginTop:6, background:'none', border:'none', cursor:'pointer', color:C.primary, fontSize:11, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Retry</button>
+                      )}
+                      {/* Only offered before anything real has been written — clearing
+                          an already-uploaded item would just hide it locally without
+                          actually deleting the real row/file (delete isn't implemented). */}
+                      {(item.status==='queued' || item.status==='failed') && (
+                        <button onClick={e=>{ e.stopPropagation(); clearDocQueue(cat.type) }} style={{ position:'absolute', top:8, right:8, width:20, height:20, borderRadius:6, border:'none', background:'transparent', cursor:'pointer', color:C.muted, display:'flex', alignItems:'center', justifyContent:'center' }} title="Remove">{I.close}</button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
           </div>
-          <p style={{ fontSize:12, color:C.muted, marginTop:16, textAlign:'center' }}>You can skip this step and upload documents later from the beneficiary profile.</p>
-        </Shell>
+          <p style={{ fontSize:12, color:C.muted, marginTop:16, textAlign:'center' }}>{existing ? 'Documents you select here upload right away.' : 'You can skip this step and upload documents later from the beneficiary profile.'}</p>
+        </AddWizardShell>
       )}
 
       {step===7 && (
-        <Shell title="Review & Save" sub="Review the details before saving the beneficiary profile.">
+        <AddWizardShell title="Review & Save" sub="Review the details before saving the beneficiary profile." step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
           <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
             {[
               { title:'Personal', rows:[['Name',data.name],['Preferred',data.preferred],['DOB',data.dob],['Gender',data.gender],['Relationship',data.relationship]] },
@@ -1168,7 +1458,7 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
               </Card>
             ))}
           </div>
-        </Shell>
+        </AddWizardShell>
       )}
     </>
   )
@@ -1178,17 +1468,96 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
 // ROOT
 // ══════════════════════════════════════════════════════════════════════════════
 export default function BeneficiaryManagement() {
-  const [view, setView] = useState<View>('dashboard')
-  const [selectedId, setSelectedId] = useState<string>('')
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedId = searchParams.get('id')
+  const [view, setView] = useState<View>(searchParams.get('add') ? 'add-wizard' : requestedId ? 'profile' : 'dashboard')
+  const [selectedId, setSelectedId] = useState<string>(requestedId || '')
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([])
+  const [listLoading, setListLoading] = useState(true)
+  const [listError, setListError] = useState('')
+  const [clientId, setClientId] = useState('')
+
+  // The detail view fetches its own beneficiary directly by id (rather than
+  // only filtering the already-loaded list) so a page refresh or direct
+  // /beneficiaries?id=... link always reads fresh from Supabase.
+  const [profileBene, setProfileBene] = useState<Beneficiary | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [documents, setDocuments] = useState<Beneficiary['documents']>([])
+  const [documentsLoading, setDocumentsLoading] = useState(false)
+  const [documentsError, setDocumentsError] = useState('')
+
+  const loadBeneficiaries = (id: string) => {
+    setListLoading(true)
+    setListError('')
+    return getBeneficiariesFull(id)
+      .then(setBeneficiaries)
+      .catch(err => { console.error('Failed to load beneficiaries:', err); setListError("We couldn't load your beneficiaries. Please try again.") })
+      .finally(() => setListLoading(false))
+  }
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) getBeneficiariesFull(data.user.id).then(setBeneficiaries).catch(console.error)
+      if (data.user) {
+        setClientId(data.user.id)
+        loadBeneficiaries(data.user.id)
+      } else {
+        setListLoading(false)
+      }
     })
   }, [])
 
-  const selectedBene = beneficiaries.find(b=>b.id===selectedId)
+  const loadDocuments = (id: string) => {
+    setDocumentsLoading(true)
+    setDocumentsError('')
+    return getBeneficiaryDocuments(id)
+      .then((docs: any[]) => setDocuments(docs.map(d => ({
+        id: d.id, name: d.name || '', type: d.type || 'Other',
+        date: d.uploaded_at ? new Date(d.uploaded_at).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' }) : '',
+        expiry: d.expiry_date || undefined, url: d.file_url || undefined,
+      }))))
+      .catch(err => { console.error('Failed to load documents:', err); setDocumentsError("Couldn't load documents.") })
+      .finally(() => setDocumentsLoading(false))
+  }
+
+  const loadProfile = (id: string, cid: string) => {
+    setProfileLoading(true)
+    setProfileError('')
+    getBeneficiaryById(id, cid)
+      .then(b => setProfileBene(b as Beneficiary | null))
+      .catch(err => { console.error('Failed to load beneficiary:', err); setProfileError("We couldn't load this beneficiary. Please try again.") })
+      .finally(() => setProfileLoading(false))
+
+    loadDocuments(id)
+  }
+
+  useEffect(() => {
+    if (view==='profile' && selectedId && clientId) loadProfile(selectedId, clientId)
+  }, [view, selectedId, clientId])
+
+  const goToProfile = (id: string) => { setSelectedId(id); setView('profile') }
+
+  const handleArchive = async (id: string) => {
+    if (!clientId) return
+    try {
+      await updateBeneficiary(id, { status: 'archived' }, clientId)
+      await loadBeneficiaries(clientId)
+      if (view==='profile' && id===selectedId) loadProfile(id, clientId)
+    } catch (err) {
+      console.error('Failed to archive beneficiary:', err)
+    }
+  }
+  const handleRestore = async (id: string) => {
+    if (!clientId) return
+    try {
+      await updateBeneficiary(id, { status: 'active' }, clientId)
+      await loadBeneficiaries(clientId)
+      if (view==='profile' && id===selectedId) loadProfile(id, clientId)
+    } catch (err) {
+      console.error('Failed to restore beneficiary:', err)
+    }
+  }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
@@ -1204,13 +1573,58 @@ export default function BeneficiaryManagement() {
         </div>
       </div>
       <div style={{ flex:1, overflow:'hidden', display:'flex', flexDirection:'column' }}>
-        {view==='dashboard' && <Dashboard onView={id=>{setSelectedId(id);setView('profile')}} onAdd={()=>setView('add-wizard')} beneficiaries={beneficiaries} />}
-        {view==='profile' && selectedBene && <Profile b={selectedBene} onBack={()=>setView('dashboard')} />}
+        {view==='dashboard' && (
+          <Dashboard
+            onView={goToProfile}
+            onAdd={()=>setView('add-wizard')}
+            onEdit={id=>{ setSelectedId(id); setView('edit-wizard') }}
+            onArchive={handleArchive}
+            onRestore={handleRestore}
+            onNewRequest={()=>navigate('/request/new')}
+            beneficiaries={beneficiaries}
+            loading={listLoading}
+            error={listError}
+          />
+        )}
+        {view==='profile' && profileBene && (
+          <Profile
+            b={profileBene}
+            onBack={()=>{ setView('dashboard'); setProfileBene(null) }}
+            onEdit={()=>setView('edit-wizard')}
+            onArchive={async()=>{ await handleArchive(profileBene.id) }}
+            onRestore={()=>handleRestore(profileBene.id)}
+            onNewRequest={()=>navigate('/request/new')}
+            documents={documents} documentsLoading={documentsLoading} documentsError={documentsError}
+            onDocumentUploaded={()=>loadDocuments(profileBene.id)}
+          />
+        )}
+        {view==='profile' && !profileBene && (
+          <p style={{ padding:40, color: profileError?C.error:C.muted, fontSize:13 }}>{profileLoading ? 'Loading beneficiary…' : profileError || 'Beneficiary not found.'}</p>
+        )}
         {view==='add-wizard' && (
           <div style={{ flex:1, display:'flex', flexDirection:'column', background:C.surface, overflow:'hidden' }}>
-            <AddWizard onBack={()=>setView('dashboard')} onDone={()=>setView('dashboard')} />
+            <AddWizard onBack={()=>setView('dashboard')} onDone={()=>{ setView('dashboard'); if (clientId) loadBeneficiaries(clientId) }} clientId={clientId} />
           </div>
         )}
+        {view==='edit-wizard' && profileBene && (
+          <div style={{ flex:1, display:'flex', flexDirection:'column', background:C.surface, overflow:'hidden' }}>
+            <AddWizard existing={profileBene} onBack={()=>setView('profile')}
+              onDone={()=>{ setView('profile'); if (clientId) { loadBeneficiaries(clientId); loadProfile(profileBene.id, clientId) } }}
+              clientId={clientId} />
+          </div>
+        )}
+        {view==='edit-wizard' && !profileBene && selectedId && (() => {
+          const fromList = beneficiaries.find(b=>b.id===selectedId)
+          return fromList
+            ? (
+              <div style={{ flex:1, display:'flex', flexDirection:'column', background:C.surface, overflow:'hidden' }}>
+                <AddWizard existing={fromList} onBack={()=>setView('dashboard')}
+                  onDone={()=>{ setView('dashboard'); if (clientId) loadBeneficiaries(clientId) }}
+                  clientId={clientId} />
+              </div>
+            )
+            : <p style={{ padding:40, color:C.muted, fontSize:13 }}>Loading beneficiary…</p>
+        })()}
       </div>
     </div>
   )
