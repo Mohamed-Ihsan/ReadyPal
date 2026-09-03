@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom"
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 
 import MarketingWebsite from "./screens/MarketingWebsite"
 import AuthOnboarding from "./screens/AuthOnboarding"
@@ -24,7 +24,6 @@ import OperationsCenter from "./screens/OperationsCenter"
 import FinanceDashboard from "./screens/FinanceDashboard"
 import AdminDashboard from "./screens/AdminDashboard"
 
-import AccountSettings from "./screens/AccountSettings"
 import CareAgentsBrowse from "./screens/CareAgentsBrowse"
 import CareAgentProfile from "./screens/CareAgentProfile"
 import CareRequestWizard from "./screens/CareRequestWizard"
@@ -39,7 +38,7 @@ function App() {
         <Route path="/auth" element={<AuthOnboarding />} />
         <Route path="/dashboard" element={<ClientDashboard />} />
 
-        <Route path="/settings" element={<AccountSettings />} />
+        <Route path="/settings" element={<Navigate to="/dashboard?tab=settings" replace />} />
         <Route path="/browse-agents" element={<CareAgentsBrowse />} />
         <Route path="/agents/:id" element={<CareAgentProfile />} />
         <Route path="/request/new" element={<CareRequestWizard />} />

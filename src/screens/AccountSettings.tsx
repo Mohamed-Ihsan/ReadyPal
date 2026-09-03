@@ -1091,7 +1091,7 @@ function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
-export default function AccountSettings() {
+export default function AccountSettings({ embedded = false }: { embedded?: boolean } = {}) {
   const navigate = useNavigate()
   const [section, setSection] = useState<Section>('home')
   const [toast, setToast] = useState<string|null>(null)
@@ -1158,10 +1158,10 @@ export default function AccountSettings() {
   }
 
   return (
-    <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
+    <div style={{ display:'flex', minHeight: embedded ? undefined : '100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
 
       {/* Sidebar */}
-      <div className="as-sidebar" style={{ width:232, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
+      <div className="as-sidebar" style={{ width:232, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position: embedded ? 'relative' : 'sticky', top: embedded ? undefined : 0, height: embedded ? 'auto' : '100vh', overflowY: embedded ? 'visible' : 'auto', flexShrink:0 }}>
         <div style={{ padding:'20px 20px 10px' }}>
           <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em' }}>Account & Settings</p>
         </div>
@@ -1231,7 +1231,7 @@ export default function AccountSettings() {
       )}
 
       {/* Main content */}
-      <div style={{ flex:1, overflowY:'auto' }} className="as-main">
+      <div style={{ flex:1, overflowY: embedded ? 'visible' : 'auto' }} className="as-main">
         {renderSection()}
       </div>
 

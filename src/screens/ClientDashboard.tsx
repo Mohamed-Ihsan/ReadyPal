@@ -3,8 +3,9 @@ import logoFull from '@/imports/20260723_170707.png'
 import logoIcon from '@/imports/20260723_164632.png'
 import logoWhite from '@/imports/20260723_165045.png'
 import { supabase } from '../lib/supabaseClient'
-import { getDashboardOverview, getAllCareRequests, getBeneficiaries, getAllNotifications, getCurrentProfile, updateProfile, getPaymentsData, getMyReviews, getMyAgents, getMyConversations, getConversationMessages, sendMessage } from '../lib/api'
-import { useNavigate } from 'react-router-dom'
+import { getDashboardOverview, getAllCareRequests, getBeneficiaries, getAllNotifications, getPaymentsData, getMyReviews, getMyAgents, getMyConversations, getConversationMessages, sendMessage } from '../lib/api'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import AccountSettings from './AccountSettings'
 
 // ─── Colours ──────────────────────────────────────────────────────────────────
 const C = {
@@ -1184,127 +1185,6 @@ function AgentsPage({ agents }: { agents: any[] }) {
   )
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SETTINGS PAGE
-// ═══════════════════════════════════════════════════════════════════════════════
-function SettingsPage() {
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('')
-  const [notifs, setNotifs] = useState({ email:true, sms:true, push:false })
-  const [lang, setLang] = useState('English')
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-
-  useEffect(() => {
-    getCurrentProfile().then(p => {
-      setName(p.full_name || '')
-      setEmail(p.email || '')
-      setPhone(p.phone || '')
-    }).catch(console.error)
-  }, [])
-
-  const handleSave = async () => {
-    setSaving(true)
-    try {
-      await updateProfile({ full_name: name, phone })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch (err) {
-      console.error(err)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const Toggle = ({ on, set }: { on: boolean; set: () => void }) => (
-    <button onClick={set} style={{ width:40, height:22, borderRadius:11, background: on ? C.primary : C.border, position:'relative', border:'none', cursor:'pointer', transition:'background 0.2s', flexShrink:0 }}>
-      <div style={{ position:'absolute', top:3, left: on ? 21 : 3, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.15)' }} />
-    </button>
-  )
-
-  const FI = ({ label, value, onChange, type='text' }: { label:string; value:string; onChange:(v:string)=>void; type?:string }) => (
-    <div>
-      <label style={{ display:'block', fontSize:12, fontWeight:600, color:C.muted, marginBottom:6, fontFamily:'Manrope,sans-serif' }}>{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} style={{ width:'100%', padding:'10px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#fff', transition:'border-color 0.15s' }}
-        onFocus={e => e.target.style.borderColor = C.primary}
-        onBlur={e => e.target.style.borderColor = C.border} />
-    </div>
-  )
-
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:20, maxWidth:680 }}>
-      <div>
-        <h2 style={{ fontSize:20, fontWeight:900, color:C.type, letterSpacing:'-0.02em' }}>Settings</h2>
-        <p style={{ fontSize:13, color:C.muted, marginTop:2 }}>Manage your account and preferences</p>
-      </div>
-
-      <Card style={{ padding:24 }}>
-        <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:20 }}>Profile Information</h3>
-        <div style={{ display:'flex', gap:20, alignItems:'center', marginBottom:24 }}>
-          <Avatar name={name} size={64} />
-          <div>
-            <p style={{ fontSize:14, fontWeight:700, color:C.type }}>{name}</p>
-            <p style={{ fontSize:12, color:C.muted }}>Family Member · Australia</p>
-            <button style={{ marginTop:8, padding:'5px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:12, fontWeight:600, color:C.sub, fontFamily:'Manrope,sans-serif' }}>Change Photo</button>
-          </div>
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-          <FI label="Full Name" value={name} onChange={setName} />
-          <FI label="Email Address" value={email} onChange={setEmail} type="email" />
-          <FI label="Phone Number" value={phone} onChange={setPhone} type="tel" />
-          <div>
-            <label style={{ display:'block', fontSize:12, fontWeight:600, color:C.muted, marginBottom:6, fontFamily:'Manrope,sans-serif' }}>Language</label>
-            <select value={lang} onChange={e => setLang(e.target.value)} style={{ width:'100%', padding:'10px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#fff', appearance:'none' }}>
-              <option>English</option>
-              <option>Sinhala</option>
-              <option>Tamil</option>
-            </select>
-          </div>
-        </div>
-        <div style={{ marginTop:20, display:'flex', gap:10 }}>
-          <button onClick={handleSave} disabled={saving} style={{ padding:'10px 20px', borderRadius:12, border:'none', background:C.primary, cursor:saving?'not-allowed':'pointer', color:'#fff', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', opacity:saving?0.7:1 }}>{saving ? 'Saving...' : saved ? 'Saved!' : 'Save Changes'}</button>
-          <button style={{ padding:'10px 20px', borderRadius:12, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', color:C.sub, fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Cancel</button>
-        </div>
-      </Card>
-
-      <Card style={{ padding:24 }}>
-        <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:20 }}>Notification Preferences</h3>
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          {([['email','Email Notifications','Receive care updates by email'],['sms','SMS Alerts','Get text messages for urgent updates'],['push','Push Notifications','In-app and mobile push alerts']] as const).map(([k,label,sub]) => (
-            <div key={k} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderRadius:12, border:`1px solid ${C.border}`, background:'#FAFAFA' }}>
-              <div>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{label}</p>
-                <p style={{ fontSize:11, color:C.muted }}>{sub}</p>
-              </div>
-              <Toggle on={notifs[k]} set={() => setNotifs(p => ({ ...p, [k]: !p[k] }))} />
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      <Card style={{ padding:24 }}>
-        <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:20 }}>Security</h3>
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          {[
-            { label:'Change Password', sub:'Last changed 3 months ago' },
-            { label:'Two-Factor Authentication', sub:'Not enabled' },
-            { label:'Active Sessions', sub:'1 device' },
-          ].map(s => (
-            <div key={s.label} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 16px', borderRadius:12, border:`1px solid ${C.border}` }}>
-              <div>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{s.label}</p>
-                <p style={{ fontSize:11, color:C.muted }}>{s.sub}</p>
-              </div>
-              <button style={{ padding:'5px 12px', borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:12, fontWeight:600, color:C.sub, fontFamily:'Manrope,sans-serif' }}>Manage</button>
-            </div>
-          ))}
-        </div>
-      </Card>
-    </div>
-  )
-}
-
 // ─── Generic placeholder for other pages ─────────────────────────────────────
 function PlaceholderPage({ page }: { page: DashPage }) {
   const labels: Partial<Record<DashPage, string>> = { support:'Support' }
@@ -1322,7 +1202,11 @@ function PlaceholderPage({ page }: { page: DashPage }) {
 // ROOT
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function ClientDashboard() {
-  const [page, setPage] = useState<DashPage>('overview')
+  const [searchParams] = useSearchParams()
+  const requestedTab = searchParams.get('tab') as DashPage | null
+  const [page, setPage] = useState<DashPage>(
+    requestedTab && NAV_ITEMS.some(n => n.key === requestedTab) ? requestedTab : 'overview'
+  )
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNav, setMobileNav] = useState(false)
   const [allRequests, setAllRequests] = useState<any[]>([])
@@ -1363,7 +1247,7 @@ useEffect(() => {
       case 'notifications': return <NotificationsPage notifs={notifs} />
       case 'payments': return <PaymentsPage data={paymentsData} />
       case 'reviews': return <ReviewsPage reviews={reviews} />
-      case 'settings':      return <SettingsPage />
+      case 'settings':      return <AccountSettings embedded />
       default:              return <PlaceholderPage page={page} />
     }
   }
