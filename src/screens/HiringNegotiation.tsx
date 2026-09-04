@@ -1,7 +1,10 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
-import { getCareRequestDetail, getApplicationsForRequest, updateApplicationStatus, hireApplication } from '../lib/api'
+import {
+  getCareRequestDetail, getApplicationsForRequest, updateApplicationStatus, hireApplication,
+  getNegotiationMessages, sendNegotiationMessage, type NegotiationMessage,
+} from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -697,17 +700,75 @@ function CompareView({ apps, onRemove, onHire, onBack }: { apps:Application[]; o
 // ──────────────────────────────────────────────────────────────────────────────
 // NEGOTIATION
 // ──────────────────────────────────────────────────────────────────────────────
-function Negotiation({ app, onBack, onAccept }: { app:Application; onBack:()=>void; onAccept:()=>void }) {
+function Negotiation({ app, clientId, onBack, onAccept, accepting, onPriceUpdated }: {
+  app:Application; clientId:string; onBack:()=>void; onAccept:()=>void; accepting?:boolean
+  onPriceUpdated:(applicationId:string, price:number)=>void
+}) {
+  const [messages, setMessages] = useState<NegotiationMessage[]>([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState('')
   const [counter, setCounter] = useState(String(Math.round(app.price*0.9/100)*100))
   const [msg, setMsg] = useState('')
-  const [sent, setSent] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState('')
+  const [justSent, setJustSent] = useState(false)
 
-  const history = [
-    { from:'Agent', price:app.originalPrice, date:'13 Jan · 11:05 AM', note:"I'd be happy to care for your mother.", status:'sent' },
-    { from:'You',   price:app.price-200,      date:'13 Jan · 3:30 PM',  note:"Could you come down slightly? Budget is tight.", status:'countered' },
-    { from:'Agent', price:app.price,          date:'13 Jan · 4:10 PM',  note:"LKR "+app.price.toLocaleString()+"/hr is my best rate — includes travel.", status:'accepted' },
-  ]
-  const pctSaving = Math.round((1 - Number(counter)/app.price)*100)
+  const loadHistory = () => {
+    setHistoryLoading(true)
+    setHistoryError('')
+    getNegotiationMessages(app.id)
+      .then(setMessages)
+      .catch(err => { console.error('Failed to load negotiation messages:', err); setHistoryError("Couldn't load negotiation history. Please try again.") })
+      .finally(() => setHistoryLoading(false))
+  }
+  useEffect(() => { loadHistory() }, [app.id])
+
+  // The real current offer is the latest message that actually proposed a
+  // price — never a hard-coded value. Falls back to the application's own
+  // price when nothing has been negotiated yet.
+  const currentOffer = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].proposed_price != null) return messages[i].proposed_price as number
+    }
+    return app.price
+  })()
+
+  // Keep the rest of the page (Hire modal, application list, proposal
+  // detail) in sync with the real negotiated price instead of the stale
+  // price captured when applications were first loaded.
+  useEffect(() => {
+    if (currentOffer !== app.price) onPriceUpdated(app.id, currentOffer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentOffer])
+
+  const counterNum = Number(counter)
+  const pctSaving = counterNum > 0 ? Math.round((1 - counterNum/currentOffer)*100) : 0
+
+  const sendCounter = async () => {
+    if (sending) return
+    if (!counter || !Number.isFinite(counterNum) || counterNum <= 0) {
+      setSendError('Enter a valid price')
+      return
+    }
+    setSending(true)
+    setSendError('')
+    try {
+      const row = await sendNegotiationMessage({
+        applicationId: app.id,
+        message: msg.trim() || `Countered at LKR ${counterNum.toLocaleString()}/hr`,
+        proposedPrice: counterNum,
+      })
+      setMessages(prev => [...prev, row])
+      setMsg('')
+      setJustSent(true)
+      setTimeout(() => setJustSent(false), 3500)
+    } catch (err: any) {
+      console.error('Failed to send counter offer:', err)
+      setSendError(err?.message || "Couldn't send your counter offer. Please try again.")
+    } finally {
+      setSending(false)
+    }
+  }
 
   return (
     <div style={{ padding:'24px 28px 60px', display:'flex', gap:24, alignItems:'start', flexWrap:'wrap' }}>
@@ -723,68 +784,78 @@ function Negotiation({ app, onBack, onAccept }: { app:Application; onBack:()=>vo
           <div style={{ marginLeft:'auto' }}><StatusBdg s="Negotiating" /></div>
         </div>
 
-        {/* Offer history */}
+        {/* Offer history — real negotiation_messages rows */}
         <Card style={{ padding:22 }}>
           <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Offer History</h3>
-          <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-            {history.map((h,i)=>(
-              <div key={i} style={{ display:'flex', gap:14 }}>
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
-                  <div style={{ width:28, height:28, borderRadius:'50%', background:h.from==='Agent'?`${C.primary}12`:`${C.accent}12`, display:'flex', alignItems:'center', justifyContent:'center', color:h.from==='Agent'?C.primary:C.accent, fontSize:10, fontWeight:800 }}>{h.from==='Agent'?'A':'Y'}</div>
-                  {i<history.length-1&&<div style={{ width:2, flex:1, minHeight:12, background:C.border, margin:'3px 0' }} />}
-                </div>
-                <div style={{ paddingBottom: i<history.length-1?14:0, flex:1 }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{h.from==='Agent'?app.name:'You'}</p>
-                      <span style={{ fontSize:11, color:C.muted }}>{h.date}</span>
+          {historyLoading && <p style={{ fontSize:13, color:C.muted }}>Loading negotiation history…</p>}
+          {!historyLoading && historyError && <p style={{ fontSize:13, color:C.error }}>{historyError}</p>}
+          {!historyLoading && !historyError && messages.length===0 && (
+            <p style={{ fontSize:13, color:C.muted }}>No offers yet. Send a counter offer below to start negotiating with {app.name.split(' ')[0]}.</p>
+          )}
+          {!historyLoading && !historyError && messages.length>0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+              {messages.map((h,i)=>{
+                const mine = h.sender_id === clientId
+                return (
+                  <div key={h.id} style={{ display:'flex', gap:14 }}>
+                    <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+                      <div style={{ width:28, height:28, borderRadius:'50%', background:!mine?`${C.primary}12`:`${C.accent}12`, display:'flex', alignItems:'center', justifyContent:'center', color:!mine?C.primary:C.accent, fontSize:10, fontWeight:800 }}>{!mine?'A':'Y'}</div>
+                      {i<messages.length-1&&<div style={{ width:2, flex:1, minHeight:12, background:C.border, margin:'3px 0' }} />}
                     </div>
-                    <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>LKR {h.price.toLocaleString()}<span style={{fontSize:10,fontWeight:500,color:C.muted}}>/hr</span></p>
+                    <div style={{ paddingBottom: i<messages.length-1?14:0, flex:1 }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4, flexWrap:'wrap' as const, gap:4 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{mine?'You':h.senderName}</p>
+                          <span style={{ fontSize:11, color:C.muted }}>{new Date(h.created_at).toLocaleString('en-GB',{ day:'numeric', month:'short', hour:'numeric', minute:'2-digit' })}</span>
+                        </div>
+                        {h.proposed_price!=null && <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>LKR {h.proposed_price.toLocaleString()}<span style={{fontSize:10,fontWeight:500,color:C.muted}}>/hr</span></p>}
+                      </div>
+                      <p style={{ fontSize:13, color:C.sub, lineHeight:1.6, padding:'8px 12px', borderRadius:9, background:!mine?'#F9FAFB':`${C.accent}06`, border:`1px solid ${!mine?C.border:C.accent+'20'}` }}>{h.message}</p>
+                    </div>
                   </div>
-                  <p style={{ fontSize:13, color:C.sub, lineHeight:1.6, padding:'8px 12px', borderRadius:9, background:h.from==='Agent'?'#F9FAFB':`${C.accent}06`, border:`1px solid ${h.from==='Agent'?C.border:C.accent+'20'}` }}>{h.note}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+                )
+              })}
+            </div>
+          )}
         </Card>
 
-        {/* Counter offer */}
-        {!sent ? (
-          <Card style={{ padding:24 }}>
-            <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:16, fontFamily:'Manrope,sans-serif' }}>Send Counter Offer</h3>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:16 }} className="hn-stat-grid">
-              <div style={{ padding:'14px 16px', borderRadius:12, background:'#F9FAFB', border:`1px solid ${C.border}` }}>
-                <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>Agent's Current Price</p>
-                <p style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>LKR {app.price.toLocaleString()}<span style={{fontSize:11,color:C.muted}}>/hr</span></p>
+        {/* Counter offer — sending never blocks further negotiation, so the
+            form stays available for another round instead of being replaced
+            by a dead-end "sent" screen. */}
+        <Card style={{ padding:24 }}>
+          <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:16, fontFamily:'Manrope,sans-serif' }}>Send Counter Offer</h3>
+          {justSent && (
+            <div style={{ marginBottom:14, padding:'10px 14px', borderRadius:10, background:`${C.success}08`, border:`1px solid ${C.success}30`, display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ color:C.success, display:'flex' }}>{I.check}</span>
+              <p style={{ fontSize:12, fontWeight:700, color:C.success }}>Counter offer sent — waiting for {app.name.split(' ')[0]}'s response.</p>
+            </div>
+          )}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:16 }} className="hn-stat-grid">
+            <div style={{ padding:'14px 16px', borderRadius:12, background:'#F9FAFB', border:`1px solid ${C.border}` }}>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>Current Offer</p>
+              <p style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>LKR {currentOffer.toLocaleString()}<span style={{fontSize:11,color:C.muted}}>/hr</span></p>
+            </div>
+            <div style={{ padding:'14px 16px', borderRadius:12, background:`${C.primary}06`, border:`1px solid ${C.primary}20` }}>
+              <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>Your Counter Offer</p>
+              <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                <span style={{ fontSize:14, fontWeight:700, color:C.sub }}>LKR</span>
+                <input type="number" value={counter} onChange={e=>setCounter(e.target.value)} disabled={sending} style={{ fontSize:20, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif', border:'none', background:'transparent', outline:'none', width:100 }} />
               </div>
-              <div style={{ padding:'14px 16px', borderRadius:12, background:`${C.primary}06`, border:`1px solid ${C.primary}20` }}>
-                <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>Your Counter Offer</p>
-                <div style={{ display:'flex', alignItems:'center', gap:4 }}>
-                  <span style={{ fontSize:14, fontWeight:700, color:C.sub }}>LKR</span>
-                  <input type="number" value={counter} onChange={e=>setCounter(e.target.value)} style={{ fontSize:20, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif', border:'none', background:'transparent', outline:'none', width:100 }} />
-                </div>
-                {Number(counter)<app.price && <p style={{ fontSize:11, color:C.success, fontWeight:700 }}>Saving {pctSaving}% · LKR {(app.price-Number(counter)).toLocaleString()}/hr less</p>}
-              </div>
+              {counterNum>0 && counterNum<currentOffer && <p style={{ fontSize:11, color:C.success, fontWeight:700 }}>Saving {pctSaving}% · LKR {(currentOffer-counterNum).toLocaleString()}/hr less</p>}
             </div>
-            <div style={{ marginBottom:14 }}>
-              <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:6 }}>Message (optional)</p>
-              <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Explain your counter offer…" rows={3}
-                style={{ width:'100%', padding:'12px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', resize:'none' as const, boxSizing:'border-box' as const }} />
-            </div>
-            <div style={{ display:'flex', gap:10 }}>
-              <Btn label="Cancel" variant="ghost" onClick={onBack} />
-              <Btn label="Send Counter Offer" variant="primary" icon={I.send} onClick={()=>setSent(true)} />
-              <Btn label="Accept Current Offer" variant="accent" icon={I.check} onClick={onAccept} />
-            </div>
-          </Card>
-        ) : (
-          <Card style={{ padding:32, textAlign:'center' }}>
-            <div style={{ width:56,height:56,borderRadius:'50%',background:`${C.success}12`,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px',color:C.success }}>{I.check}</div>
-            <h3 style={{ fontSize:16, fontWeight:900, color:C.type, marginBottom:6 }}>Counter Offer Sent!</h3>
-            <p style={{ fontSize:13, color:C.muted, marginBottom:16 }}>You offered LKR {Number(counter).toLocaleString()}/hr · Awaiting {app.name.split(' ')[0]}'s response (~{app.responseTime})</p>
-            <Bdg label="Awaiting Response" color={C.warning} />
-          </Card>
-        )}
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:6 }}>Message (optional)</p>
+            <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Explain your counter offer…" rows={3} disabled={sending}
+              style={{ width:'100%', padding:'12px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', resize:'none' as const, boxSizing:'border-box' as const }} />
+          </div>
+          {sendError && <p style={{ fontSize:12, color:C.error, marginBottom:14 }}>{sendError}</p>}
+          <div style={{ display:'flex', gap:10 }}>
+            <Btn label="Cancel" variant="ghost" onClick={onBack} disabled={sending} />
+            <Btn label={sending?'Sending…':'Send Counter Offer'} variant="primary" icon={I.send} onClick={sendCounter} disabled={sending} />
+            <Btn label={accepting?'Accepting…':'Accept Current Offer'} variant="accent" icon={I.check} onClick={onAccept} disabled={accepting} />
+          </div>
+        </Card>
 
         {/* Additional requests */}
         <Card style={{ padding:22 }}>
@@ -806,7 +877,7 @@ function Negotiation({ app, onBack, onAccept }: { app:Application; onBack:()=>vo
           <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:12 }}>Negotiation Status</p>
           <StatusBdg s="Negotiating" />
           <div style={{ marginTop:12 }}>
-            {[{l:'Original Price',v:`LKR ${app.originalPrice.toLocaleString()}`},{l:'Current Offer',v:`LKR ${app.price.toLocaleString()}`},{l:'Your Counter',v:counter?`LKR ${Number(counter).toLocaleString()}`:'—'}].map(r=>(
+            {[{l:'Original Price',v:`LKR ${app.originalPrice.toLocaleString()}`},{l:'Current Offer',v:`LKR ${currentOffer.toLocaleString()}`},{l:'Your Counter',v:counter?`LKR ${Number(counter).toLocaleString()}`:'—'}].map(r=>(
               <div key={r.l} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0', borderBottom:`1px solid ${C.border}` }}>
                 <p style={{ fontSize:12, color:C.muted }}>{r.l}</p>
                 <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{r.v}</p>
@@ -816,8 +887,8 @@ function Negotiation({ app, onBack, onAccept }: { app:Application; onBack:()=>vo
         </Card>
         <Card style={{ padding:20 }}>
           <p style={{ fontSize:12, fontWeight:800, color:C.muted, textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:10 }}>Quick Accept</p>
-          <p style={{ fontSize:13, color:C.sub, marginBottom:12, lineHeight:1.5 }}>Accept the current offer at LKR {app.price.toLocaleString()}/hr.</p>
-          <Btn label="Accept Offer" variant="primary" icon={I.check} onClick={onAccept} />
+          <p style={{ fontSize:13, color:C.sub, marginBottom:12, lineHeight:1.5 }}>Accept the current offer at LKR {currentOffer.toLocaleString()}/hr.</p>
+          <Btn label={accepting?'Accepting…':'Accept Offer'} variant="primary" icon={I.check} onClick={onAccept} disabled={accepting} />
         </Card>
       </div>
     </div>
@@ -935,7 +1006,7 @@ function InvitationsView() {
 // ──────────────────────────────────────────────────────────────────────────────
 // HIRE CONFIRMATION MODAL
 // ──────────────────────────────────────────────────────────────────────────────
-function HireConfirmModal({ app, onClose, onConfirm }: { app:Application; onClose:()=>void; onConfirm:()=>void }) {
+function HireConfirmModal({ app, onClose, onConfirm, submitting, error }: { app:Application; onClose:()=>void; onConfirm:()=>void; submitting?:boolean; error?:string }) {
   const [agreed, setAgreed] = useState(false)
   const weeklyHrs = 30
   const agentFee  = app.price * weeklyHrs
@@ -1004,10 +1075,12 @@ function HireConfirmModal({ app, onClose, onConfirm }: { app:Application; onClos
             <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>I agree to ReadyPal's <span style={{color:C.primary,fontWeight:700}}>Terms of Service</span> and <span style={{color:C.primary,fontWeight:700}}>Cancellation Policy</span>. I understand a 24-hour cancellation notice is required.</p>
           </label>
 
+          {error && <p style={{ fontSize:12, color:C.error, marginTop:14 }}>{error}</p>}
+
           <div style={{ display:'flex', gap:10, marginTop:20 }}>
-            <Btn label="Cancel" variant="secondary" onClick={onClose} />
-            <button onClick={agreed?onConfirm:undefined} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:agreed?`linear-gradient(135deg,${C.primary},#00959E)`:'#C8D0D4', cursor:agreed?'pointer':'not-allowed', fontSize:14, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif' }}>
-              Confirm Hire
+            <Btn label="Cancel" variant="secondary" onClick={onClose} disabled={submitting} />
+            <button onClick={agreed&&!submitting?onConfirm:undefined} disabled={!agreed||submitting} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:agreed?`linear-gradient(135deg,${C.primary},#00959E)`:'#C8D0D4', cursor:agreed&&!submitting?'pointer':'not-allowed', fontSize:14, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif', opacity:submitting?0.75:1 }}>
+              {submitting ? 'Confirming Hire…' : 'Confirm Hire'}
             </button>
           </div>
         </div>
@@ -1019,7 +1092,7 @@ function HireConfirmModal({ app, onClose, onConfirm }: { app:Application; onClos
 // ──────────────────────────────────────────────────────────────────────────────
 // REJECT MODAL
 // ──────────────────────────────────────────────────────────────────────────────
-function RejectModal({ app, onClose, onConfirm }: { app:Application; onClose:()=>void; onConfirm:()=>void }) {
+function RejectModal({ app, onClose, onConfirm, submitting, error }: { app:Application; onClose:()=>void; onConfirm:()=>void; submitting?:boolean; error?:string }) {
   const [reason, setReason] = useState('')
   const reasons = ['Already selected someone else','Price too high','Unavailable at required times','Different skills needed','Other']
   return (
@@ -1037,9 +1110,10 @@ function RejectModal({ app, onClose, onConfirm }: { app:Application; onClose:()=
             </button>
           ))}
         </div>
+        {error && <p style={{ fontSize:12, color:C.error, marginBottom:12 }}>{error}</p>}
         <div style={{ display:'flex', gap:10 }}>
-          <Btn label="Cancel" variant="secondary" onClick={onClose} />
-          <button onClick={reason?onConfirm:undefined} style={{ flex:1,padding:'10px',borderRadius:10,border:'none',background:reason?C.error:'#C8D0D4',cursor:reason?'pointer':'not-allowed',fontSize:13,fontWeight:700,color:'#fff',fontFamily:'Manrope,sans-serif' }}>Decline Application</button>
+          <Btn label="Cancel" variant="secondary" onClick={onClose} disabled={submitting} />
+          <button onClick={reason&&!submitting?onConfirm:undefined} disabled={!reason||submitting} style={{ flex:1,padding:'10px',borderRadius:10,border:'none',background:reason?C.error:'#C8D0D4',cursor:reason&&!submitting?'pointer':'not-allowed',fontSize:13,fontWeight:700,color:'#fff',fontFamily:'Manrope,sans-serif',opacity:submitting?0.75:1 }}>{submitting?'Declining…':'Decline Application'}</button>
         </div>
       </Card>
     </div>
@@ -1122,6 +1196,8 @@ export default function HiringNegotiation() {
   const [rejectId, setRejectId]         = useState<string>('')
   const [apps, setApps]                 = useState<Application[]>([])
   const [clientId, setClientId]         = useState('')
+  const [accepting, setAccepting]       = useState(false)
+  const [hireError, setHireError]       = useState('')
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setClientId(data.user?.id || ''))
@@ -1144,26 +1220,50 @@ export default function HiringNegotiation() {
   const toggleShortlist = (id:string) => setShortlist(p=>{ const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n })
   const toggleCompare   = (id:string) => setCompareIds(p=>{ const n=new Set(p); if(n.has(id)){n.delete(id)}else if(n.size<4){n.add(id)}; return n })
 
-  const doHire = (id:string) => { setSelectedId(id); setShowHireModal(true) }
+  const doHire = (id:string) => { setHireError(''); setSelectedId(id); setShowHireModal(true) }
   const doReject = (id:string) => { setRejectId(id); setShowRejectModal(true) }
   const doNegotiate = (id:string) => { setSelectedId(id); setSubView('negotiate') }
   const viewProposal = (id:string) => { setSelectedId(id); setSubView('proposal') }
 
+  // Keeps the whole page's view of this application's price in sync with the
+  // real negotiated price (derived from negotiation_messages), so the Hire
+  // modal and every other view that reads apps never show a stale price.
+  const updateAppPrice = (applicationId:string, price:number) =>
+    setApps(prev => prev.map(a => a.id===applicationId ? { ...a, price } : a))
+
   const confirmHire = async () => {
+    if (accepting) return
     const app: any = apps.find(a => a.id === selectedId)
     if (!app || !id) return
+    setAccepting(true)
+    setHireError('')
     try {
       await hireApplication(selectedId, id, app.agentId, clientId, CARE_REQUEST.beneficiaryId)
       setShowHireModal(false)
       setSubView('success')
-    } catch (err) {
-      console.error(err)
+    } catch (err: any) {
+      console.error('Failed to hire application:', err)
+      setHireError(err?.message || "Couldn't hire this agent. Please try again.")
+    } finally {
+      setAccepting(false)
     }
   }
+  const [rejectError, setRejectError] = useState('')
+  const [rejecting, setRejecting] = useState(false)
   const confirmReject = async () => {
-    await updateApplicationStatus(rejectId, 'declined')
-    setApps(prev=>prev.map(a=>a.id===rejectId?{...a,status:'Rejected' as const}:a))
-    setShowRejectModal(false)
+    if (rejecting) return
+    setRejecting(true)
+    setRejectError('')
+    try {
+      await updateApplicationStatus(rejectId, 'declined')
+      setApps(prev=>prev.map(a=>a.id===rejectId?{...a,status:'declined' as any}:a))
+      setShowRejectModal(false)
+    } catch (err: any) {
+      console.error('Failed to decline application:', err)
+      setRejectError(err?.message || "Couldn't decline this application. Please try again.")
+    } finally {
+      setRejecting(false)
+    }
   }
 
   const NAV: {key:SubView;label:string}[] = [
@@ -1211,13 +1311,13 @@ export default function HiringNegotiation() {
         {subView==='proposal'  && <ProposalDetail app={selected} onBack={()=>setSubView('list')} onNegotiate={()=>doNegotiate(selected.id)} onHire={()=>doHire(selected.id)} />}
         {subView==='shortlist' && <ShortlistView apps={apps} shortlist={shortlist} onRemove={toggleShortlist} onView={viewProposal} onHire={doHire} />}
         {subView==='compare'   && <CompareView apps={apps.filter(a=>compareIds.has(a.id))} onRemove={toggleCompare} onHire={doHire} onBack={()=>setSubView('list')} />}
-        {subView==='negotiate' && <Negotiation app={selected} onBack={()=>setSubView('proposal')} onAccept={()=>doHire(selected.id)} />}
+        {subView==='negotiate' && <Negotiation app={selected} clientId={clientId} onBack={()=>setSubView('proposal')} onAccept={()=>doHire(selected.id)} accepting={accepting} onPriceUpdated={updateAppPrice} />}
         {subView==='invitations'&& <InvitationsView />}
         {subView==='success'   && <SuccessScreen app={selected} onDashboard={()=>setSubView('dashboard')} />}
       </div>
 
-      {showHireModal && <HireConfirmModal app={selected} onClose={()=>setShowHireModal(false)} onConfirm={confirmHire} />}
-      {showRejectModal && <RejectModal app={apps.find(a=>a.id===rejectId)??apps[0]} onClose={()=>setShowRejectModal(false)} onConfirm={confirmReject} />}
+      {showHireModal && <HireConfirmModal app={selected} onClose={()=>{ if(!accepting){ setShowHireModal(false); setHireError('') } }} onConfirm={confirmHire} submitting={accepting} error={hireError} />}
+      {showRejectModal && <RejectModal app={apps.find(a=>a.id===rejectId)??apps[0]} onClose={()=>{ if(!rejecting){ setShowRejectModal(false); setRejectError('') } }} onConfirm={confirmReject} submitting={rejecting} error={rejectError} />}
     </div>
   )
 }

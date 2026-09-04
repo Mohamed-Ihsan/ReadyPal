@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabaseClient'
 import {
   getBeneficiariesFull, getBeneficiaryById, createBeneficiary, updateBeneficiary,
   getBeneficiaryDocuments, uploadBeneficiaryDocument, getBeneficiaryDocumentUrl,
+  replaceBeneficiaryDocument, deleteBeneficiaryDocument,
 } from '../lib/api'
 import logoFull from '@/imports/20260723_170707.png'
 
@@ -672,8 +673,12 @@ function MedicalTab({ b, onEdit }: { b:Beneficiary; onEdit:()=>void }) {
 // beneficiary_documents table. Because the bucket is private, file_url is a
 // storage path, never a usable href directly — "Open" resolves it to a
 // short-lived signed URL at click time via getBeneficiaryDocumentUrl().
-// Delete is intentionally not implemented: no DELETE policy for either the
-// bucket or the table has been confirmed.
+// Delete/replace aren't offered here: this tab has no per-type slot concept
+// (multiple documents of the same type can exist), unlike the Edit wizard's
+// Documents step, which enforces one row per type and offers Replace/Delete
+// there. Storage + table DELETE policies for the owning client ARE confirmed
+// (see deleteBeneficiaryDocument in api.ts) — this is a scope choice, not a
+// missing-policy limitation.
 const DOCUMENT_TYPE_OPTIONS = ['NIC', 'Medical', 'Prescription', 'Insurance', 'Doctor Recommendation', 'Other']
 
 function DocumentsTab({ beneficiaryId, documents, loading, error, onUploaded }: {
@@ -1099,6 +1104,7 @@ const WIZARD_DOCUMENT_CATEGORIES: { type:string; label:string }[] = [
 
 type WizardDocStatus = 'queued'|'uploading'|'uploaded'|'failed'
 type WizardDocItem = { file:File; status:WizardDocStatus; error?:string }
+type WizardExistingDoc = { id:string; name:string; type:string; uploaded_at:string; expiry_date:string|null; file_url:string }
 
 function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; onDone:()=>void; clientId:string; existing?:Beneficiary }) {
   const [step, setStep] = useState(1)
@@ -1123,6 +1129,37 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
   const docFileInputRef = useRef<HTMLInputElement>(null)
   const pendingDocTypeRef = useRef<string>('')
 
+  // Edit mode only: the real documents already on this beneficiary, keyed by
+  // type (beneficiary_documents has a UNIQUE (beneficiary_id, type)
+  // constraint, so there's at most one row per slot). Loaded once when the
+  // wizard opens on an existing beneficiary so the Documents step shows real
+  // uploaded state instead of empty "Upload" boxes.
+  const [existingDocs, setExistingDocs] = useState<Record<string, WizardExistingDoc>>({})
+  const [existingDocsLoading, setExistingDocsLoading] = useState(false)
+  const [existingDocsError, setExistingDocsError] = useState('')
+  const [openingType, setOpeningType] = useState<string | null>(null)
+  const [openErrorType, setOpenErrorType] = useState<{ type:string; message:string } | null>(null)
+  const [deletingType, setDeletingType] = useState<string | null>(null)
+  const [deleteConfirmType, setDeleteConfirmType] = useState<string | null>(null)
+  const [deleteErrorType, setDeleteErrorType] = useState<{ type:string; message:string } | null>(null)
+  const [cleanupWarnings, setCleanupWarnings] = useState<Record<string, string>>({})
+
+  const loadExistingDocs = () => {
+    if (!existing) return
+    setExistingDocsLoading(true)
+    setExistingDocsError('')
+    getBeneficiaryDocuments(existing.id)
+      .then((docs: any[]) => {
+        const byType: Record<string, WizardExistingDoc> = {}
+        docs.forEach(d => { if (d.type) byType[d.type] = d })
+        setExistingDocs(byType)
+      })
+      .catch(err => { console.error('Failed to load existing beneficiary documents:', err); setExistingDocsError("Couldn't load existing documents.") })
+      .finally(() => setExistingDocsLoading(false))
+  }
+
+  useEffect(() => { loadExistingDocs() }, [existing?.id])
+
   const validateDocFile = (file: File): string | null => {
     if (!['application/pdf','image/jpeg','image/png'].includes(file.type)) return 'Only PDF, JPG and PNG files are allowed'
     if (file.size > 10 * 1024 * 1024) return 'File must be smaller than 10MB'
@@ -1134,15 +1171,65 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
     docFileInputRef.current?.click()
   }
 
+  // Uploads or replaces (never duplicates) the document for this type via
+  // replaceBeneficiaryDocument — it UPDATEs the existing row for this slot
+  // if one exists, otherwise INSERTs the first one. Once it resolves, the
+  // real row becomes the source of truth (existingDocs) and the transient
+  // docQueue entry is cleared.
   const uploadDocNow = async (type: string, file: File) => {
     if (!existing) return
     setDocQueue(q => ({ ...q, [type]: { file, status:'uploading' } }))
     try {
-      await uploadBeneficiaryDocument(existing.id, file, type)
-      setDocQueue(q => ({ ...q, [type]: { file, status:'uploaded' } }))
+      const result = await replaceBeneficiaryDocument(existing.id, file, type)
+      const { cleanupWarning, ...doc } = result as WizardExistingDoc & { cleanupWarning: string | null }
+      setExistingDocs(d => ({ ...d, [type]: doc }))
+      setDocQueue(q => { const next = { ...q }; delete next[type]; return next })
+      setCleanupWarnings(w => {
+        const next = { ...w }
+        if (cleanupWarning) next[type] = cleanupWarning
+        else delete next[type]
+        return next
+      })
     } catch (err: any) {
       console.error('Failed to upload beneficiary document:', err)
       setDocQueue(q => ({ ...q, [type]: { file, status:'failed', error: err?.message || 'Upload failed' } }))
+    }
+  }
+
+  const openExistingDoc = async (type: string) => {
+    const doc = existingDocs[type]
+    if (!doc?.file_url) return
+    setOpeningType(type)
+    setOpenErrorType(null)
+    try {
+      const signedUrl = await getBeneficiaryDocumentUrl(doc.file_url)
+      window.open(signedUrl, '_blank', 'noopener,noreferrer')
+    } catch (err: any) {
+      console.error('Failed to open beneficiary document:', err)
+      setOpenErrorType({ type, message: `Couldn't open "${doc.name || 'this document'}". Please try again.` })
+    } finally {
+      setOpeningType(null)
+    }
+  }
+
+  const requestDeleteDoc = (type: string) => { setDeleteErrorType(null); setDeleteConfirmType(type) }
+
+  const confirmDeleteDoc = async () => {
+    const type = deleteConfirmType
+    const doc = type ? existingDocs[type] : undefined
+    if (!type || !doc || !existing) { setDeleteConfirmType(null); return }
+    setDeletingType(type)
+    setDeleteErrorType(null)
+    try {
+      await deleteBeneficiaryDocument(existing.id, { id: doc.id, file_url: doc.file_url })
+      setExistingDocs(d => { const next = { ...d }; delete next[type]; return next })
+      setCleanupWarnings(w => { const next = { ...w }; delete next[type]; return next })
+      setDeleteConfirmType(null)
+    } catch (err: any) {
+      console.error('Failed to delete beneficiary document:', err)
+      setDeleteErrorType({ type, message: err?.message || "Couldn't delete this document. Please try again." })
+    } finally {
+      setDeletingType(null)
     }
   }
 
@@ -1395,35 +1482,71 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
       )}
 
       {step===6 && (
-        <AddWizardShell title="Documents" sub={existing ? "Upload documents now — they're saved immediately." : "Upload key documents now, or add them later from the profile."} step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
+        <AddWizardShell title="Documents" sub={existing ? "Existing documents are shown below. Upload replaces them right away." : "Upload key documents now, or add them later from the profile."} step={step} total={total} saving={saving} saveError={saveError} onClose={onBack} onBack={back} onNext={next}>
           <input ref={docFileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={onDocFileSelected} style={{ display:'none' }} />
+          {existing && existingDocsLoading && <p style={{ fontSize:12, color:C.muted, marginBottom:12 }}>Loading existing documents…</p>}
+          {existing && existingDocsError && <p style={{ fontSize:12, color:C.error, marginBottom:12 }}>{existingDocsError}</p>}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }} className="bm-2col">
             {WIZARD_DOCUMENT_CATEGORIES.map(cat=>{
               const item = docQueue[cat.type]
-              const clickable = !item || item.status==='failed'
-              const borderColor = item?.status==='failed' ? C.error : item?.status==='uploaded' ? C.success : C.border
+              const existingDoc = existing ? existingDocs[cat.type] : undefined
+              const showExisting = !!existingDoc && !item
+              const clickable = !showExisting && (!item || item.status==='failed')
+              const borderColor = item?.status==='failed' ? C.error : (item?.status==='uploaded' || showExisting) ? C.success : C.border
+              const isDeleting = deletingType===cat.type
               return (
                 <div key={cat.type} onClick={()=>{ if (clickable) triggerDocPicker(cat.type) }}
                   style={{ border:`2px dashed ${borderColor}`, borderRadius:14, padding:'18px', textAlign:'center', cursor:clickable?'pointer':'default', background:'#FAFAFA', transition:'all 0.18s', position:'relative' }}
                   onMouseEnter={e=>{ if(clickable){ e.currentTarget.style.borderColor=C.primary; e.currentTarget.style.background=`${C.primary}04` } }}
                   onMouseLeave={e=>{ e.currentTarget.style.borderColor=borderColor; e.currentTarget.style.background='#FAFAFA' }}>
-                  <div style={{ width:36,height:36,borderRadius:10,background:`${item?.status==='uploaded'?C.success:item?.status==='failed'?C.error:C.primary}10`,display:'flex',alignItems:'center',justifyContent:'center',color:item?.status==='uploaded'?C.success:item?.status==='failed'?C.error:C.primary,margin:'0 auto 8px' }}>
-                    {item?.status==='uploaded' ? I.check : I.upload}
+                  <div style={{ width:36,height:36,borderRadius:10,background:`${item?.status==='uploaded'||showExisting?C.success:item?.status==='failed'?C.error:C.primary}10`,display:'flex',alignItems:'center',justifyContent:'center',color:item?.status==='uploaded'||showExisting?C.success:item?.status==='failed'?C.error:C.primary,margin:'0 auto 8px' }}>
+                    {(item?.status==='uploaded' || showExisting) ? I.check : I.upload}
                   </div>
                   <p style={{ fontSize:12,fontWeight:700,color:C.type,fontFamily:'Manrope,sans-serif',marginBottom:3 }}>{cat.label}</p>
-                  {!item && <p style={{ fontSize:11,color:C.muted }}>PDF, JPG, PNG · Max 10 MB</p>}
+                  {!item && !showExisting && <p style={{ fontSize:11,color:C.muted }}>PDF, JPG, PNG · Max 10 MB</p>}
+
+                  {showExisting && existingDoc && (
+                    <div onClick={e=>e.stopPropagation()}>
+                      <p style={{ fontSize:11, color:C.sub, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{existingDoc.name || 'Untitled document'}</p>
+                      <p style={{ fontSize:11, fontWeight:700, marginTop:2, color:C.success }}>
+                        Uploaded{existingDoc.uploaded_at ? ' ' + new Date(existingDoc.uploaded_at).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' }) : ''}
+                      </p>
+                      {existingDoc.expiry_date && (
+                        <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>Expires {new Date(existingDoc.expiry_date).toLocaleDateString('en-GB',{ day:'numeric', month:'short', year:'numeric' })}</p>
+                      )}
+                      {cleanupWarnings[cat.type] && <p style={{ fontSize:10, color:C.warning, marginTop:4 }}>{cleanupWarnings[cat.type]}</p>}
+                      {openErrorType?.type===cat.type && <p style={{ fontSize:10, color:C.error, marginTop:4 }}>{openErrorType.message}</p>}
+                      {deleteErrorType?.type===cat.type && <p style={{ fontSize:10, color:C.error, marginTop:4 }}>{deleteErrorType.message}</p>}
+                      <div style={{ display:'flex', gap:6, justifyContent:'center', marginTop:8, flexWrap:'wrap' }}>
+                        <button onClick={()=>openExistingDoc(cat.type)} disabled={openingType===cat.type}
+                          style={{ padding:'4px 10px', borderRadius:8, border:`1px solid ${C.border}`, background:'#fff', cursor:openingType===cat.type?'wait':'pointer', fontSize:11, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>
+                          {openingType===cat.type ? 'Opening…' : 'Open'}
+                        </button>
+                        <button onClick={()=>triggerDocPicker(cat.type)} disabled={isDeleting}
+                          style={{ padding:'4px 10px', borderRadius:8, border:`1px solid ${C.border}`, background:'#fff', cursor:isDeleting?'not-allowed':'pointer', fontSize:11, fontWeight:700, color:C.primary, fontFamily:'Manrope,sans-serif' }}>
+                          Replace
+                        </button>
+                        <button onClick={()=>requestDeleteDoc(cat.type)} disabled={isDeleting}
+                          style={{ padding:'4px 10px', borderRadius:8, border:`1px solid ${C.error}30`, background:'#fff', cursor:isDeleting?'wait':'pointer', fontSize:11, fontWeight:700, color:C.error, fontFamily:'Manrope,sans-serif' }}>
+                          {isDeleting ? 'Removing…' : 'Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {item && (
                     <>
                       <p style={{ fontSize:11, color:C.sub, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{item.file.name}</p>
                       <p style={{ fontSize:11, fontWeight:700, marginTop:2, color: item.status==='uploaded'?C.success : item.status==='failed'?C.error : item.status==='uploading'?C.primary : C.muted }}>
-                        {item.status==='uploaded' ? 'Uploaded' : item.status==='failed' ? (item.error || 'Upload failed') : item.status==='uploading' ? 'Uploading…' : existing ? 'Uploading…' : 'Queued — uploads after Save'}
+                        {item.status==='uploaded' ? 'Uploaded' : item.status==='failed' ? (item.error || 'Upload failed') : item.status==='uploading' ? (existingDoc ? 'Replacing…' : 'Uploading…') : existing ? 'Uploading…' : 'Queued — uploads after Save'}
                       </p>
                       {item.status==='failed' && (
                         <button onClick={e=>{ e.stopPropagation(); retryDocUpload(cat.type) }} style={{ marginTop:6, background:'none', border:'none', cursor:'pointer', color:C.primary, fontSize:11, fontWeight:700, fontFamily:'Manrope,sans-serif' }}>Retry</button>
                       )}
                       {/* Only offered before anything real has been written — clearing
                           an already-uploaded item would just hide it locally without
-                          actually deleting the real row/file (delete isn't implemented). */}
+                          actually deleting the real row/file. A real, already-saved
+                          document is removed via the Delete button above instead. */}
                       {(item.status==='queued' || item.status==='failed') && (
                         <button onClick={e=>{ e.stopPropagation(); clearDocQueue(cat.type) }} style={{ position:'absolute', top:8, right:8, width:20, height:20, borderRadius:6, border:'none', background:'transparent', cursor:'pointer', color:C.muted, display:'flex', alignItems:'center', justifyContent:'center' }} title="Remove">{I.close}</button>
                       )}
@@ -1433,7 +1556,27 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
               )
             })}
           </div>
-          <p style={{ fontSize:12, color:C.muted, marginTop:16, textAlign:'center' }}>{existing ? 'Documents you select here upload right away.' : 'You can skip this step and upload documents later from the beneficiary profile.'}</p>
+          <p style={{ fontSize:12, color:C.muted, marginTop:16, textAlign:'center' }}>{existing ? 'Uploading a file for a slot that already has one replaces it — the old file is removed once the new one is saved.' : 'You can skip this step and upload documents later from the beneficiary profile.'}</p>
+
+          {deleteConfirmType && (
+            <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <div onClick={()=>{ if (!deletingType) setDeleteConfirmType(null) }} style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.40)', backdropFilter:'blur(3px)' }} />
+              <Card style={{ padding:28, maxWidth:380, width:'90%', position:'relative', zIndex:1 }}>
+                <div style={{ width:48, height:48, borderRadius:'50%', background:`${C.error}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.error, margin:'0 auto 14px' }}>{I.close}</div>
+                <h3 style={{ fontSize:16, fontWeight:900, color:C.type, textAlign:'center', fontFamily:'Manrope,sans-serif', marginBottom:8 }}>Delete this document?</h3>
+                <p style={{ fontSize:13, color:C.muted, textAlign:'center', lineHeight:1.6, marginBottom:22 }}>
+                  {WIZARD_DOCUMENT_CATEGORIES.find(c=>c.type===deleteConfirmType)?.label || deleteConfirmType} ({existingDocs[deleteConfirmType]?.name}) will be permanently removed. This can't be undone.
+                </p>
+                <div style={{ display:'flex', gap:10 }}>
+                  <Btn label="Cancel" variant="secondary" onClick={()=>setDeleteConfirmType(null)} disabled={!!deletingType} />
+                  <button onClick={confirmDeleteDoc} disabled={!!deletingType}
+                    style={{ flex:1, padding:'10px', borderRadius:10, border:'none', background:C.error, cursor:deletingType?'not-allowed':'pointer', color:'#fff', fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', opacity:deletingType?0.7:1 }}>
+                    {deletingType?'Deleting…':'Delete Document'}
+                  </button>
+                </div>
+              </Card>
+            </div>
+          )}
         </AddWizardShell>
       )}
 

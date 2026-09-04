@@ -1891,6 +1891,15 @@ function safeStorageFileName(name: string): string {
   return trimmed.replace(/[^a-zA-Z0-9.\-_]/g, "_")
 }
 
+// Sanitizes a document type for use as a Storage filename prefix (e.g. "Doctor
+// Recommendation" -> "Doctor-Recommendation"), so files are identifiable by
+// type in the Supabase Storage dashboard without touching the UUID collision
+// guard already in the path.
+function safeStorageDocumentType(type: string): string {
+  const trimmed = type.trim() || "Other"
+  return trimmed.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9.\-_]/g, "")
+}
+
 const BENEFICIARY_DOCUMENT_ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"]
 const BENEFICIARY_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
 
@@ -1940,7 +1949,7 @@ export async function uploadBeneficiaryDocument(
     throw new Error("File must be smaller than 10MB")
   }
 
-  const path = `${user.id}/${beneficiaryId}/${crypto.randomUUID()}-${safeStorageFileName(file.name)}`
+  const path = `${user.id}/${beneficiaryId}/${safeStorageDocumentType(documentType)}-${crypto.randomUUID()}-${safeStorageFileName(file.name)}`
 
   const { error: uploadError } = await supabase.storage
     .from("beneficiary-documents")
@@ -1994,6 +2003,199 @@ export async function getBeneficiaryDocumentUrl(path: string) {
   }
 
   return data.signedUrl
+}
+
+// Looks up the current row for one (beneficiaryId, type) slot, or null if
+// nothing has been uploaded there yet. beneficiary_documents has a real
+// UNIQUE (beneficiary_id, type) constraint (confirmed against the live
+// schema — "beneficiary_documents_beneficiary_type_key"), so there is at
+// most one row to find.
+export async function getBeneficiaryDocumentByType(beneficiaryId: string, type: string) {
+  const { data, error } = await supabase
+    .from("beneficiary_documents")
+    .select("*")
+    .eq("beneficiary_id", beneficiaryId)
+    .eq("type", type)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// "One current document per beneficiary per type" upload, used by the
+// beneficiary Edit wizard's Documents step. The new file is uploaded to
+// Storage first; only once that succeeds does the beneficiary_documents row
+// change: UPDATE the existing row for this type if one exists (never a
+// second INSERT — the UNIQUE (beneficiary_id, type) constraint would reject
+// it anyway), otherwise INSERT the first row for this slot. The old storage
+// object is removed only after the DB row already points at the new one, so
+// a failure at any earlier step leaves the previous document fully intact.
+export async function replaceBeneficiaryDocument(
+  beneficiaryId: string,
+  file: File,
+  documentType: string,
+  expiryDate?: string | null
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data: beneficiary, error: beneficiaryError } = await supabase
+    .from("beneficiaries")
+    .select("id")
+    .eq("id", beneficiaryId)
+    .eq("client_id", user.id)
+    .maybeSingle()
+
+  if (beneficiaryError) {
+    throw beneficiaryError
+  }
+
+  if (!beneficiary) {
+    throw new Error("You don't have access to this beneficiary")
+  }
+
+  if (!file) {
+    throw new Error("Please select a file")
+  }
+
+  if (!BENEFICIARY_DOCUMENT_ALLOWED_TYPES.includes(file.type)) {
+    throw new Error("Only PDF, JPG and PNG files are allowed")
+  }
+
+  if (file.size > BENEFICIARY_DOCUMENT_MAX_BYTES) {
+    throw new Error("File must be smaller than 10MB")
+  }
+
+  const existingDoc = await getBeneficiaryDocumentByType(beneficiaryId, documentType)
+
+  const path = `${user.id}/${beneficiaryId}/${safeStorageDocumentType(documentType)}-${crypto.randomUUID()}-${safeStorageFileName(file.name)}`
+
+  const { error: uploadError } = await supabase.storage
+    .from("beneficiary-documents")
+    .upload(path, file, {
+      contentType: file.type,
+      cacheControl: "3600",
+    })
+
+  if (uploadError) {
+    console.error("Beneficiary document replacement upload failed:", { path, bucket: "beneficiary-documents", error: uploadError })
+    throw uploadError
+  }
+
+  if (existingDoc) {
+    const { data, error: updateError } = await supabase
+      .from("beneficiary_documents")
+      .update({
+        name: file.name,
+        file_url: path,
+        uploaded_at: new Date().toISOString(),
+        expiry_date: expiryDate || null,
+      })
+      .eq("id", existingDoc.id)
+      .select()
+      .single()
+
+    if (updateError) {
+      console.error("beneficiary_documents update failed after a successful storage upload:", { path, docId: existingDoc.id, error: updateError })
+      // The DB still points at the old file, which is untouched — don't
+      // leave the newly uploaded (now-orphaned) object behind.
+      const { error: cleanupError } = await supabase.storage.from("beneficiary-documents").remove([path])
+      if (cleanupError) {
+        console.error("Failed to clean up newly uploaded file after a failed replace:", cleanupError)
+      }
+      throw updateError
+    }
+
+    // The DB row now points at the new file — safe to remove the old one.
+    // A failure here is non-blocking: the new document is already active,
+    // so this is surfaced to the caller as a warning, not an error.
+    let cleanupWarning: string | null = null
+    if (existingDoc.file_url && existingDoc.file_url !== path) {
+      const { error: oldRemoveError } = await supabase.storage.from("beneficiary-documents").remove([existingDoc.file_url])
+      if (oldRemoveError) {
+        console.error("Failed to remove old storage object after a successful replace:", { path: existingDoc.file_url, error: oldRemoveError })
+        cleanupWarning = "The old file couldn't be removed from storage, but the new document is now active."
+      }
+    }
+
+    return { ...data, cleanupWarning }
+  }
+
+  const { data, error: insertError } = await supabase
+    .from("beneficiary_documents")
+    .insert({
+      beneficiary_id: beneficiaryId,
+      name: file.name,
+      type: documentType,
+      file_url: path,
+      expiry_date: expiryDate || null,
+    })
+    .select()
+    .single()
+
+  if (insertError) {
+    console.error("beneficiary_documents insert failed after a successful storage upload:", { path, beneficiaryId, error: insertError })
+    const { error: cleanupError } = await supabase.storage.from("beneficiary-documents").remove([path])
+    if (cleanupError) {
+      console.error("Failed to clean up orphaned beneficiary document after failed insert:", cleanupError)
+    }
+    throw insertError
+  }
+
+  return { ...data, cleanupWarning: null as string | null }
+}
+
+// Deletes one beneficiary document: the storage object first, then its
+// beneficiary_documents row. Both the storage DELETE policy and the table's
+// DELETE policy (scoped to the owning client) were confirmed against the
+// live schema/RLS before this was implemented — see getBeneficiaryDocuments
+// / uploadBeneficiaryDocument above for the same ownership convention.
+export async function deleteBeneficiaryDocument(beneficiaryId: string, doc: { id: string; file_url: string }) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data: beneficiary, error: beneficiaryError } = await supabase
+    .from("beneficiaries")
+    .select("id")
+    .eq("id", beneficiaryId)
+    .eq("client_id", user.id)
+    .maybeSingle()
+
+  if (beneficiaryError) {
+    throw beneficiaryError
+  }
+
+  if (!beneficiary) {
+    throw new Error("You don't have access to this beneficiary")
+  }
+
+  if (doc.file_url) {
+    const { error: removeError } = await supabase.storage.from("beneficiary-documents").remove([doc.file_url])
+    if (removeError) {
+      console.error("Failed to delete beneficiary document storage object:", { path: doc.file_url, error: removeError })
+      throw removeError
+    }
+  }
+
+  const { error: deleteError } = await supabase
+    .from("beneficiary_documents")
+    .delete()
+    .eq("id", doc.id)
+    .eq("beneficiary_id", beneficiaryId)
+
+  if (deleteError) {
+    console.error("beneficiary_documents delete failed after its storage object was already removed:", { docId: doc.id, error: deleteError })
+    throw deleteError
+  }
 }
 
 // support_tickets has no booking_id column, so job context is folded into
@@ -2544,6 +2746,172 @@ export async function createCareRequestFromWizard(data: any, clientId: string) {
   return row
 }
 
+// The "care-request-attachments" bucket is private (10MB limit, confirmed
+// MIME allowlist below), so file_path stores the storage object path, never
+// a public URL — same convention as beneficiary_documents.file_url. One
+// current attachment per (care_request_id, type) slot: replacing an
+// existing slot UPDATEs its row rather than inserting a duplicate.
+export type CareRequestAttachmentType = 'Photo' | 'Medical' | 'Voice'
+
+const CARE_REQUEST_ATTACHMENT_ALLOWED_TYPES: Record<CareRequestAttachmentType, string[]> = {
+  Photo: ['image/jpeg', 'image/png'],
+  Medical: ['application/pdf', 'image/jpeg', 'image/png'],
+  Voice: ['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/webm'],
+}
+const CARE_REQUEST_ATTACHMENT_TYPE_LABEL: Record<CareRequestAttachmentType, string> = {
+  Photo: 'Only JPG and PNG images are allowed',
+  Medical: 'Only PDF, JPG and PNG files are allowed',
+  Voice: 'Only MP3, M4A, WAV and WebM audio files are allowed',
+}
+const CARE_REQUEST_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+
+// Shared with the wizard UI so client-side pre-upload validation can never
+// drift from what uploadCareRequestAttachment() actually enforces.
+export function validateCareRequestAttachmentFile(type: CareRequestAttachmentType, file: File): string | null {
+  if (!CARE_REQUEST_ATTACHMENT_ALLOWED_TYPES[type].includes(file.type)) {
+    return CARE_REQUEST_ATTACHMENT_TYPE_LABEL[type]
+  }
+  if (file.size > CARE_REQUEST_ATTACHMENT_MAX_BYTES) {
+    return "File must be smaller than 10MB"
+  }
+  return null
+}
+
+// Looks up the current row for one (careRequestId, type) slot, or null if
+// nothing has been uploaded there yet.
+export async function getCareRequestAttachmentByType(careRequestId: string, type: CareRequestAttachmentType) {
+  const { data, error } = await supabase
+    .from("care_request_attachments")
+    .select("*")
+    .eq("care_request_id", careRequestId)
+    .eq("type", type)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Uploads a real file to Storage, then UPDATEs the existing
+// care_request_attachments row for this (careRequestId, type) slot if one
+// exists, or INSERTs the first one otherwise — never a second row for the
+// same slot. The new file is uploaded before any DB write, and the old
+// storage object (on replace) is only removed after the DB row already
+// points at the new one, so a failure at any step never leaves the request
+// with no file for that type. Ownership is verified explicitly (the care
+// request must belong to the authenticated client) in addition to RLS.
+export async function uploadCareRequestAttachment(
+  careRequestId: string,
+  type: CareRequestAttachmentType,
+  file: File
+) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data: careRequest, error: careRequestError } = await supabase
+    .from("care_requests")
+    .select("id")
+    .eq("id", careRequestId)
+    .eq("client_id", user.id)
+    .maybeSingle()
+
+  if (careRequestError) {
+    throw careRequestError
+  }
+
+  if (!careRequest) {
+    throw new Error("You don't have access to this care request")
+  }
+
+  if (!file) {
+    throw new Error("Please select a file")
+  }
+
+  if (!CARE_REQUEST_ATTACHMENT_ALLOWED_TYPES[type].includes(file.type)) {
+    throw new Error(CARE_REQUEST_ATTACHMENT_TYPE_LABEL[type])
+  }
+
+  if (file.size > CARE_REQUEST_ATTACHMENT_MAX_BYTES) {
+    throw new Error("File must be smaller than 10MB")
+  }
+
+  const existingAttachment = await getCareRequestAttachmentByType(careRequestId, type)
+
+  const path = `${user.id}/${careRequestId}/${type}-${crypto.randomUUID()}-${safeStorageFileName(file.name)}`
+
+  const { error: uploadError } = await supabase.storage
+    .from("care-request-attachments")
+    .upload(path, file, {
+      contentType: file.type,
+      cacheControl: "3600",
+    })
+
+  if (uploadError) {
+    console.error("Care request attachment upload failed:", { path, bucket: "care-request-attachments", error: uploadError })
+    throw uploadError
+  }
+
+  if (existingAttachment) {
+    const { data, error: updateError } = await supabase
+      .from("care_request_attachments")
+      .update({
+        name: file.name,
+        file_path: path,
+        mime_type: file.type,
+        file_size: file.size,
+      })
+      .eq("id", existingAttachment.id)
+      .select()
+      .single()
+
+    if (updateError) {
+      console.error("care_request_attachments update failed after a successful storage upload:", { path, attachmentId: existingAttachment.id, error: updateError })
+      const { error: cleanupError } = await supabase.storage.from("care-request-attachments").remove([path])
+      if (cleanupError) {
+        console.error("Failed to clean up newly uploaded file after a failed replace:", cleanupError)
+      }
+      throw updateError
+    }
+
+    if (existingAttachment.file_path && existingAttachment.file_path !== path) {
+      const { error: oldRemoveError } = await supabase.storage.from("care-request-attachments").remove([existingAttachment.file_path])
+      if (oldRemoveError) {
+        console.error("Failed to remove old storage object after a successful replace:", { path: existingAttachment.file_path, error: oldRemoveError })
+      }
+    }
+
+    return data
+  }
+
+  const { data, error: insertError } = await supabase
+    .from("care_request_attachments")
+    .insert({
+      care_request_id: careRequestId,
+      type,
+      name: file.name,
+      file_path: path,
+      mime_type: file.type,
+      file_size: file.size,
+    })
+    .select()
+    .single()
+
+  if (insertError) {
+    console.error("care_request_attachments insert failed after a successful storage upload:", { path, careRequestId, error: insertError })
+    const { error: cleanupError } = await supabase.storage.from("care-request-attachments").remove([path])
+    if (cleanupError) {
+      console.error("Failed to clean up orphaned care request attachment after failed insert:", cleanupError)
+    }
+    throw insertError
+  }
+
+  return data
+}
 
 export async function getBeneficiaries(clientId: string) {
   const { data, error } = await supabase.from('beneficiaries').select('*').eq('client_id', clientId)
@@ -2649,18 +3017,251 @@ export async function updateApplicationStatus(applicationId: string, status: str
   if (error) throw error
 }
 
+// ─── Hiring & Negotiation ──────────────────────────────────────────────────
+// negotiation_messages already has RLS confirmed live ("Agent or client
+// involved can view/send negotiation messages") that scopes rows to the
+// client who owns the application's care request and the agent who owns the
+// application, and separately enforces sender_id = auth.uid() on insert — no
+// service-role, no client-side ownership re-check needed here.
+export type NegotiationMessage = {
+  id: string
+  application_id: string
+  sender_id: string
+  message: string
+  proposed_price: number | null
+  created_at: string
+  senderName: string
+}
+
+function mapNegotiationMessageRow(row: any): NegotiationMessage {
+  return {
+    id: row.id,
+    application_id: row.application_id,
+    sender_id: row.sender_id,
+    message: row.message,
+    proposed_price: row.proposed_price,
+    created_at: row.created_at,
+    senderName: row.sender?.full_name || 'Unknown',
+  }
+}
+
+export async function getNegotiationMessages(applicationId: string): Promise<NegotiationMessage[]> {
+  const user = await getCurrentUser()
+  if (!user) {
+    throw new Error('No authenticated user found')
+  }
+
+  const { data, error } = await supabase
+    .from('negotiation_messages')
+    .select('*, sender:profiles!sender_id(full_name)')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    throw error
+  }
+
+  return (data || []).map(mapNegotiationMessageRow)
+}
+
+const NEGOTIATION_TERMINAL_STATUSES = ['hired', 'declined', 'withdrawn']
+
+// Inserts a real negotiation_messages row. sender_id is always the
+// authenticated caller — never accepted from the UI. After a successful
+// insert, the application is nudged into "negotiating" (best-effort: a
+// failure here doesn't undo the message, which already persisted) unless
+// it's already in a terminal state, so a stray request can never move a
+// hired/declined/withdrawn application backwards.
+export async function sendNegotiationMessage(input: {
+  applicationId: string
+  message: string
+  proposedPrice?: number | null
+}): Promise<NegotiationMessage> {
+  const user = await getCurrentUser()
+  if (!user) {
+    throw new Error('No authenticated user found')
+  }
+
+  const message = input.message.trim()
+  if (!message) {
+    throw new Error('Please enter a message')
+  }
+  if (message.length > 2000) {
+    throw new Error('Message is too long')
+  }
+
+  let proposedPrice: number | null = null
+  if (input.proposedPrice !== undefined && input.proposedPrice !== null) {
+    if (!Number.isFinite(input.proposedPrice) || input.proposedPrice <= 0) {
+      throw new Error('Please enter a valid price')
+    }
+    proposedPrice = input.proposedPrice
+  }
+
+  const { data, error } = await supabase
+    .from('negotiation_messages')
+    .insert({
+      application_id: input.applicationId,
+      sender_id: user.id,
+      message,
+      proposed_price: proposedPrice,
+    })
+    .select('*, sender:profiles!sender_id(full_name)')
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  let statusQuery = supabase.from('applications').update({ status: 'negotiating' }).eq('id', input.applicationId)
+  for (const terminal of NEGOTIATION_TERMINAL_STATUSES) {
+    statusQuery = statusQuery.neq('status', terminal)
+  }
+  const { error: statusError } = await statusQuery
+  if (statusError) {
+    console.error('Failed to move application to negotiating after a new negotiation message:', statusError)
+  }
+
+  return mapNegotiationMessageRow(data)
+}
+
+// Hires an application: verifies the care request belongs to this client,
+// derives the final price from the negotiation transcript (falling back to
+// the application's own price if nothing was negotiated), and creates
+// exactly one booking.
+//
+// There is no multi-statement database transaction available from the
+// client here, so this can't be made fully atomic the way a
+// SECURITY DEFINER RPC would be. What actually prevents two concurrent hire
+// attempts from both succeeding is the single guarded UPDATE below — it only
+// matches (and only one caller can only ever win it) if the application
+// isn't already hired/declined/withdrawn, which is itself one atomic
+// statement. A pre-check against an existing booking makes retrying after a
+// partial failure (e.g. the booking insert failing after the status flip)
+// idempotent instead of creating a second booking — closing the specific gap
+// confirmed live: bookings.application_id currently has no UNIQUE
+// constraint, so a naive duplicate insert previously succeeded silently.
 export async function hireApplication(applicationId: string, careRequestId: string, agentId: string, clientId: string, beneficiaryId: string) {
-  await supabase.from('applications').update({ status: 'hired' }).eq('id', applicationId)
-  await supabase.from('care_requests').update({ status: 'assigned' }).eq('id', careRequestId)
-  const { error } = await supabase.from('bookings').insert({
-    care_request_id: careRequestId,
-    application_id: applicationId,
-    client_id: clientId,
-    agent_id: agentId,
-    beneficiary_id: beneficiaryId,
-    status: 'confirmed',
-  })
-  if (error) throw error
+  const { data: careRequest, error: careRequestError } = await supabase
+    .from('care_requests')
+    .select('id')
+    .eq('id', careRequestId)
+    .eq('client_id', clientId)
+    .maybeSingle()
+
+  if (careRequestError) {
+    throw careRequestError
+  }
+  if (!careRequest) {
+    throw new Error("You don't have access to this care request")
+  }
+
+  const { data: existingBooking, error: existingBookingError } = await supabase
+    .from('bookings')
+    .select('*')
+    .eq('application_id', applicationId)
+    .maybeSingle()
+
+  if (existingBookingError) {
+    throw existingBookingError
+  }
+  if (existingBooking) {
+    // Already hired and booked (e.g. a retry after the first attempt's
+    // response was lost) — return the existing booking instead of creating
+    // a duplicate.
+    return existingBooking
+  }
+
+  const { data: application, error: applicationError } = await supabase
+    .from('applications')
+    .select('*')
+    .eq('id', applicationId)
+    .eq('care_request_id', careRequestId)
+    .maybeSingle()
+
+  if (applicationError) {
+    throw applicationError
+  }
+  if (!application) {
+    throw new Error("This application doesn't belong to this care request")
+  }
+  if (application.status === 'declined' || application.status === 'withdrawn') {
+    throw new Error(`This application was ${application.status} and can no longer be hired.`)
+  }
+
+  const messages = await getNegotiationMessages(applicationId)
+  let finalPrice = application.price
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].proposed_price != null) {
+      finalPrice = messages[i].proposed_price
+      break
+    }
+  }
+
+  if (application.status === 'hired') {
+    // Recovering from a prior attempt that flipped the application to hired
+    // but failed before the booking was created — keep the price in sync.
+    await supabase.from('applications').update({ price: finalPrice }).eq('id', applicationId)
+  } else {
+    const { data: updatedApp, error: updateError } = await supabase
+      .from('applications')
+      .update({ status: 'hired', price: finalPrice })
+      .eq('id', applicationId)
+      .neq('status', 'hired')
+      .neq('status', 'declined')
+      .neq('status', 'withdrawn')
+      .select()
+      .maybeSingle()
+
+    if (updateError) {
+      throw updateError
+    }
+    if (!updatedApp) {
+      // Someone else won the race between our read above and this update —
+      // see if they already finished creating the booking.
+      const { data: raceBooking } = await supabase.from('bookings').select('*').eq('application_id', applicationId).maybeSingle()
+      if (raceBooking) {
+        return raceBooking
+      }
+      throw new Error('This application is no longer available to hire.')
+    }
+  }
+
+  const { error: careRequestUpdateError } = await supabase
+    .from('care_requests')
+    .update({ status: 'assigned' })
+    .eq('id', careRequestId)
+    .eq('client_id', clientId)
+
+  if (careRequestUpdateError) {
+    throw careRequestUpdateError
+  }
+
+  const { data: booking, error: bookingError } = await supabase
+    .from('bookings')
+    .insert({
+      care_request_id: careRequestId,
+      application_id: applicationId,
+      client_id: clientId,
+      agent_id: agentId,
+      beneficiary_id: beneficiaryId,
+      status: 'confirmed',
+      payment_amount: finalPrice,
+    })
+    .select()
+    .single()
+
+  if (bookingError) {
+    if ((bookingError as any).code === '23505') {
+      const { data: raceBooking } = await supabase.from('bookings').select('*').eq('application_id', applicationId).maybeSingle()
+      if (raceBooking) {
+        return raceBooking
+      }
+    }
+    throw bookingError
+  }
+
+  return booking
 }
 
 export async function getDashboardOverview(clientId: string) {

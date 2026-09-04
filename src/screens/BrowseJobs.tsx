@@ -16,6 +16,9 @@ import {
   getMyNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  getNegotiationMessages,
+  sendNegotiationMessage,
+  type NegotiationMessage,
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -985,10 +988,143 @@ function histStatusMeta(status:string) {
   return HIST_STATUS[status] ?? { color:C.muted, label:formatStatusLabel(status) }
 }
 
+// Only these application.status values still allow negotiation — a
+// hired/declined/withdrawn application is a terminal state.
+const NEGOTIABLE_STATUSES = ['applied', 'shortlisted', 'negotiating']
+
+// ─── Negotiation modal (agent side) ───────────────────────────────────────────
+// Reads/writes the same negotiation_messages table as the client's Hiring &
+// Negotiation screen (src/screens/HiringNegotiation.tsx) via the shared
+// getNegotiationMessages/sendNegotiationMessage API helpers — this modal
+// only owns its own presentation, not a second data model. There's no Accept
+// action here: only the client can hire (the app's RLS enforces the same),
+// so this is response-only.
+function AgentNegotiationModal({ application, currentUserId, onClose, onStatusChange }: {
+  application:any; currentUserId:string; onClose:()=>void; onStatusChange:(applicationId:string, status:string)=>void
+}) {
+  const [messages, setMessages] = useState<NegotiationMessage[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [price, setPrice] = useState(String(application.price ?? application.original_price ?? ''))
+  const [msg, setMsg] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setLoadError('')
+    getNegotiationMessages(application.id)
+      .then(rows => { if(!cancelled) setMessages(rows) })
+      .catch(err => { if(cancelled) return; console.error('Failed to load negotiation messages:', err); setLoadError("Couldn't load negotiation history.") })
+      .finally(() => { if(!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [application.id])
+
+  const currentOffer = (() => {
+    for(let i=messages.length-1;i>=0;i--) if(messages[i].proposed_price!=null) return messages[i].proposed_price as number
+    return Number(application.price ?? application.original_price ?? 0)
+  })()
+
+  const send = async () => {
+    if(sending) return
+    const trimmed = msg.trim()
+    const priceNum = price.trim() ? Number(price) : null
+    if(priceNum!=null && (!Number.isFinite(priceNum) || priceNum<=0)) { setSendError('Enter a valid rate'); return }
+    if(!trimmed && priceNum==null) { setSendError('Enter a message or a proposed rate'); return }
+    setSending(true)
+    setSendError('')
+    try {
+      const row = await sendNegotiationMessage({
+        applicationId: application.id,
+        message: trimmed || `Proposed LKR ${priceNum!.toLocaleString()}/hr`,
+        proposedPrice: priceNum,
+      })
+      setMessages(prev => [...prev, row])
+      setMsg('')
+      onStatusChange(application.id, 'negotiating')
+    } catch(err:any) {
+      console.error('Failed to send negotiation response:', err)
+      setSendError(err?.message || "Couldn't send your response. Please try again.")
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const clientName = application.care_request?.client?.full_name || 'the client'
+
+  return (
+    <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      <div onClick={()=>!sending&&onClose()} style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.40)', backdropFilter:'blur(3px)' }} />
+      <Card style={{ position:'relative', zIndex:1, padding:0, maxWidth:520, width:'100%', maxHeight:'86vh', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        <div style={{ padding:'18px 22px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+          <div style={{ minWidth:0 }}>
+            <h3 style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Negotiation with {clientName}</h3>
+            <p style={{ fontSize:12, color:C.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{application.care_request?.title ?? 'Care request'}</p>
+          </div>
+          <button onClick={onClose} disabled={sending} style={{ width:30, height:30, borderRadius:8, border:`1px solid ${C.border}`, background:'transparent', cursor:sending?'not-allowed':'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.muted, flexShrink:0 }}>{I.close}</button>
+        </div>
+
+        <div style={{ padding:'16px 22px', overflowY:'auto', flex:1 }}>
+          <div style={{ display:'flex', gap:10, marginBottom:16 }}>
+            <div style={{ flex:1, padding:'10px 14px', borderRadius:10, background:'#F9FAFB', border:`1px solid ${C.border}` }}>
+              <p style={{ fontSize:11, color:C.muted, marginBottom:2 }}>Original Rate</p>
+              <p style={{ fontSize:15, fontWeight:900, color:C.type }}>LKR {Number(application.original_price ?? application.price ?? 0).toLocaleString()}/hr</p>
+            </div>
+            <div style={{ flex:1, padding:'10px 14px', borderRadius:10, background:`${C.primary}08`, border:`1px solid ${C.primary}20` }}>
+              <p style={{ fontSize:11, color:C.muted, marginBottom:2 }}>Current Offer</p>
+              <p style={{ fontSize:15, fontWeight:900, color:C.primary }}>LKR {currentOffer.toLocaleString()}/hr</p>
+            </div>
+          </div>
+
+          <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:10 }}>Offer History</p>
+          {loading && <p style={{ fontSize:13, color:C.muted }}>Loading…</p>}
+          {!loading && loadError && <p style={{ fontSize:13, color:C.error }}>{loadError}</p>}
+          {!loading && !loadError && messages.length===0 && <p style={{ fontSize:13, color:C.muted }}>No offers yet. Respond below to start negotiating.</p>}
+          {!loading && !loadError && messages.length>0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {messages.map(m=>{
+                const mine = m.sender_id===currentUserId
+                return (
+                  <div key={m.id} style={{ alignSelf: mine?'flex-end':'flex-start', maxWidth:'85%' }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:3, justifyContent: mine?'flex-end':'flex-start' }}>
+                      <p style={{ fontSize:11, fontWeight:700, color:C.type }}>{mine?'You':m.senderName}</p>
+                      <span style={{ fontSize:10, color:C.muted }}>{new Date(m.created_at).toLocaleString('en-GB',{ day:'numeric', month:'short', hour:'numeric', minute:'2-digit' })}</span>
+                    </div>
+                    <div style={{ padding:'8px 12px', borderRadius:10, background: mine?`${C.primary}10`:'#F2F4F5', border:`1px solid ${mine?C.primary+'25':C.border}` }}>
+                      {m.proposed_price!=null && <p style={{ fontSize:13, fontWeight:900, color:C.type, marginBottom:2 }}>LKR {m.proposed_price.toLocaleString()}/hr</p>}
+                      <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{m.message}</p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding:'14px 22px', borderTop:`1px solid ${C.border}` }}>
+          <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:4 }}>Proposed Rate (optional)</p>
+          <input type="number" value={price} onChange={e=>setPrice(e.target.value)} disabled={sending}
+            style={{ width:'100%', padding:'9px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, color:C.type, outline:'none', boxSizing:'border-box' as const, marginBottom:10 }} />
+          <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Write your response…" rows={2} disabled={sending}
+            style={{ width:'100%', padding:'10px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', resize:'none' as const, boxSizing:'border-box' as const, marginBottom:10 }} />
+          {sendError && <p style={{ fontSize:12, color:C.error, marginBottom:10 }}>{sendError}</p>}
+          <div style={{ display:'flex', gap:8 }}>
+            <Btn label="Close" variant="secondary" onClick={onClose} disabled={sending} />
+            <div style={{ flex:1 }}><Btn label={sending?'Sending…':'Send Response'} variant="primary" onClick={send} disabled={sending} full /></div>
+          </div>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
 function AppHistory() {
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [currentUserId, setCurrentUserId] = useState('')
+  const [negotiatingId, setNegotiatingId] = useState<string|null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -996,8 +1132,11 @@ function AppHistory() {
       try {
         setLoading(true)
         setError('')
-        const data = await getMyApplications()
-        if(!cancelled) setItems(data ?? [])
+        const [data, user] = await Promise.all([getMyApplications(), getCurrentUser()])
+        if(!cancelled) {
+          setItems(data ?? [])
+          setCurrentUserId(user?.id || '')
+        }
       } catch(err) {
         if(cancelled) return
         console.error('Failed to load applications:', err)
@@ -1010,9 +1149,14 @@ function AppHistory() {
     return () => { cancelled = true }
   }, [])
 
+  const setApplicationStatus = (applicationId:string, status:string) =>
+    setItems(prev => prev.map(a => a.id===applicationId ? { ...a, status } : a))
+
   if(loading) return <LoadingCard label="Loading your applications…" />
   if(error) return <ErrorCard message={error} />
   if(items.length===0) return <EmptyCard emoji="📋" title="No Applications Yet" desc="You have not applied to any jobs. Start browsing to find your next opportunity." />
+
+  const negotiatingApp = negotiatingId ? items.find(a=>a.id===negotiatingId) : null
 
   return (
     <div style={{ padding:'28px 28px 60px', maxWidth:700, margin:'0 auto' }}>
@@ -1022,6 +1166,7 @@ function AppHistory() {
         {items.map((a:any)=>{
           const meta = histStatusMeta(a.status)
           const amount = a.price ?? a.original_price
+          const canNegotiate = NEGOTIABLE_STATUSES.includes(a.status)
           return (
             <Card key={a.id} style={{ padding:20 }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:10 }}>
@@ -1037,12 +1182,24 @@ function AppHistory() {
                   <p style={{ fontSize:10, color:C.muted, marginBottom:a.cover_letter?6:0 }}>Ref: {String(a.id).slice(0,8).toUpperCase()}</p>
                   {a.cover_letter&&<p style={{ fontSize:11, color:C.sub, lineHeight:1.5 }}>{String(a.cover_letter).slice(0,140)}{String(a.cover_letter).length>140?'…':''}</p>}
                 </div>
-                {amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.currency ?? 'LKR'} {Number(amount).toLocaleString()}</p>}
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:8, flexShrink:0 }}>
+                  {amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.currency ?? 'LKR'} {Number(amount).toLocaleString()}</p>}
+                  {canNegotiate && <Btn label="Negotiate" variant="secondary" small onClick={()=>setNegotiatingId(a.id)} />}
+                </div>
               </div>
             </Card>
           )
         })}
       </div>
+
+      {negotiatingApp && (
+        <AgentNegotiationModal
+          application={negotiatingApp}
+          currentUserId={currentUserId}
+          onClose={()=>setNegotiatingId(null)}
+          onStatusChange={setApplicationStatus}
+        />
+      )}
     </div>
   )
 }

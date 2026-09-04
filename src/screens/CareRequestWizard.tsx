@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, type ReactNode, type CSSProperties, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import logoFull from '@/imports/20260723_170707.png'
 import { supabase } from '../lib/supabaseClient'
-import { createCareRequestFromWizard } from '../lib/api'
+import { createCareRequestFromWizard, uploadCareRequestAttachment, validateCareRequestAttachmentFile, type CareRequestAttachmentType } from '../lib/api'
 import { getBeneficiaries, createBeneficiary } from '../lib/api'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import '../lib/leafletSetup'
@@ -142,25 +143,31 @@ function Toggle({ label, sub, on, set }: { label: string; sub?: string; on: bool
   )
 }
 
-function UploadZone({ label, accept, onFile, file, icon }: {
-  label: string; accept: string; onFile: (name: string) => void; file: string; icon?: ReactNode
+function UploadZone({ label, accept, onFile, file, icon, error }: {
+  label: string; accept: string; onFile: (file: File) => void; file: File | null; icon?: ReactNode
+  error?: string
 }) {
   const [drag, setDrag] = useState(false)
+  const hasError = !!error
+  const borderColor = drag ? C.primary : hasError ? C.error : file ? C.success : C.border
   return (
-    <div onDragOver={e => { e.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)}
-      onDrop={e => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files[0]; if (f) onFile(f.name) }}
-      style={{ border:`2px dashed ${drag ? C.primary : file ? C.success : C.border}`, borderRadius:14, padding:'24px 20px', textAlign:'center', background: drag ? `${C.primary}05` : file ? `${C.success}05` : '#FAFAFA', transition:'all 0.2s', cursor:'pointer' }}
-      onClick={() => { const i = document.createElement('input'); i.type = 'file'; i.accept = accept; i.onchange = (e: Event) => { const t = e.target as HTMLInputElement; if (t.files?.[0]) onFile(t.files[0].name) }; i.click() }}>
-      <div style={{ width:44, height:44, borderRadius:12, background: file ? `${C.success}12` : `${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 10px', color: file ? C.success : C.primary }}>
-        {icon ?? I.upload}
+    <div>
+      <div onDragOver={e => { e.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)}
+        onDrop={e => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files[0]; if (f) onFile(f) }}
+        style={{ border:`2px dashed ${borderColor}`, borderRadius:14, padding:'24px 20px', textAlign:'center', background: drag ? `${C.primary}05` : hasError ? `${C.error}05` : file ? `${C.success}05` : '#FAFAFA', transition:'all 0.2s', cursor:'pointer' }}
+        onClick={() => { const i = document.createElement('input'); i.type = 'file'; i.accept = accept; i.onchange = (e: Event) => { const t = e.target as HTMLInputElement; if (t.files?.[0]) onFile(t.files[0]) }; i.click() }}>
+        <div style={{ width:44, height:44, borderRadius:12, background: hasError ? `${C.error}12` : file ? `${C.success}12` : `${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 10px', color: hasError ? C.error : file ? C.success : C.primary }}>
+          {icon ?? I.upload}
+        </div>
+        {file
+          ? <p style={{ fontSize:13, fontWeight:700, color: hasError ? C.error : C.success, fontFamily:'Manrope,sans-serif', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{file.name}</p>
+          : <>
+              <p style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:3 }}>{label}</p>
+              <p style={{ fontSize:11, color:C.muted }}>Drag & drop or click · Max 10 MB</p>
+            </>
+        }
       </div>
-      {file
-        ? <p style={{ fontSize:13, fontWeight:700, color:C.success, fontFamily:'Manrope,sans-serif' }}>{file}</p>
-        : <>
-            <p style={{ fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:3 }}>{label}</p>
-            <p style={{ fontSize:11, color:C.muted }}>Drag & drop or click · Max 10 MB</p>
-          </>
-      }
+      {hasError && <p style={{ fontSize:11, color:C.error, marginTop:6, textAlign:'center' }}>{error}</p>}
     </div>
   )
 }
@@ -780,10 +787,25 @@ function Step5({ data, setData, onNext, onBack, onClose }: { data: WizardData; s
 // ══════════════════════════════════════════════════════════════════════════════
 // STEP 6 — ADDITIONAL INFO
 // ══════════════════════════════════════════════════════════════════════════════
-function Step6({ data, setData, onNext, onBack, onClose }: { data: WizardData; setData: SetData; onNext: ()=>void; onBack: ()=>void; onClose: ()=>void }) {
-  const [docFile, setDocFile] = useState('')
-  const [photoFile, setPhotoFile] = useState('')
-  const [voiceFile, setVoiceFile] = useState('')
+function Step6({ data, setData, attachments, setAttachments, onNext, onBack, onClose }: {
+  data: WizardData; setData: SetData; attachments: CareRequestAttachments; setAttachments: SetAttachments
+  onNext: ()=>void; onBack: ()=>void; onClose: ()=>void
+}) {
+  const [attachmentErrors, setAttachmentErrors] = useState<{ photo:string; medical:string; voice:string }>({ photo:'', medical:'', voice:'' })
+
+  // Reselecting a file for a slot replaces the queued File object — never
+  // queues a second one. Validated against the exact same rules
+  // uploadCareRequestAttachment() enforces server-side, so a bad file is
+  // rejected here with a visible error instead of silently uploading later.
+  const selectAttachment = (slot: keyof CareRequestAttachments, type: CareRequestAttachmentType, file: File) => {
+    const error = validateCareRequestAttachmentFile(type, file)
+    if (error) {
+      setAttachmentErrors(e => ({ ...e, [slot]: error }))
+      return
+    }
+    setAttachmentErrors(e => ({ ...e, [slot]: '' }))
+    setAttachments(a => ({ ...a, [slot]: file }))
+  }
 
   const languages = ['Sinhala','Tamil','English','Malay','Burgher']
   const genders = ['No Preference','Female','Male']
@@ -865,9 +887,9 @@ function Step6({ data, setData, onNext, onBack, onClose }: { data: WizardData; s
         <div>
           <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:12, fontFamily:'Manrope,sans-serif' }}>Attachments</p>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12 }} className="upload-3col">
-            <UploadZone label="Photo of Home / Person" accept="image/*" onFile={setPhotoFile} file={photoFile} />
-            <UploadZone label="Medical Documents" accept=".pdf,.doc,.docx" onFile={setDocFile} file={docFile} icon={I.doc} />
-            <UploadZone label="Voice Note" accept="audio/*" onFile={setVoiceFile} file={voiceFile} icon={I.mic} />
+            <UploadZone label="Photo of Home / Person" accept=".jpg,.jpeg,.png,image/jpeg,image/png" onFile={f=>selectAttachment('photo','Photo',f)} file={attachments.photo} error={attachmentErrors.photo} />
+            <UploadZone label="Medical Documents" accept=".pdf,.jpg,.jpeg,.png" onFile={f=>selectAttachment('medical','Medical',f)} file={attachments.medical} icon={I.doc} error={attachmentErrors.medical} />
+            <UploadZone label="Voice Note" accept=".mp3,.m4a,.wav,.webm,audio/mpeg,audio/mp4,audio/wav,audio/webm" onFile={f=>selectAttachment('voice','Voice',f)} file={attachments.voice} icon={I.mic} error={attachmentErrors.voice} />
           </div>
         </div>
       </div>
@@ -984,7 +1006,7 @@ function Step7({ data, setData, onNext, onBack, goTo, onClose, submitting }: { d
 // ══════════════════════════════════════════════════════════════════════════════
 // STEP 8 — CONFIRMATION
 // ══════════════════════════════════════════════════════════════════════════════
-function Step8({ onDashboard, onViewRequests }: { onDashboard: ()=>void; onViewRequests: ()=>void }) {
+function Step8({ onDashboard, onViewRequests, attachmentWarning }: { onDashboard: ()=>void; onViewRequests: ()=>void; attachmentWarning?: string }) {
   const refNo = 'CR-2025-' + String(Math.floor(Math.random() * 9000) + 1000)
 
   const timeline = [
@@ -1015,10 +1037,16 @@ function Step8({ onDashboard, onViewRequests }: { onDashboard: ()=>void; onViewR
       <h2 style={{ fontSize:32, fontWeight:900, color:C.type, letterSpacing:'-0.03em', marginBottom:8, fontFamily:'Manrope,sans-serif' }}>Request Submitted!</h2>
       <p style={{ fontSize:16, color:C.muted, maxWidth:440, lineHeight:1.6, marginBottom:8 }}>Your care request has been published. Verified care agents in the area will apply shortly.</p>
 
-      <div style={{ display:'inline-flex', alignItems:'center', gap:8, padding:'10px 20px', borderRadius:12, background:`${C.primary}10`, border:`1px solid ${C.primary}20`, marginBottom:32 }}>
+      <div style={{ display:'inline-flex', alignItems:'center', gap:8, padding:'10px 20px', borderRadius:12, background:`${C.primary}10`, border:`1px solid ${C.primary}20`, marginBottom: attachmentWarning ? 16 : 32 }}>
         <span style={{ color:C.primary, display:'flex' }}>{I.doc}</span>
         <p style={{ fontSize:14, fontWeight:800, color:C.primary, fontFamily:'Manrope,sans-serif' }}>Reference: {refNo}</p>
       </div>
+
+      {attachmentWarning && (
+        <div style={{ width:'100%', maxWidth:500, marginBottom:32 }}>
+          <InlineAlert type="warning" msg={attachmentWarning} />
+        </div>
+      )}
 
       {/* Estimated matching */}
       <div style={{ width:'100%', maxWidth:500, padding:20, borderRadius:16, border:`1px solid ${C.border}`, background:'#FAFAFA', marginBottom:24, display:'flex', gap:14, alignItems:'center', textAlign:'left' }}>
@@ -1086,12 +1114,29 @@ const defaultData: WizardData = {
 
 type SetData = React.Dispatch<React.SetStateAction<WizardData>>
 
+// Attachment File objects live at the root wizard level (not inside Step6's
+// own state, and not inside WizardData/care_requests fields) so they survive
+// Step 6 → Step 7 → Back → Step 6 navigation, which remounts each step
+// component. Real upload only happens at final submit, once a real
+// care_request id exists.
+type CareRequestAttachments = {
+  photo: File | null
+  medical: File | null
+  voice: File | null
+}
+
+const defaultAttachments: CareRequestAttachments = { photo: null, medical: null, voice: null }
+
+type SetAttachments = React.Dispatch<React.SetStateAction<CareRequestAttachments>>
+
 // ══════════════════════════════════════════════════════════════════════════════
 // ROOT COMPONENT
 // ══════════════════════════════════════════════════════════════════════════════
 export default function CareRequestWizard({ onClose }: { onClose?: () => void }) {
+  const navigate = useNavigate()
   const [step, setStep] = useState(1)
   const [data, setData] = useState<WizardData>(defaultData)
+  const [attachments, setAttachments] = useState<CareRequestAttachments>(defaultAttachments)
   const [draftSaved, setDraftSaved] = useState(false)
 
   const next = () => setStep(s => Math.min(s + 1, 8))
@@ -1103,15 +1148,46 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
 
   const [submitError, setSubmitError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [attachmentWarning, setAttachmentWarning] = useState('')
 
   const submitRequest = async () => {
     if (submitting) return
     setSubmitError('')
+    setAttachmentWarning('')
     setSubmitting(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { setSubmitError('You must be logged in.'); setSubmitting(false); return }
     try {
-      await createCareRequestFromWizard(data, user.id)
+      // The request must exist before any attachment upload — Storage paths
+      // and care_request_attachments rows both need the real id.
+      const created = await createCareRequestFromWizard(data, user.id)
+
+      const slots: { key: keyof CareRequestAttachments; type: CareRequestAttachmentType; label: string }[] = [
+        { key:'photo', type:'Photo', label:'Photo of Home / Person' },
+        { key:'medical', type:'Medical', label:'Medical Documents' },
+        { key:'voice', type:'Voice', label:'Voice Note' },
+      ]
+
+      // Uploaded one at a time, each fully awaited — never fired without
+      // awaiting. The care request already exists at this point, so a
+      // failed attachment doesn't block success, but it's never silently
+      // reported as if it succeeded either.
+      const failed: string[] = []
+      for (const slot of slots) {
+        const file = attachments[slot.key]
+        if (!file) continue
+        try {
+          await uploadCareRequestAttachment(created.id, slot.type, file)
+        } catch (err: any) {
+          console.error(`Failed to upload ${slot.type} attachment:`, err)
+          failed.push(slot.label)
+        }
+      }
+
+      if (failed.length > 0) {
+        setAttachmentWarning(`Your care request was submitted, but ${failed.length === 1 ? 'this attachment' : 'these attachments'} didn't upload: ${failed.join(', ')}. You can try adding them again later.`)
+      }
+
       next()
     } catch (err: any) {
       setSubmitError(err.message)
@@ -1125,7 +1201,7 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
   supabase.auth.getUser().then(({ data }) => setClientId(data.user?.id || ''))
   }, [])
 
-  const stepProps = { data, setData, onNext: next, onBack: back, onClose: handleClose, onSaveDraft: saveDraft, clientId }
+  const stepProps = { data, setData, attachments, setAttachments, onNext: next, onBack: back, onClose: handleClose, onSaveDraft: saveDraft, clientId }
 
   return (
     <div style={{ display:'flex', height:'100vh', overflow:'hidden', fontFamily:'Manrope,sans-serif', background:C.bg }}>
@@ -1148,7 +1224,7 @@ export default function CareRequestWizard({ onClose }: { onClose?: () => void })
               {step === 7 && <Step7 {...stepProps} onNext={submitRequest} goTo={goTo} submitting={submitting} />}
             </>
           )
-          : <Step8 onDashboard={handleClose} onViewRequests={handleClose} />
+          : <Step8 onDashboard={() => navigate('/dashboard')} onViewRequests={() => navigate('/dashboard?tab=requests')} attachmentWarning={attachmentWarning} />
         }
       </div>
 
