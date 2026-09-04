@@ -1,5 +1,8 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { getAgentsForBrowse } from '../lib/api'
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
+import L from 'leaflet'
+import '../lib/leafletSetup'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {

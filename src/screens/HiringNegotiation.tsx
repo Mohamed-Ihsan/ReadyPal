@@ -6,6 +6,8 @@ import {
   getNegotiationMessages, sendNegotiationMessage, getOrCreateDirectConversation,
   getNegotiationActivityForRequest, getBookingForApplication, type NegotiationMessage,
 } from '../lib/api'
+import { MapContainer, TileLayer, Marker } from 'react-leaflet'
+import '../lib/leafletSetup'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -184,6 +186,7 @@ const APPLICATIONS: Application[] = [
 
 let CARE_REQUEST = {
   beneficiaryId:'',
+  lat:6.9271, lng:79.8612,
   title:'Home Wellness Care — Amara Fernando',
   service:'Hospital Companion + Medication Management',
   beneficiary:'Amara Fernando, 74 · Colombo 07',
@@ -376,6 +379,17 @@ function Dashboard({ onView, apps, onSetView, negotiationActivity, hiredBooking 
             <Btn label="Compare All" variant="secondary" icon={I.compare} small onClick={()=>onSetView('compare')} />
             <Btn label="Invite Agent" variant="ghost" icon={I.send} small onClick={()=>onSetView('invitations')} />
           </div>
+        </Card>
+
+        <Card style={{ padding:22 }}>
+          <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:12, fontFamily:'Manrope,sans-serif' }}>Job Location</h3>
+          <div style={{ borderRadius:12, overflow:'hidden', height:150, border:`1px solid ${C.border}`, marginBottom:8 }}>
+            <MapContainer center={[CARE_REQUEST.lat, CARE_REQUEST.lng]} zoom={12} style={{ height:'100%', width:'100%' }} scrollWheelZoom={false}>
+              <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <Marker position={[CARE_REQUEST.lat, CARE_REQUEST.lng]} />
+            </MapContainer>
+          </div>
+          <p style={{ fontSize:12, color:C.muted, display:'flex', alignItems:'center', gap:5 }}>{I.pin}{CARE_REQUEST.beneficiary.split('·')[1]?.trim() || CARE_REQUEST.beneficiary}</p>
         </Card>
       </div>
     </div>

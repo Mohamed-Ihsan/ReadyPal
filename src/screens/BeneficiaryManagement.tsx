@@ -7,6 +7,29 @@ import {
   replaceBeneficiaryDocument, deleteBeneficiaryDocument,
 } from '../lib/api'
 import logoFull from '@/imports/20260723_170707.png'
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
+import '../lib/leafletSetup'
+import { createBeneficiary } from '../lib/api'
+
+type GeocodeResult = { lat:string; lon:string; display_name:string }
+
+async function searchAddress(query: string): Promise<GeocodeResult[]> {
+  if (!query.trim()) return []
+  const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=lk&q=${encodeURIComponent(query)}`)
+  if (!response.ok) throw new Error('Address search failed')
+  return response.json()
+}
+
+async function reverseGeocode(lat: number, lng: number): Promise<GeocodeResult | null> {
+  const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`)
+  if (!response.ok) throw new Error('Reverse geocoding failed')
+  return response.json()
+}
+
+function LocationPicker({ onSelect }: { onSelect: (lat:number, lng:number) => void }) {
+  useMapEvents({ click: event => onSelect(event.latlng.lat, event.latlng.lng) })
+  return null
+}
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -150,6 +173,7 @@ type Beneficiary = {
   notes:{id:string;title:string;body:string;pinned:boolean;private:boolean;date:string}[]
   status:'active'|'pending'|'archived'
   careStatus:string; assignedAgent:string; nextVisit:string; rating:number
+  lat?:number; lng?:number
   createdAt?:string|null
 }
 
@@ -548,6 +572,12 @@ function OverviewTab({ b }: { b:Beneficiary }) {
         <InfoRow label="Province" val={b.province} />
         <InfoRow label="Postal Code" val={b.postalCode} />
         <InfoRow label="Landmark" val={b.landmark} />
+        <div style={{ borderRadius:12, overflow:'hidden', height:140, border:`1px solid ${C.border}`, marginTop:12 }}>
+          <MapContainer center={[b.lat ?? 6.9271, b.lng ?? 79.8612]} zoom={13} style={{ height:'100%', width:'100%' }} scrollWheelZoom={false}>
+            <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            <Marker position={[b.lat ?? 6.9271, b.lng ?? 79.8612]} />
+          </MapContainer>
+        </div>
       </Card>
 
       {/* Current care */}
@@ -994,6 +1024,7 @@ type AddData = {
   ec1Name:string; ec1Rel:string; ec1Phone:string; ec1Email:string
   ec2Name:string; ec2Rel:string; ec2Phone:string; ec2Email:string
   prefLang:string[]; prefGender:string; dietary:string; religious:string; visitTimes:string; commPref:string; specialReq:string
+  lat:number; lng:number
 }
 const defaultAdd: AddData = {
   name:'',preferred:'',dob:'',gender:'',nic:'',relationship:'',
@@ -1003,6 +1034,7 @@ const defaultAdd: AddData = {
   ec1Name:'',ec1Rel:'',ec1Phone:'',ec1Email:'',
   ec2Name:'',ec2Rel:'',ec2Phone:'',ec2Email:'',
   prefLang:[],prefGender:'No Preference',dietary:'',religious:'',visitTimes:'',commPref:'',specialReq:'',
+  lat:6.9271, lng:79.8612,
 }
 
 const ADD_STEPS = [
@@ -1048,12 +1080,40 @@ function beneficiaryToAddData(b: Beneficiary): AddData {
 // every character. Keeping them at module scope keeps their identity
 // stable across renders, so React only patches props/DOM instead of
 // remounting.
-function AddWizardShell({ title, sub, canNext=true, children, step, total, saving, saveError, onClose, onBack, onNext }: {
-  title:string; sub:string; canNext?:boolean; children:ReactNode
-  step:number; total:number; saving:boolean; saveError:string
-  onClose:()=>void; onBack:()=>void; onNext:()=>void
-}) {
-  return (
+
+
+
+function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
+  const [step, setStep] = useState(1)
+  const [data, setData] = useState<AddData>(defaultAdd)
+  const [done, setDone] = useState(false)
+
+  const provinces = ['Western','Central','Southern','Northern','Eastern','North Western','North Central','Uva','Sabaragamuwa']
+  const cities: Record<string,string[]> = { Western:['Colombo','Gampaha','Kalutara'], Central:['Kandy','Matale','Nuwara Eliya'], Southern:['Galle','Matara','Hambantota'], 'North Western':['Kurunegala','Puttalam'] }
+  const langs = ['Sinhala','Tamil','English','Malay']
+  const genders = ['No Preference','Female','Male']
+
+  const total = 7
+  const next = () => step<total ? setStep(s=>s+1) : setDone(true)
+  const back = () => step>1 ? setStep(s=>s-1) : onBack()
+
+  if (done) {
+    return (
+      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:40, textAlign:'center' }}>
+        <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#00959E)`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 20px', boxShadow:`0 8px 28px ${C.primary}30` }}>
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none"><path d="M6 18l8 8 16-18" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </div>
+        <h2 style={{ fontSize:28, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:8, fontFamily:'Manrope,sans-serif' }}>Beneficiary Added!</h2>
+        <p style={{ fontSize:15, color:C.muted, maxWidth:400, lineHeight:1.6, marginBottom:32 }}><strong>{data.name||'The beneficiary'}</strong> has been added to your ReadyPal account. You can now create care requests for them.</p>
+        <div style={{ display:'flex', gap:12 }}>
+          <Btn label="View Profile" variant="primary" icon={I.eye} onClick={onDone} />
+          <Btn label="Back to Beneficiaries" variant="secondary" onClick={onBack} />
+        </div>
+      </div>
+    )
+  }
+
+  const Shell = ({ title, sub, canNext=true, children }: { title:string; sub:string; canNext?:boolean; children:ReactNode }) => (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
       {/* Top bar */}
       <div style={{ height:58, borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', padding:'0 28px', gap:12, flexShrink:0 }}>
@@ -1081,7 +1141,7 @@ function AddWizardShell({ title, sub, canNext=true, children, step, total, savin
       <div style={{ borderTop:`1px solid ${C.border}`, padding:'14px 28px', display:'flex', gap:10, background:C.surface, flexShrink:0 }}>
         <Btn label={step===1?'Cancel':'Back'} variant="secondary" icon={I.chevronL} onClick={onBack} disabled={saving} />
         <div style={{ flex:1 }} />
-        <Btn label={step===total?(saving?'Saving…':'Save Beneficiary'):'Continue'} variant="primary" icon={step===total?I.save:I.chevronR} onClick={onNext} disabled={!canNext || saving} />
+        <Btn label={step===total?(saving?'Saving…':(saving?'Saving...':'Save Beneficiary')):'Continue'} variant="primary" icon={step===total?I.save:I.chevronR} onClick={onNext} disabled={!canNext || saving || (step===total && saving)} />
       </div>
     </div>
   )
@@ -1394,9 +1454,31 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
             <FloatInput label="Postal Code" value={data.postalCode} onChange={v=>setData(d=>({...d,postalCode:v}))} />
             <FloatInput label="Nearby Landmark" value={data.landmark} onChange={v=>setData(d=>({...d,landmark:v}))} hint="e.g. Near Cargills, opposite temple" />
           </AddWizardG2>
-          <div style={{ marginTop:14, borderRadius:14, overflow:'hidden', height:140, background:`linear-gradient(135deg,${C.primary}10,${C.accent}06)`, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', gap:10, color:C.primary }}>
-            {I.pin}<p style={{ fontSize:13, fontWeight:700, color:C.type }}>Map preview will appear after saving</p>
+          <div style={{ marginTop:14, marginBottom:10 }}>
+            <input placeholder="Search for an address in Sri Lanka…"
+              onKeyDown={async e => {
+                if (e.key === 'Enter') {
+                  const results = await searchAddress((e.target as HTMLInputElement).value)
+                  if (results[0]) {
+                    const { lat, lon, display_name } = results[0]
+                    setData(d => ({ ...d, lat: parseFloat(lat), lng: parseFloat(lon), address: display_name }))
+                  }
+                }
+              }}
+              style={{ width:'100%', padding:'11px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#FAFAFA', boxSizing:'border-box' as const }} />
           </div>
+          <div style={{ borderRadius:14, overflow:'hidden', height:180, border:`1px solid ${C.border}` }}>
+            <MapContainer center={[data.lat, data.lng]} zoom={13} style={{ height:'100%', width:'100%' }}>
+              <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <Marker position={[data.lat, data.lng]} />
+              <LocationPicker onSelect={async (lat, lng) => {
+                setData(d => ({ ...d, lat, lng }))
+                const result = await reverseGeocode(lat, lng)
+                if (result?.display_name) setData(d => ({ ...d, address: result.display_name }))
+              }} />
+            </MapContainer>
+          </div>
+          <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>Search above or click the map to set the exact location.</p>
         </AddWizardShell>
       )}
 
@@ -1601,6 +1683,7 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
               </Card>
             ))}
           </div>
+          {saveError && <p style={{ marginTop:14, padding:12, borderRadius:10, background:`${C.error}08`, border:`1px solid ${C.error}30`, color:C.error, fontSize:13 }}>{saveError}</p>}
         </AddWizardShell>
       )}
     </>
@@ -1639,14 +1722,20 @@ export default function BeneficiaryManagement() {
       .catch(err => { console.error('Failed to load beneficiaries:', err); setListError("We couldn't load your beneficiaries. Please try again.") })
       .finally(() => setListLoading(false))
   }
+  const [clientId, setClientId] = useState('')
+
+  const refetch = () => { if (clientId) getBeneficiariesFull(clientId).then(setBeneficiaries).catch(console.error) }
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (data.user) {
         setClientId(data.user.id)
+        {
+        setClientId(data.user.id)
         loadBeneficiaries(data.user.id)
       } else {
         setListLoading(false)
+      }
       }
     })
   }, [])
@@ -1746,7 +1835,7 @@ export default function BeneficiaryManagement() {
         )}
         {view==='add-wizard' && (
           <div style={{ flex:1, display:'flex', flexDirection:'column', background:C.surface, overflow:'hidden' }}>
-            <AddWizard onBack={()=>setView('dashboard')} onDone={()=>{ setView('dashboard'); if (clientId) loadBeneficiaries(clientId) }} clientId={clientId} />
+            <AddWizard onBack={()=>setView('dashboard')} onDone={()=>{ setView('dashboard'); if (clientId) loadBeneficiaries(clientId) }} clientId={clientId} clientId={clientId} onSaved={refetch} />
           </div>
         )}
         {view==='edit-wizard' && profileBene && (
