@@ -3221,6 +3221,8 @@ export async function getCareRequestDetail(id: string) {
     views: data.views || 0,
     applications: appCount || 0,
     shortlisted: shortlistedCount || 0,
+    lat: data.lat || 6.9271,
+    lng: data.lng || 79.8612,
   }
 }
 

@@ -7,6 +7,29 @@ import {
   replaceBeneficiaryDocument, deleteBeneficiaryDocument,
 } from '../lib/api'
 import logoFull from '@/imports/20260723_170707.png'
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
+import '../lib/leafletSetup'
+
+
+type GeocodeResult = { lat:string; lon:string; display_name:string }
+
+async function searchAddress(query: string): Promise<GeocodeResult[]> {
+  if (!query.trim()) return []
+  const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=lk&q=${encodeURIComponent(query)}`)
+  if (!response.ok) throw new Error('Address search failed')
+  return response.json()
+}
+
+async function reverseGeocode(lat: number, lng: number): Promise<GeocodeResult | null> {
+  const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`)
+  if (!response.ok) throw new Error('Reverse geocoding failed')
+  return response.json()
+}
+
+function LocationPicker({ onSelect }: { onSelect: (lat:number, lng:number) => void }) {
+  useMapEvents({ click: event => onSelect(event.latlng.lat, event.latlng.lng) })
+  return null
+}
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -150,6 +173,7 @@ type Beneficiary = {
   notes:{id:string;title:string;body:string;pinned:boolean;private:boolean;date:string}[]
   status:'active'|'pending'|'archived'
   careStatus:string; assignedAgent:string; nextVisit:string; rating:number
+  lat?:number; lng?:number
   createdAt?:string|null
 }
 
@@ -548,6 +572,12 @@ function OverviewTab({ b }: { b:Beneficiary }) {
         <InfoRow label="Province" val={b.province} />
         <InfoRow label="Postal Code" val={b.postalCode} />
         <InfoRow label="Landmark" val={b.landmark} />
+        <div style={{ borderRadius:12, overflow:'hidden', height:140, border:`1px solid ${C.border}`, marginTop:12 }}>
+          <MapContainer center={[b.lat ?? 6.9271, b.lng ?? 79.8612]} zoom={13} style={{ height:'100%', width:'100%' }} scrollWheelZoom={false}>
+            <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            <Marker position={[b.lat ?? 6.9271, b.lng ?? 79.8612]} />
+          </MapContainer>
+        </div>
       </Card>
 
       {/* Current care */}
@@ -994,6 +1024,7 @@ type AddData = {
   ec1Name:string; ec1Rel:string; ec1Phone:string; ec1Email:string
   ec2Name:string; ec2Rel:string; ec2Phone:string; ec2Email:string
   prefLang:string[]; prefGender:string; dietary:string; religious:string; visitTimes:string; commPref:string; specialReq:string
+  lat:number; lng:number
 }
 const defaultAdd: AddData = {
   name:'',preferred:'',dob:'',gender:'',nic:'',relationship:'',
@@ -1003,6 +1034,7 @@ const defaultAdd: AddData = {
   ec1Name:'',ec1Rel:'',ec1Phone:'',ec1Email:'',
   ec2Name:'',ec2Rel:'',ec2Phone:'',ec2Email:'',
   prefLang:[],prefGender:'No Preference',dietary:'',religious:'',visitTimes:'',commPref:'',specialReq:'',
+  lat:6.9271, lng:79.8612,
 }
 
 const ADD_STEPS = [
@@ -1036,22 +1068,24 @@ function beneficiaryToAddData(b: Beneficiary): AddData {
     ec1Name:ec1?.name||'', ec1Rel:ec1?.relationship||'', ec1Phone:ec1?.phone||'', ec1Email:ec1?.email||'',
     ec2Name:ec2?.name||'', ec2Rel:ec2?.relationship||'', ec2Phone:ec2?.phone||'', ec2Email:ec2?.email||'',
     prefLang:b.prefLang, prefGender:b.prefGender||'No Preference', dietary:b.dietary, religious:b.religious, visitTimes:b.visitTimes, commPref:b.commPref, specialReq:b.specialReq,
+    lat:b.lat??6.9271, lng:b.lng??79.8612,
   }
 }
 
-// Module-scope (not declared inside AddWizard): defining these as inline
-// functions inside AddWizard's render body would give them a new function
-// identity on every re-render (i.e. every keystroke, since typing calls
-// setData). React treats a changed component identity as a different
-// component type and remounts the whole subtree — including the real
-// <input>/<textarea> DOM nodes — which is what was destroying focus after
-// every character. Keeping them at module scope keeps their identity
-// stable across renders, so React only patches props/DOM instead of
-// remounting.
-function AddWizardShell({ title, sub, canNext=true, children, step, total, saving, saveError, onClose, onBack, onNext }: {
-  title:string; sub:string; canNext?:boolean; children:ReactNode
-  step:number; total:number; saving:boolean; saveError:string
-  onClose:()=>void; onBack:()=>void; onNext:()=>void
+function AddWizardG2({ children }: { children:ReactNode }) {
+  return <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}} className="bm-2col">{children}</div>
+}
+
+// Module-scope shared step shell used by every step of the wizard below.
+// Kept outside AddWizard (like AddWizardG2) so it has a stable component
+// identity across re-renders — defining it inside AddWizard's render body
+// would give it a new identity on every keystroke (since typing calls
+// setData), which makes React remount the whole subtree — including the
+// real <input>/<textarea> DOM nodes — destroying focus after every
+// character.
+function AddWizardShell({ title, sub, canNext=true, step, total, saving, saveError, onClose, onBack, onNext, children }: {
+  title:string; sub:string; canNext?:boolean; step:number; total:number; saving:boolean; saveError:string
+  onClose:()=>void; onBack:()=>void; onNext:()=>void; children:ReactNode
 }) {
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
@@ -1085,10 +1119,6 @@ function AddWizardShell({ title, sub, canNext=true, children, step, total, savin
       </div>
     </div>
   )
-}
-
-function AddWizardG2({ children }: { children:ReactNode }) {
-  return <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}} className="bm-2col">{children}</div>
 }
 
 // Same categories/types the standalone Documents tab uses, keyed by the real
@@ -1394,9 +1424,31 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
             <FloatInput label="Postal Code" value={data.postalCode} onChange={v=>setData(d=>({...d,postalCode:v}))} />
             <FloatInput label="Nearby Landmark" value={data.landmark} onChange={v=>setData(d=>({...d,landmark:v}))} hint="e.g. Near Cargills, opposite temple" />
           </AddWizardG2>
-          <div style={{ marginTop:14, borderRadius:14, overflow:'hidden', height:140, background:`linear-gradient(135deg,${C.primary}10,${C.accent}06)`, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', gap:10, color:C.primary }}>
-            {I.pin}<p style={{ fontSize:13, fontWeight:700, color:C.type }}>Map preview will appear after saving</p>
+          <div style={{ marginTop:14, marginBottom:10 }}>
+            <input placeholder="Search for an address in Sri Lanka…"
+              onKeyDown={async e => {
+                if (e.key === 'Enter') {
+                  const results = await searchAddress((e.target as HTMLInputElement).value)
+                  if (results[0]) {
+                    const { lat, lon, display_name } = results[0]
+                    setData(d => ({ ...d, lat: parseFloat(lat), lng: parseFloat(lon), address: display_name }))
+                  }
+                }
+              }}
+              style={{ width:'100%', padding:'11px 14px', borderRadius:12, border:`1.5px solid ${C.border}`, fontSize:14, fontFamily:'Manrope,sans-serif', color:C.type, outline:'none', background:'#FAFAFA', boxSizing:'border-box' as const }} />
           </div>
+          <div style={{ borderRadius:14, overflow:'hidden', height:180, border:`1px solid ${C.border}` }}>
+            <MapContainer center={[data.lat, data.lng]} zoom={13} style={{ height:'100%', width:'100%' }}>
+              <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <Marker position={[data.lat, data.lng]} />
+              <LocationPicker onSelect={async (lat, lng) => {
+                setData(d => ({ ...d, lat, lng }))
+                const result = await reverseGeocode(lat, lng)
+                if (result?.display_name) setData(d => ({ ...d, address: result.display_name }))
+              }} />
+            </MapContainer>
+          </div>
+          <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>Search above or click the map to set the exact location.</p>
         </AddWizardShell>
       )}
 
@@ -1601,6 +1653,7 @@ function AddWizard({ onBack, onDone, clientId, existing }: { onBack:()=>void; on
               </Card>
             ))}
           </div>
+          {saveError && <p style={{ marginTop:14, padding:12, borderRadius:10, background:`${C.error}08`, border:`1px solid ${C.error}30`, color:C.error, fontSize:13 }}>{saveError}</p>}
         </AddWizardShell>
       )}
     </>
@@ -1632,13 +1685,13 @@ export default function BeneficiaryManagement() {
   const [documentsError, setDocumentsError] = useState('')
 
   const loadBeneficiaries = (id: string) => {
-    setListLoading(true)
-    setListError('')
-    return getBeneficiariesFull(id)
-      .then(setBeneficiaries)
-      .catch(err => { console.error('Failed to load beneficiaries:', err); setListError("We couldn't load your beneficiaries. Please try again.") })
-      .finally(() => setListLoading(false))
-  }
+  setListLoading(true)
+  setListError('')
+  return getBeneficiariesFull(id)
+    .then((data) => setBeneficiaries(data as Beneficiary[]))
+    .catch(err => { console.error('Failed to load beneficiaries:', err); setListError("We couldn't load your beneficiaries. Please try again.") })
+    .finally(() => setListLoading(false))
+}
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
