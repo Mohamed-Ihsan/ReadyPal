@@ -5,6 +5,8 @@ import {
   getMyProfile,
   getMyAgentDetails,
   saveMyAgentDetails,
+  onProfileUpdate,
+  resolveAvatarUrl,
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -123,13 +125,18 @@ function ProgressRing({ pct, color=C.primary, size=70, label='', sub='' }:{ pct:
 // to initials derived from their real name (see getInitials below) — never
 // a fabricated photo or placeholder initials.
 function AgentAvatar({ initials='', avatarUrl, size=52, ring=false }:{ initials?:string; avatarUrl?:string|null; size?:number; ring?:boolean }) {
+  // Wrapped again here (not just at the getMyProfile fetch site) so this
+  // component is correct no matter what shape of value a caller hands it —
+  // a raw storage path resolves to a public URL, an already-full URL
+  // passes through unchanged.
+  const resolvedUrl = resolveAvatarUrl(avatarUrl)
   const [broken, setBroken] = useState(false)
-  useEffect(() => { setBroken(false) }, [avatarUrl])
-  const showImage = !!avatarUrl && !broken
+  useEffect(() => { setBroken(false) }, [resolvedUrl])
+  const showImage = !!resolvedUrl && !broken
   return (
     <div style={{ position:'relative' as const, display:'inline-flex', flexShrink:0 }}>
       <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?C.bg:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:size*0.32, border:ring?`3px solid ${C.primary}`:undefined, boxShadow:ring?`0 0 0 3px white, 0 4px 16px ${C.primary}40`:undefined }}>
-        {showImage ? <img src={avatarUrl} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} /> : initials}
+        {showImage ? <img src={resolvedUrl as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} /> : initials}
       </div>
       {ring&&<div style={{ position:'absolute', bottom:2, right:2, width:12, height:12, borderRadius:'50%', background:C.success, border:'2px solid white' }}/>}
     </div>
@@ -1582,6 +1589,14 @@ export default function AgentProfileMgmt() {
     }
     load()
     return () => { cancelled = true }
+  }, [])
+
+  // Picks up a new photo the instant it's uploaded elsewhere (this screen
+  // has no upload control of its own) without needing a full page reload.
+  useEffect(() => {
+    return onProfileUpdate(patch => {
+      setProfile((p: any) => p ? { ...p, ...patch } : p)
+    })
   }, [])
 
   const renderMain = () => {

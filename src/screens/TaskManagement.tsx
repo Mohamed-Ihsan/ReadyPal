@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { getMyApplications } from '../lib/api'
+import { getMyApplications, getMyProfile, onProfileUpdate, resolveAvatarUrl } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -80,6 +80,25 @@ function Avatar({ name, size=40, online=false }: { name:string; size?:number; on
     <div style={{ position:'relative', flexShrink:0 }}>
       <div style={{ width:size, height:size, borderRadius:'50%', background:`${c}16`, color:c, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.33, fontFamily:'Manrope,sans-serif', border:`2px solid ${c}28` }}>{init}</div>
       {online && <span style={{ position:'absolute', bottom:1, right:1, width:12, height:12, borderRadius:'50%', background:C.success, border:'2px solid #fff' }} />}
+    </div>
+  )
+}
+
+// The authenticated agent's own avatar (as opposed to Avatar above, which
+// colors a client's initials deterministically by name — this always uses
+// the real photo when set, exactly like the same pattern in
+// CareAgentDashboard.tsx / AgentProfileMgmt.tsx / CareExecution.tsx / Navbar.tsx.
+function AgentAvatar({ name, avatarUrl, size=36 }: { name:string; avatarUrl?:string|null; size?:number }) {
+  const resolvedUrl = resolveAvatarUrl(avatarUrl)
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [resolvedUrl])
+  const showImage = !!resolvedUrl && !broken
+  const init = (name || '?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?C.bg:`${C.primary}16`, color:C.primary, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.33, fontFamily:'Manrope,sans-serif', border:`2px solid ${C.primary}28`, flexShrink:0 }}>
+      {showImage
+        ? <img src={resolvedUrl as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        : init}
     </div>
   )
 }
@@ -760,6 +779,27 @@ export default function TaskManagement() {
     return () => { cancelled = true }
   }, [])
 
+  // Real agent identity for the header avatar (this screen previously
+  // never fetched its own profile at all, so no photo or name could ever
+  // show here).
+  const [profile, setProfile] = useState<{ full_name:string|null; avatar_url:string|null }|null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getMyProfile()
+      .then(p => { if (!cancelled) setProfile(p) })
+      .catch(err => { console.error('Failed to load profile:', err) })
+    return () => { cancelled = true }
+  }, [])
+
+  // Picks up a new photo the instant it's uploaded elsewhere without
+  // needing this page to be reloaded.
+  useEffect(() => {
+    return onProfileUpdate(patch => {
+      setProfile(p => p ? { ...p, ...patch } : p)
+    })
+  }, [])
+
   // A specific ?taskId= (from a task/job card elsewhere in the app) selects
   // that exact application; otherwise falls back to the auto-picked "most
   // relevant" one.
@@ -788,10 +828,13 @@ export default function TaskManagement() {
             <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:4 }}>Task Management</p>
             <p style={{ fontSize:15, fontWeight:900, color:C.type, marginBottom:0, fontFamily:'Manrope,sans-serif' }}>{currentTask ? taskLabel(currentTask) : 'Task Management'}</p>
           </div>
-          <button onClick={()=>navigate('/agent/agentdashboard')}
-            style={{ display:'flex', gap:6, alignItems:'center', padding:'7px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, flexShrink:0 }}>
-            <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
-          </button>
+          <div style={{ display:'flex', gap:10, alignItems:'center', flexShrink:0 }}>
+            <AgentAvatar name={profile?.full_name || 'Agent'} avatarUrl={profile?.avatar_url} size={32} />
+            <button onClick={()=>navigate('/agent/agentdashboard')}
+              style={{ display:'flex', gap:6, alignItems:'center', padding:'7px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub }}>
+              <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
+            </button>
+          </div>
         </div>
         <div style={{ display:'flex', gap:0, overflowX:'auto' }}>
           {NAV.map(n=>(

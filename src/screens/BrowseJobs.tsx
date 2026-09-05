@@ -18,6 +18,8 @@ import {
   markAllNotificationsRead,
   getNegotiationMessages,
   sendNegotiationMessage,
+  onProfileUpdate,
+  resolveAvatarUrl,
   type NegotiationMessage,
 } from '../lib/api'
 
@@ -92,8 +94,22 @@ function Bdg({ label, color=C.primary, dot=false, pill=false }:{ label:string; c
   </span>
 }
 
-function Avatar({ initials='', color=C.primary, size=38 }:{ initials?:string; color?:string; size?:number }) {
-  return <div style={{ width:size, height:size, borderRadius:'50%', background:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>{initials}</div>
+function Avatar({ initials='', color=C.primary, size=38, src=null }:{ initials?:string; color?:string; size?:number; src?:string|null }) {
+  // Wrapped here (not just at the API-fetch site) so this component is
+  // correct no matter what shape of value a caller hands it — a raw
+  // storage path resolves to a public URL, an already-full URL passes
+  // through unchanged.
+  const resolvedSrc = resolveAvatarUrl(src)
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [resolvedSrc])
+  const showImage = !!resolvedSrc && !broken
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?`${color}0A`:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
+      {showImage
+        ? <img src={resolvedSrc as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        : initials}
+    </div>
+  )
 }
 
 function SectionTitle({ title, action, onAction }:{ title:string; action?:string; onAction?:()=>void }) {
@@ -146,7 +162,7 @@ function SuccessToast({ msg }:{ msg:string }) {
 // careRequestToJob below). Fields with no backing column in the current
 // schema are optional and simply omitted from the row — never faked.
 interface Job {
-  id:string; title:string; service:string; client:string; clientRating?:number; clientJobs?:number; clientVerified?:boolean
+  id:string; title:string; service:string; client:string; clientAvatarUrl?:string|null; clientRating?:number; clientJobs?:number; clientVerified?:boolean
   beneficiary?:string; beneficiaryAge?:number; location:string; district:string
   date:string; duration:string; budget:number; budgetMin?:number; currency:string; negotiable?:boolean
   urgent:boolean; featured:boolean; status:string
@@ -194,6 +210,7 @@ function careRequestToJob(row:any): Job {
     title: row.title,
     service: row.service_type,
     client: row.client?.full_name ?? 'Client',
+    clientAvatarUrl: row.client?.avatar_url ?? null,
     beneficiary: row.beneficiary?.preferred_name ?? row.beneficiary?.name ?? undefined,
     beneficiaryAge: row.beneficiary?.age ?? undefined,
     location: formatLocationLabel(row),
@@ -654,7 +671,7 @@ function JobDetails({ job, saved, applied=false, onSave, onApply, onGoToApplicat
               </button>
             </div>
             <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:clientOpen?14:0 }}>
-              <Avatar initials={job.client.split(' ').map(x=>x[0]).join('')} size={40} />
+              <Avatar initials={job.client.split(' ').map(x=>x[0]).join('')} src={job.clientAvatarUrl} size={40} />
               <div>
                 <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:2 }}>
                   <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{job.client}</p>
@@ -1714,6 +1731,14 @@ export default function BrowseJobs() {
     return () => { cancelled = true }
   }, [])
 
+  // Picks up a new photo the instant it's uploaded elsewhere (e.g. the
+  // dashboard's Settings tab) without needing this page to be reloaded.
+  useEffect(() => {
+    return onProfileUpdate(patch => {
+      setProfile((p:any) => p ? { ...p, ...patch } : p)
+    })
+  }, [])
+
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
 
   const toggleSave = async (id:string) => {
@@ -1788,7 +1813,7 @@ export default function BrowseJobs() {
         </button>
         <div style={{ padding:'18px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-            <div style={{ width:36, height:36, borderRadius:'50%', background:`${C.primary}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:14, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{initials}</div>
+            <Avatar initials={initials} src={profile?.avatar_url} size={36} />
             <div>
               <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{profile?.full_name ?? 'Care Agent'}</p>
               <p style={{ fontSize:11, color:C.success, fontWeight:700 }}>● Online</p>

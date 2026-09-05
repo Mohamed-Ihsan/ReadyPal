@@ -7,6 +7,7 @@ import {
   updateProfile,
   uploadProfilePhoto,
   onProfileUpdate,
+  resolveAvatarUrl,
   getMyAgentDetails,
   updateMyAvailability,
   getMyAgentSkills,
@@ -114,13 +115,18 @@ function Bdg({ label, color=C.primary, dot=false }:{ label:string; color?:string
 }
 
 function Avatar({ initials='', color=C.primary, size=40, src=null }:{ initials?:string; color?:string; size?:number; src?:string|null }) {
+  // Wrapped again here (not just at the getMyProfile fetch site) so this
+  // component is correct no matter what shape of value a caller hands it —
+  // a raw storage path resolves to a public URL, an already-full URL
+  // passes through unchanged.
+  const resolvedSrc = resolveAvatarUrl(src)
   const [broken, setBroken] = useState(false)
-  useEffect(() => { setBroken(false) }, [src])
-  const showImage = !!src && !broken
+  useEffect(() => { setBroken(false) }, [resolvedSrc])
+  const showImage = !!resolvedSrc && !broken
   return (
     <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?`${color}0A`:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
       {showImage
-        ? <img src={src as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        ? <img src={resolvedSrc as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
         : initials}
     </div>
   )
@@ -130,13 +136,14 @@ function Avatar({ initials='', color=C.primary, size=40, src=null }:{ initials?:
 // translucent-white styling used inside the gradient header banner (which
 // Avatar's teal-tinted background doesn't match).
 function AgentPhotoOrInitials({ src, initials='', size=52 }:{ src?:string|null; initials?:string; size?:number }) {
+  const resolvedSrc = resolveAvatarUrl(src)
   const [broken, setBroken] = useState(false)
-  useEffect(() => { setBroken(false) }, [src])
-  const showImage = !!src && !broken
+  useEffect(() => { setBroken(false) }, [resolvedSrc])
+  const showImage = !!resolvedSrc && !broken
   return (
     <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.38, color:'#fff', fontFamily:'Manrope,sans-serif' }}>
       {showImage
-        ? <img src={src as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        ? <img src={resolvedSrc as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
         : initials}
     </div>
   )

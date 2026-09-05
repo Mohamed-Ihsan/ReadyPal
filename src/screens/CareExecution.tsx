@@ -17,6 +17,8 @@ import {
   submitIncidentReport,
   endVisit as apiEndVisit,
   getOrCreateBookingConversation,
+  onProfileUpdate,
+  resolveAvatarUrl,
   type VisitStatus,
 } from '../lib/api'
 
@@ -29,6 +31,7 @@ const C = {
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I: Record<string,ReactNode> = {
+  bell:     <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1.8v.7A4.5 4.5 0 0 1 12 7v3l1 1.6H1.5L2.5 10V7a4.5 4.5 0 0 1 4.5-4.5v-.7M6 12.5a1.5 1.5 0 0 0 3 0" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>,
   check:    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7l3.5 3.5 5.5-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   clock:    <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.3"/><path d="M6.5 4.5V7l2 2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   pin:      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1a3.5 3.5 0 0 1 3.5 3.5c0 2.5-3.5 7-3.5 7S3 7 3 4.5A3.5 3.5 0 0 1 6.5 1z" stroke="currentColor" strokeWidth="1.3"/><circle cx="6.5" cy="4.5" r="1.3" fill="currentColor"/></svg>,
@@ -97,8 +100,22 @@ function Bdg({ label, color=C.primary, dot=false }:{ label:string; color?:string
   )
 }
 
-function Avatar({ initials='', color=C.primary, size=40 }:{ initials:string; color?:string; size?:number }) {
-  return <div style={{ width:size, height:size, borderRadius:'50%', background:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>{initials}</div>
+function Avatar({ initials='', color=C.primary, size=40, src=null }:{ initials:string; color?:string; size?:number; src?:string|null }) {
+  // Wrapped again here (not just at the getMyProfile fetch site) so this
+  // component is correct no matter what shape of value a caller hands it —
+  // a raw storage path resolves to a public URL, an already-full URL
+  // passes through unchanged.
+  const resolvedSrc = resolveAvatarUrl(src)
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [resolvedSrc])
+  const showImage = !!resolvedSrc && !broken
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?`${color}0A`:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
+      {showImage
+        ? <img src={resolvedSrc as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        : initials}
+    </div>
+  )
 }
 
 function SectionTitle({ title, action, onAction }:{ title:string; action?:string; onAction?:()=>void }) {
@@ -116,10 +133,6 @@ function Toast({ msg }:{ msg:string }) {
       <span style={{display:'flex',color:C.success}}>{I.check}</span>{msg}
     </div>
   )
-}
-
-function Shimmer({ w='100%', h=16 }:{ w?:string; h?:number }) {
-  return <div style={{ width:w, height:h, borderRadius:8, background:'linear-gradient(90deg,#E4E8EA 25%,#F2F4F5 50%,#E4E8EA 75%)', backgroundSize:'200% 100%', animation:'shimmer 1.6s ease-in-out infinite' }} />
 }
 
 // ─── Live clock + elapsed ─────────────────────────────────────────────────────
@@ -230,7 +243,7 @@ function formatDurationBetween(startIso?:string|null, endIso?:string|null):strin
 }
 
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'dashboard'|'startVisit'|'liveStatus'|'gps'|'timeline'|'checklist'|'medication'|'vitals'|'notes'|'media'|'documents'|'incident'|'emergency'|'clientUpdates'|'signature'|'endVisit'|'summary'|'followup'|'notifications'|'statusBadges'|'empty'|'loading'|'error'|'success'
+type SubView = 'dashboard'|'startVisit'|'liveStatus'|'gps'|'timeline'|'checklist'|'medication'|'vitals'|'notes'|'media'|'documents'|'incident'|'emergency'|'clientUpdates'|'signature'|'endVisit'|'summary'|'followup'|'notifications'
 
 const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'dashboard',     l:'Live Dashboard',     icon:I.pulse,    group:'Live Session'  },
@@ -251,12 +264,6 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'endVisit',      l:'End Visit',          icon:I.check,    group:'Completion'    },
   { k:'summary',       l:'Visit Summary',      icon:I.star,     group:'Completion'    },
   { k:'followup',      l:'Follow-up',          icon:I.refresh,  group:'Completion'    },
-  { k:'notifications', l:'Notifications',      icon:I.alert,    group:'Dev'           },
-  { k:'statusBadges',  l:'Status Badges',      icon:I.shield,   group:'Dev'           },
-  { k:'empty',         l:'Empty States',       icon:I.close,    group:'Dev'           },
-  { k:'loading',       l:'Loading States',     icon:I.refresh,  group:'Dev'           },
-  { k:'error',         l:'Error States',       icon:I.alert,    group:'Dev'           },
-  { k:'success',       l:'Success States',     icon:I.check,    group:'Dev'           },
 ]
 
 // ─── Live Dashboard ───────────────────────────────────────────────────────────
@@ -1787,106 +1794,6 @@ function Notifications({ notifications, onMarkRead, onMarkAllRead }:{
   )
 }
 
-// ─── Status Badges ────────────────────────────────────────────────────────────
-function StatusBadgesView() {
-  return (
-    <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Status Badges</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-        {(Object.entries(STATUS) as [VisitStatus, typeof STATUS[VisitStatus]][]).map(([k,s])=>(
-          <Card key={k} style={{ padding:20 }}>
-            <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
-              <div style={{ width:10, height:10, borderRadius:'50%', background:s.color }} />
-              <p style={{ fontSize:22 }}>{s.emoji}</p>
-              <p style={{ fontSize:14, fontWeight:800, color:C.type }}>{s.label}</p>
-            </div>
-            <Bdg label={s.label} color={s.color} dot />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Empty / Loading / Error / Success ────────────────────────────────────────
-function EmptyStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-        {[{e:'📸',t:'No Photos',     d:'No photos have been captured yet during this visit.'},{e:'📁',t:'No Documents',  d:'No documents have been uploaded.'},{e:'📝',t:'No Notes',      d:"You haven't added any care notes yet."},{e:'⚠️',t:'No Incidents',  d:'No incidents reported during this visit.'}].map((s,i)=>(
-          <Card key={i} style={{ padding:'40px 24px', textAlign:'center' as const }}>
-            <div style={{ fontSize:48, marginBottom:14 }}>{s.e}</div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{s.t}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7 }}>{s.d}</p>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LoadingStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-        {['Loading GPS','Loading Timeline','Uploading Photo','Saving Notes'].map((l,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:14 }}>{l}</p>
-            <Shimmer h={160} /><div style={{height:10}}/>
-            {[...Array(3)].map((_,j)=>(
-              <div key={j} style={{ display:'flex', gap:10, marginBottom:10 }}>
-                <Shimmer w="40px" h={40}/><div style={{flex:1}}><Shimmer h={12} w="65%"/><div style={{height:4}}/><Shimmer h={10} w="40%"/></div>
-              </div>
-            ))}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      {[{e:'📡',t:'GPS Lost',         d:'Location signal lost. Your last known position is National Hospital, Colombo.',col:C.error},{e:'📤',t:'Upload Failed',   d:'Photo could not be uploaded. Please retry when back online.',             col:C.warning},{e:'📶',t:'Network Lost',   d:'You are offline. Changes will sync when connection is restored.',           col:C.muted},{e:'💾',t:'Unable to Save',  d:'Care notes could not be saved. Please try again.',                         col:C.warning}].map((er,i)=>(
-        <Card key={i} style={{ padding:22, marginBottom:12, border:`1.5px solid ${er.col}30`, background:`${er.col}04` }}>
-          <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${er.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{er.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:800, color:er.col, marginBottom:4 }}>{er.t}</p>
-              <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:10 }}>{er.d}</p>
-              <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={()=>onToast('Retrying…')} />
-            </div>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
-function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      {[{e:'🏥',t:'Visit Started',       d:'Check-in confirmed at National Hospital. Mohamed Ihsan notified.',col:C.success},{e:'✅',t:'Checklist Updated',  d:'Purchase Medication marked complete.',                          col:C.primary},{e:'💊',t:'Medication Logged',  d:'Paracetamol 500mg marked as purchased and collected.',          col:C.accent},{e:'📸',t:'Photo Uploaded',    d:'Hospital receipt uploaded to Document Center.',                col:C.info},{e:'📋',t:'Report Submitted',   d:'Lab results uploaded and shared with Mohamed Ihsan.',           col:C.warning},{e:'🎉',t:'Visit Completed',    d:'Hospital Appointment Assistance for Nimal Perera — done!',      col:C.success}].map((s,i)=>(
-        <Card key={i} style={{ padding:20, marginBottom:10, border:`1.5px solid ${s.col}30`, background:`${s.col}04` }}>
-          <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${s.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:s.col, marginBottom:2 }}>{s.t}</p>
-              <p style={{ fontSize:12, color:C.sub }}>{s.d}</p>
-            </div>
-            <span style={{ color:s.col, display:'flex', transform:'scale(1.2)' }}>{I.check}</span>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareExecution() {
   const navigate = useNavigate()
@@ -1897,7 +1804,7 @@ export default function CareExecution() {
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const [profile, setProfile] = useState<{ full_name:string|null }|null>(null)
+  const [profile, setProfile] = useState<{ full_name:string|null; avatar_url:string|null }|null>(null)
   const [booking, setBooking] = useState<ActiveBooking|null>(null)
   const [visitLog, setVisitLog] = useState<VisitLog|null>(null)
   const [notifications, setNotifications] = useState<NotificationRow[]|null>(null)
@@ -1953,6 +1860,14 @@ export default function CareExecution() {
     load()
     return () => { cancelled = true }
   }, [requestedBookingId])
+
+  // Picks up a new photo the instant it's uploaded elsewhere (e.g. the
+  // dashboard's Settings tab) without needing this page to be reloaded.
+  useEffect(() => {
+    return onProfileUpdate(patch => {
+      setProfile(p => p ? { ...p, ...patch } : p)
+    })
+  }, [])
 
   async function handleStartVisit(gps:{lat:number;lng:number}|null) {
     if(!booking) return
@@ -2090,8 +2005,7 @@ export default function CareExecution() {
     notes:'Care Notes', media:'Photo & Media', documents:'Documents', incident:'Incident Report',
     emergency:'Emergency Mode', clientUpdates:'Client Updates', signature:'Digital Signature',
     endVisit:'End Visit', summary:'Visit Summary', followup:'Follow-up',
-    notifications:'Notifications', statusBadges:'Status Badges',
-    empty:'Empty States', loading:'Loading States', error:'Error States', success:'Success States',
+    notifications:'Notifications',
   }
 
   const renderContent = () => {
@@ -2121,11 +2035,6 @@ export default function CareExecution() {
       case 'summary':       return <VisitSummary booking={booking} visitLog={visitLog} profile={profile} onNav={setSub} onToast={showToast} />
       case 'followup':      return <Followup onToast={showToast} />
       case 'notifications': return <Notifications notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
-      case 'statusBadges':  return <StatusBadgesView />
-      case 'empty':         return <EmptyStates />
-      case 'loading':       return <LoadingStates />
-      case 'error':         return <ErrorStates onToast={showToast} />
-      case 'success':       return <SuccessStates onToast={showToast} />
       default: return null
     }
   }
@@ -2139,15 +2048,25 @@ export default function CareExecution() {
           <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
         </button>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
-          <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-            <Avatar initials={initials(profile?.full_name)} size={36} />
-            <div>
-              <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{profile?.full_name || 'Agent'}</p>
-              <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                <div style={{ width:7, height:7, borderRadius:'50%', background:STATUS[currentStatus].color, animation:'pulse-dot 2s ease-in-out infinite' }} />
-                <p style={{ fontSize:11, fontWeight:700, color:STATUS[currentStatus].color }}>{STATUS[currentStatus].emoji} {STATUS[currentStatus].label}</p>
+          <div style={{ display:'flex', gap:10, alignItems:'center', justifyContent:'space-between' }}>
+            <div style={{ display:'flex', gap:10, alignItems:'center', minWidth:0 }}>
+              <Avatar initials={initials(profile?.full_name)} src={profile?.avatar_url} size={36} />
+              <div style={{ minWidth:0 }}>
+                <p style={{ fontSize:13, fontWeight:800, color:C.type, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' as const }}>{profile?.full_name || 'Agent'}</p>
+                <div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                  <div style={{ width:7, height:7, borderRadius:'50%', background:STATUS[currentStatus].color, animation:'pulse-dot 2s ease-in-out infinite' }} />
+                  <p style={{ fontSize:11, fontWeight:700, color:STATUS[currentStatus].color, whiteSpace:'nowrap' as const }}>{STATUS[currentStatus].emoji} {STATUS[currentStatus].label}</p>
+                </div>
               </div>
             </div>
+            {/* Real-time visit alerts — relocated here from the old Dev
+                section so it stays reachable from every sub-view, not just
+                the live dashboard. */}
+            <button onClick={()=>setSub(s=>s==='notifications'?'dashboard':'notifications')} title="Notifications"
+              style={{ position:'relative' as const, flexShrink:0, width:32, height:32, borderRadius:9, border:'none', background:sub==='notifications'?`${C.primary}10`:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:sub==='notifications'?C.primary:C.muted }}>
+              {I.bell}
+              {unreadCount>0&&<div style={{ position:'absolute', top:2, right:2, minWidth:15, height:15, borderRadius:99, background:C.error, color:'#fff', fontSize:8, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 3px' }}>{unreadCount}</div>}
+            </button>
           </div>
         </div>
         {groups.map(group=>(
@@ -2160,7 +2079,6 @@ export default function CareExecution() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${n.k==='emergency'?C.error:C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?(n.k==='emergency'?C.error:C.primary):C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${n.k==='emergency'?C.error:C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?(n.k==='emergency'?C.error:C.primary):C.muted }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='notifications'&&unreadCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{unreadCount}</div>}
                   {n.k==='emergency'&&<div style={{ marginLeft:'auto', width:8, height:8, borderRadius:'50%', background:C.error, animation:'pulse-dot 1.5s ease-in-out infinite' }}/>}
                 </button>
               )

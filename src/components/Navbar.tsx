@@ -2,7 +2,7 @@ import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabaseClient'
-import { getCurrentProfile, onProfileUpdate } from '../lib/api'
+import { getCurrentProfile, onProfileUpdate, resolveAvatarUrl } from '../lib/api'
 import logoFull from '@/imports/20260723_170707.png'
 
 // Extracted from MarketingWebsite.tsx so it can be rendered once, globally,
@@ -124,9 +124,14 @@ function initialsOf(profile: any, fallbackEmail?: string | null): string {
 
 function Avatar({ profile, email, size = 36 }: { profile: any; email?: string | null; size?: number }) {
   const initials = initialsOf(profile, email)
+  // Wrapped again here (not just at the getCurrentProfile/getMyProfile fetch
+  // site) so this component renders correctly no matter what shape of
+  // profile object a future caller hands it — a raw storage path resolves
+  // to a public URL, an already-full URL passes through unchanged.
+  const resolvedUrl = resolveAvatarUrl(profile?.avatar_url)
   const [broken, setBroken] = useState(false)
-  useEffect(() => { setBroken(false) }, [profile?.avatar_url])
-  const showImage = !!profile?.avatar_url && !broken
+  useEffect(() => { setBroken(false) }, [resolvedUrl])
+  const showImage = !!resolvedUrl && !broken
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%', overflow: 'hidden', flexShrink: 0,
@@ -136,7 +141,7 @@ function Avatar({ profile, email, size = 36 }: { profile: any; email?: string | 
       border: '1.5px solid rgba(0,115,122,0.25)',
     }}>
       {showImage
-        ? <img src={profile.avatar_url} alt={profile.full_name || 'Profile'} onError={() => setBroken(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        ? <img src={resolvedUrl as string} alt={profile.full_name || 'Profile'} onError={() => setBroken(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         : initials}
     </div>
   )

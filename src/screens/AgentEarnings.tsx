@@ -7,9 +7,6 @@ import {
   getMyPayouts,
   getMyBankAccount,
   saveMyBankAccount,
-  getMyNotifications,
-  markNotificationRead,
-  markAllNotificationsRead,
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -103,10 +100,6 @@ function Toast({ msg }:{ msg:string }) {
       <span style={{display:'flex',color:C.success}}>{I.check}</span>{msg}
     </div>
   )
-}
-
-function Shimmer({ w='100%', h=16 }:{ w?:string; h?:number }) {
-  return <div style={{ width:w, height:h, borderRadius:8, background:'linear-gradient(90deg,#E4E8EA 25%,#F2F4F5 50%,#E4E8EA 75%)', backgroundSize:'200% 100%', animation:'shimmer 1.6s ease-in-out infinite' }} />
 }
 
 // ─── SVG Bar Chart ────────────────────────────────────────────────────────────
@@ -213,8 +206,6 @@ type BankAccount = {
   payout_preference:string|null; is_default:boolean|null
   verification_status:string|null; verified_at:string|null
 }
-
-type NotificationRow = { id:string; type:string|null; title:string|null; body:string|null; read:boolean; action_url:string|null; created_at:string }
 
 // ─── Date / formatting helpers ─────────────────────────────────────────────────
 // The earnings date for a booking is scheduled_date when present, falling
@@ -1190,153 +1181,8 @@ function Goals() {
   return <NotConfigured title="Goals" message="Earnings and visit targets have not been configured for this account. No goal data currently exists." />
 }
 
-// ─── Notifications ────────────────────────────────────────────────────────────
-// Backed by getMyNotifications() / markNotificationRead() / markAllNotificationsRead() —
-// the same real notifications feed used elsewhere in the app, not a
-// fabricated earnings-specific event log.
-function EarningsNotifications({ notifications, onMarkRead, onMarkAllRead }:{
-  notifications:NotificationRow[]|null; onMarkRead:(id:string)=>void; onMarkAllRead:()=>void
-}) {
-  if(notifications===null) {
-    return (
-      <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
-        <p style={{ fontSize:13, color:C.muted }}>Loading notifications…</p>
-      </div>
-    )
-  }
-  const unread = notifications.filter(n=>!n.read).length
-  return (
-    <div style={{ maxWidth:660, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22 }}>
-        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notifications</h2>
-        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
-          {unread>0&&<Bdg label={`${unread} new`} color={C.primary} dot />}
-          {unread>0&&<Btn label="Mark All Read" variant="ghost" small onClick={onMarkAllRead} />}
-        </div>
-      </div>
-      {notifications.length===0 ? (
-        <Card style={{ padding:40, textAlign:'center' as const }}>
-          <p style={{ fontSize:13, color:C.muted }}>No notifications yet.</p>
-        </Card>
-      ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-          {notifications.map(n=>(
-            <Card key={n.id} hover onClick={()=>{ if(!n.read) onMarkRead(n.id) }} style={{ padding:18, background:n.read?C.surface:`${C.primary}04`, border:`1px solid ${n.read?C.border:C.primary+'25'}` }}>
-              <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-                <div style={{ width:42, height:42, borderRadius:12, background:`${C.primary}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>🔔</div>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3, gap:8 }}>
-                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{n.title || 'Notification'}</p>
-                      {!n.read&&<div style={{ width:7, height:7, borderRadius:'50%', background:C.primary }}/>}
-                    </div>
-                    <p style={{ fontSize:10, color:C.muted, whiteSpace:'nowrap' as const }}>{formatDateLabel(n.created_at)}</p>
-                  </div>
-                  <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{n.body || ''}</p>
-                </div>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Status Badges ────────────────────────────────────────────────────────────
-function StatusBadgesView() {
-  return (
-    <div style={{ maxWidth:700, margin:'0 auto', padding:'24px 28px 60px' }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:22 }}>Status Badges</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }} className="ew-4col">
-        {(Object.entries(PAY_STATUS) as [string, {color:string;label:string}][]).map(([k,s])=>(
-          <Card key={k} style={{ padding:22, textAlign:'center' as const }}>
-            <div style={{ width:12, height:12, borderRadius:'50%', background:s.color, margin:'0 auto 10px' }} />
-            <Bdg label={s.label} color={s.color} dot />
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Empty / Loading / Error / Success ────────────────────────────────────────
-function EmptyStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Empty States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-        {[{e:'💰',t:'No Earnings',      d:"You haven't earned anything yet. Complete your first job to get started."},{e:'📋',t:'No Transactions',  d:'No transactions found for the selected period.'},{e:'🎁',t:'No Bonuses',       d:"You haven't earned any bonuses yet. Keep up the great work!"},{e:'💸',t:'No Withdrawals',   d:"You haven't made any withdrawals yet."},{e:'📊',t:'No Reports',       d:'No financial reports are available for this period.'}].map((s,i)=>(
-          <Card key={i} style={{ padding:'38px 22px', textAlign:'center' as const }}>
-            <div style={{ fontSize:48, marginBottom:14 }}>{s.e}</div>
-            <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:8 }}>{s.t}</p>
-            <p style={{ fontSize:12, color:C.muted, lineHeight:1.7 }}>{s.d}</p>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function LoadingStates() {
-  return (
-    <div style={{ padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Loading States</h2>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
-        {['Loading Wallet','Loading Transactions','Loading Analytics','Loading Payouts'].map((l,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <p style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:14 }}>{l}</p>
-            <Shimmer h={80} /><div style={{height:10}}/>
-            {[...Array(4)].map((_,j)=><div key={j} style={{marginBottom:9}}><Shimmer h={14} w={`${60+j*10}%`}/></div>)}
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ErrorStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Error States</h2>
-      {[{e:'💸',t:'Withdrawal Failed',         d:'Your withdrawal could not be processed. Please check your bank account details.',col:C.error},{e:'🏦',t:'Bank Verification Failed',  d:'We could not verify your bank account. Please re-enter your details.',           col:C.warning},{e:'❌',t:'Payment Error',             d:'A payment could not be completed. Please contact ReadyPal Support.',             col:C.error},{e:'📶',t:'Connection Lost',          d:'Unable to load your wallet data. Check your internet connection.',               col:C.muted}].map((er,i)=>(
-        <Card key={i} style={{ padding:22, marginBottom:12, border:`1.5px solid ${er.col}30`, background:`${er.col}04` }}>
-          <div style={{ display:'flex', gap:14, alignItems:'flex-start' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${er.col}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{er.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:800, color:er.col, marginBottom:4 }}>{er.t}</p>
-              <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:10 }}>{er.d}</p>
-              <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={()=>onToast('Retrying…')} />
-            </div>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
-function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
-  return (
-    <div style={{ maxWidth:600, margin:'0 auto', padding:'28px 28px 60px' }}>
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>Success States</h2>
-      {[{e:'💸',t:'Withdrawal Submitted',  d:'LKR 32,450 is on its way to your Peoples Bank account.',    col:C.success},{e:'🏦',t:'Bank Account Added',    d:"People's Bank account ••4231 has been verified and added.",  col:C.primary},{e:'🎁',t:'Bonus Earned',         d:"You've unlocked the Monthly Top Agent bonus — LKR 15,000!", col:C.accent},{e:'✅',t:'Payout Completed',     d:'LKR 45,000 deposited to your bank account on 15 Jan.',      col:C.success}].map((s,i)=>(
-        <Card key={i} style={{ padding:20, marginBottom:10, border:`1.5px solid ${s.col}30`, background:`${s.col}04` }}>
-          <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-            <div style={{ width:44, height:44, borderRadius:14, background:`${s.col}12`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{s.e}</div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:s.col, marginBottom:2 }}>{s.t}</p>
-              <p style={{ fontSize:12, color:C.sub }}>{s.d}</p>
-            </div>
-            <span style={{ color:s.col, display:'flex', transform:'scale(1.2)' }}>{I.check}</span>
-          </div>
-        </Card>
-      ))}
-    </div>
-  )
-}
-
 // ─── Sub-view type ────────────────────────────────────────────────────────────
-type SubView = 'dashboard'|'analytics'|'jobEarnings'|'transactions'|'txnDetail'|'payouts'|'withdraw'|'bankAccounts'|'bonuses'|'performance'|'reports'|'tax'|'referrals'|'goals'|'notifications'|'statusBadges'|'empty'|'loading'|'error'|'success'
+type SubView = 'dashboard'|'analytics'|'jobEarnings'|'transactions'|'txnDetail'|'payouts'|'withdraw'|'bankAccounts'|'bonuses'|'performance'|'reports'|'tax'|'referrals'|'goals'
 
 const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'dashboard',   l:'Earnings Overview',  icon:I.wallet,   group:'Earnings'    },
@@ -1352,16 +1198,10 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
   { k:'referrals',   l:'Referrals',           icon:I.people,   group:'Incentives'  },
   { k:'reports',     l:'Financial Reports',   icon:I.download, group:'Reports'     },
   { k:'tax',         l:'Tax Center',          icon:I.alert,    group:'Reports'     },
-  { k:'notifications',l:'Notifications',      icon:I.alert,    group:'Reports'     },
-  { k:'statusBadges',l:'Status Badges',       icon:I.check,    group:'Dev'         },
-  { k:'empty',       l:'Empty States',        icon:I.alert,    group:'Dev'         },
-  { k:'loading',     l:'Loading States',      icon:I.refresh,  group:'Dev'         },
-  { k:'error',       l:'Error States',        icon:I.alert,    group:'Dev'         },
-  { k:'success',     l:'Success States',      icon:I.check,    group:'Dev'         },
 ]
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
-const VALID_SUBVIEWS: SubView[] = ['dashboard','analytics','jobEarnings','transactions','txnDetail','payouts','withdraw','bankAccounts','bonuses','performance','reports','tax','referrals','goals','notifications','statusBadges','empty','loading','error','success']
+const VALID_SUBVIEWS: SubView[] = ['dashboard','analytics','jobEarnings','transactions','txnDetail','payouts','withdraw','bankAccounts','bonuses','performance','reports','tax','referrals','goals']
 
 export default function AgentEarnings() {
   const navigate = useNavigate()
@@ -1380,27 +1220,25 @@ export default function AgentEarnings() {
   const [transactions, setTransactions] = useState<TransactionRow[]>([])
   const [payouts, setPayouts] = useState<PayoutRow[]>([])
   const [bankAccount, setBankAccount] = useState<BankAccount|null>(null)
-  const [notifications, setNotifications] = useState<NotificationRow[]|null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string|null>(null)
 
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
   const groups = [...new Set(NAV.map(n=>n.group))]
 
-  // Loads real profile/earnings/transaction/payout/bank/notification data
-  // once on mount. Nothing here is mocked — a failure surfaces as
-  // loadError rather than falling back to demo content.
+  // Loads real profile/earnings/transaction/payout/bank data once on
+  // mount. Nothing here is mocked — a failure surfaces as loadError rather
+  // than falling back to demo content.
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
-        const [profileData, bookingsData, txnData, payoutData, bankData, notifData] = await Promise.all([
+        const [profileData, bookingsData, txnData, payoutData, bankData] = await Promise.all([
           getMyProfile(),
           getMyCompletedBookings(),
           getMyTransactions(),
           getMyPayouts(),
           getMyBankAccount(),
-          getMyNotifications(),
         ])
         if(cancelled) return
         setProfile(profileData)
@@ -1408,7 +1246,6 @@ export default function AgentEarnings() {
         setTransactions(txnData as unknown as TransactionRow[])
         setPayouts(payoutData as PayoutRow[])
         setBankAccount(bankData as BankAccount|null)
-        setNotifications(notifData as NotificationRow[])
       } catch(e:any) {
         if(!cancelled) setLoadError(e?.message || 'Failed to load earnings data')
       } finally {
@@ -1419,25 +1256,7 @@ export default function AgentEarnings() {
     return () => { cancelled = true }
   }, [])
 
-  async function handleMarkRead(id:string) {
-    try {
-      await markNotificationRead(id)
-      setNotifications(ns => ns ? ns.map(n=>n.id===id?{ ...n, read:true }:n) : ns)
-    } catch(e:any) {
-      showToast(e?.message || 'Could not update notification')
-    }
-  }
-  async function handleMarkAllRead() {
-    try {
-      await markAllNotificationsRead()
-      setNotifications(ns => ns ? ns.map(n=>({ ...n, read:true })) : ns)
-    } catch(e:any) {
-      showToast(e?.message || 'Could not update notifications')
-    }
-  }
-
   const summary = useMemo(()=>computeEarningsSummary(completedBookings, new Date()), [completedBookings])
-  const unreadCount = notifications?.filter(n=>!n.read).length ?? 0
 
   const renderMain = () => {
     if(loading) {
@@ -1463,12 +1282,6 @@ export default function AgentEarnings() {
       case 'tax':          return <TaxCenter annualIncome={summary.year} monthlyChart={summary.monthlyChart} onToast={showToast} />
       case 'referrals':    return <Referrals />
       case 'goals':        return <Goals />
-      case 'notifications':return <EarningsNotifications notifications={notifications} onMarkRead={handleMarkRead} onMarkAllRead={handleMarkAllRead} />
-      case 'statusBadges': return <StatusBadgesView />
-      case 'empty':        return <EmptyStates />
-      case 'loading':      return <LoadingStates />
-      case 'error':        return <ErrorStates onToast={showToast} />
-      case 'success':      return <SuccessStates onToast={showToast} />
       default: return null
     }
   }
@@ -1496,7 +1309,6 @@ export default function AgentEarnings() {
                   style={{ width:'100%', display:'flex', gap:9, alignItems:'center', padding:'9px 18px', border:'none', background:active?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?700:500, color:active?C.primary:C.type, textAlign:'left' as const, borderLeft:active?`3px solid ${C.primary}`:'3px solid transparent', transition:'all 0.12s' }}>
                   <span style={{ display:'flex', color:active?C.primary:C.muted }}>{n.icon}</span>
                   {n.l}
-                  {n.k==='notifications'&&unreadCount>0&&<div style={{ marginLeft:'auto', minWidth:18, height:18, borderRadius:99, background:C.error, color:'#fff', fontSize:9, fontWeight:900, display:'flex', alignItems:'center', justifyContent:'center', padding:'0 5px' }}>{unreadCount}</div>}
                 </button>
               )
             })}
