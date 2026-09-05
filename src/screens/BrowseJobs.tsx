@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import {
@@ -30,6 +30,7 @@ const C = {
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I: Record<string,ReactNode> = {
+  chevL:    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   search:   <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.4"/><path d="M10.5 10.5l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>,
   filter:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1.5 3.5h11M4 7h6M6.5 10.5h1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
   pin:      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1a3.5 3.5 0 0 1 3.5 3.5c0 2.5-3.5 7-3.5 7S3 7 3 4.5A3.5 3.5 0 0 1 6.5 1z" stroke="currentColor" strokeWidth="1.2"/><circle cx="6.5" cy="4.5" r="1.2" fill="currentColor"/></svg>,
@@ -988,9 +989,13 @@ function histStatusMeta(status:string) {
   return HIST_STATUS[status] ?? { color:C.muted, label:formatStatusLabel(status) }
 }
 
-// Only these application.status values still allow negotiation — a
-// hired/declined/withdrawn application is a terminal state.
-const NEGOTIABLE_STATUSES = ['applied', 'shortlisted', 'negotiating']
+// Negotiation is only "active" once a message has actually been exchanged —
+// the DB flips an application's status to 'negotiating' the moment either
+// side sends a real negotiation_messages row (see sendNegotiationMessage in
+// lib/api.ts), so this is equivalent to "a counter-offer exists" without a
+// second query. 'applied'/'shortlisted' just means the client hasn't
+// responded yet — no Negotiate action, just an honest pending state.
+const NEGOTIABLE_STATUSES = ['negotiating']
 
 // ─── Negotiation modal (agent side) ───────────────────────────────────────────
 // Reads/writes the same negotiation_messages table as the client's Hiring &
@@ -1119,12 +1124,12 @@ function AgentNegotiationModal({ application, currentUserId, onClose, onStatusCh
   )
 }
 
-function AppHistory() {
+function AppHistory({ initialNegotiateId=null }:{ initialNegotiateId?:string|null }) {
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [currentUserId, setCurrentUserId] = useState('')
-  const [negotiatingId, setNegotiatingId] = useState<string|null>(null)
+  const [negotiatingId, setNegotiatingId] = useState<string|null>(initialNegotiateId)
 
   useEffect(() => {
     let cancelled = false
@@ -1167,6 +1172,7 @@ function AppHistory() {
           const meta = histStatusMeta(a.status)
           const amount = a.price ?? a.original_price
           const canNegotiate = NEGOTIABLE_STATUSES.includes(a.status)
+          const isPending = a.status==='applied' || a.status==='shortlisted'
           return (
             <Card key={a.id} style={{ padding:20 }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:10 }}>
@@ -1184,7 +1190,9 @@ function AppHistory() {
                 </div>
                 <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:8, flexShrink:0 }}>
                   {amount!=null&&<p style={{ fontSize:14, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{a.care_request?.currency ?? 'LKR'} {Number(amount).toLocaleString()}</p>}
-                  {canNegotiate && <Btn label="Negotiate" variant="secondary" small onClick={()=>setNegotiatingId(a.id)} />}
+                  {canNegotiate
+                    ? <Btn label="Negotiate" variant="secondary" small onClick={()=>setNegotiatingId(a.id)} />
+                    : isPending && <p style={{ fontSize:11, fontWeight:700, color:C.muted, fontStyle:'italic' as const }}>Application Pending</p>}
                 </div>
               </div>
             </Card>
@@ -1583,7 +1591,13 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode }[] = [
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function BrowseJobs() {
   const navigate = useNavigate()
-  const [sub, setSub] = useState<SubView>('marketplace')
+  // Deep-link support: a link from elsewhere in the app (the dashboard's
+  // "My Applications" list) can jump straight to a specific application's
+  // negotiation modal via ?negotiate=<applicationId>, landing on the
+  // History tab where that application actually lives.
+  const [searchParams] = useSearchParams()
+  const initialNegotiateId = searchParams.get('negotiate')
+  const [sub, setSub] = useState<SubView>(initialNegotiateId ? 'history' : 'marketplace')
   const [viewingId, setViewingId] = useState<string|null>(null)
   const [applyId, setApplyId] = useState<string|null>(null)
   const [completedApplication, setCompletedApplication] = useState<{ jobId:string; applicationId:string }|null>(null)
@@ -1754,7 +1768,7 @@ export default function BrowseJobs() {
     switch(sub) {
       case 'marketplace':     return <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}><Marketplace jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} agentLat={agentLat} agentLng={agentLng} savedTravelRadiusKm={agentTravelRadiusKm} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'saved':           return <div style={{flex:1,overflowY:'auto'}}><SavedJobs jobs={savedJobs} loading={savedLoading} error={savedError} saved={saved} appliedJobIds={appliedJobIds} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
-      case 'history':         return <div style={{flex:1,overflowY:'auto'}}><AppHistory /></div>
+      case 'history':         return <div style={{flex:1,overflowY:'auto'}}><AppHistory initialNegotiateId={initialNegotiateId} /></div>
       case 'recommendations': return <div style={{flex:1,overflowY:'auto'}}><Recommendations jobs={jobs} loading={jobsLoading} error={jobsError} saved={saved} appliedJobIds={appliedJobIds} onSave={toggleSave} onView={setViewingId} onApply={setApplyId} /></div>
       case 'notifications':   return <div style={{flex:1,overflowY:'auto'}}><NotifView onUnreadCountChange={setUnreadNotifCount} /></div>
       default: return null
@@ -1768,6 +1782,10 @@ export default function BrowseJobs() {
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
       {/* Sidebar */}
       <div className="bjb-sidebar" style={{ width:216, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
+        <button onClick={()=>navigate('/agent/agentdashboard')}
+          style={{ display:'flex', gap:7, alignItems:'center', padding:'12px 18px', border:'none', borderBottom:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, textAlign:'left' as const }}>
+          <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
+        </button>
         <div style={{ padding:'18px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
             <div style={{ width:36, height:36, borderRadius:'50%', background:`${C.primary}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:14, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{initials}</div>

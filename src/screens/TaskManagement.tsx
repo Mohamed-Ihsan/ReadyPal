@@ -1,4 +1,5 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getMyApplications } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -725,6 +726,9 @@ function CancelModal({ onClose, onConfirm }: { onClose:()=>void; onConfirm:()=>v
 // ROOT
 // ──────────────────────────────────────────────────────────────────────────────
 export default function TaskManagement() {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedTaskId = searchParams.get('taskId')
   const [subView, setSubView] = useState<SubView>('dashboard')
   const [showReschedule, setShowReschedule] = useState(false)
   const [showCancel, setShowCancel] = useState(false)
@@ -756,7 +760,10 @@ export default function TaskManagement() {
     return () => { cancelled = true }
   }, [])
 
-  const currentTask = pickCurrentTask(tasks)
+  // A specific ?taskId= (from a task/job card elsewhere in the app) selects
+  // that exact application; otherwise falls back to the auto-picked "most
+  // relevant" one.
+  const currentTask = (requestedTaskId ? tasks.find(t => t.id === requestedTaskId) : null) ?? pickCurrentTask(tasks)
 
   const NAV: {key:SubView; label:string}[] = [
     {key:'dashboard', label:'Dashboard'},
@@ -776,9 +783,15 @@ export default function TaskManagement() {
     <div style={{ display:'flex', flexDirection:'column', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
       {/* Header nav */}
       <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:'0 28px', position:'sticky', top:0, zIndex:30 }}>
-        <div style={{ padding:'12px 0 0' }}>
-          <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:4 }}>Task Management</p>
-          <p style={{ fontSize:15, fontWeight:900, color:C.type, marginBottom:0, fontFamily:'Manrope,sans-serif' }}>{currentTask ? taskLabel(currentTask) : 'Task Management'}</p>
+        <div style={{ padding:'12px 0 0', display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12 }}>
+          <div>
+            <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:4 }}>Task Management</p>
+            <p style={{ fontSize:15, fontWeight:900, color:C.type, marginBottom:0, fontFamily:'Manrope,sans-serif' }}>{currentTask ? taskLabel(currentTask) : 'Task Management'}</p>
+          </div>
+          <button onClick={()=>navigate('/agent/agentdashboard')}
+            style={{ display:'flex', gap:6, alignItems:'center', padding:'7px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, flexShrink:0 }}>
+            <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
+          </button>
         </div>
         <div style={{ display:'flex', gap:0, overflowX:'auto' }}>
           {NAV.map(n=>(

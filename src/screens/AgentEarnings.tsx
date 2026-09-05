@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMyProfile,
   getMyCompletedBookings,
@@ -26,6 +27,7 @@ const fmtCurrency = (n:number, currency?:string|null) => `${currency || 'LKR'} $
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I: Record<string,ReactNode> = {
+  chevL:     <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   wallet:    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="3" width="12" height="9" rx="2" stroke="currentColor" strokeWidth="1.3"/><path d="M1 6h12" stroke="currentColor" strokeWidth="1.3"/><circle cx="10.5" cy="8.5" r="1" fill="currentColor"/></svg>,
   trending:  <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 10l3.5-3.5 3 3L11 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M8.5 4H11v2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   download:  <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 2v7M4 6.5L6.5 9 9 6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M1.5 10.5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
@@ -1359,8 +1361,16 @@ const NAV: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
 ]
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
+const VALID_SUBVIEWS: SubView[] = ['dashboard','analytics','jobEarnings','transactions','txnDetail','payouts','withdraw','bankAccounts','bonuses','performance','reports','tax','referrals','goals','notifications','statusBadges','empty','loading','error','success']
+
 export default function AgentEarnings() {
-  const [sub, setSub] = useState<SubView>('dashboard')
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedTab = searchParams.get('tab') as SubView | null
+  // Lets other agent screens deep-link straight into a specific tab here —
+  // e.g. the dashboard's "Manage Bank Account" action lands on bankAccounts
+  // instead of the generic overview.
+  const [sub, setSub] = useState<SubView>(requestedTab && VALID_SUBVIEWS.includes(requestedTab) ? requestedTab : 'dashboard')
   const [selectedTxn, setSelectedTxn] = useState<TransactionRow|null>(null)
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1467,6 +1477,10 @@ export default function AgentEarnings() {
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
       {/* Sidebar */}
       <div className="ew-sidebar" style={{ width:218, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
+        <button onClick={()=>navigate('/agent/agentdashboard')}
+          style={{ display:'flex', gap:7, alignItems:'center', padding:'12px 18px', border:'none', borderBottom:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, textAlign:'left' as const }}>
+          <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
+        </button>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.08em', marginBottom:4 }}>Earnings & Wallet</p>
           <p style={{ fontSize:20, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>{fmt(summary.total)}</p>

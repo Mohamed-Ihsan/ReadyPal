@@ -1,4 +1,5 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getCurrentUser,
   getMyProfile,
@@ -15,6 +16,7 @@ const C = {
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const I: Record<string,ReactNode> = {
+  chevL:    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   user:     <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.3"/><path d="M1.5 11.5c0-2.76 2.24-5 5-5s5 2.24 5 5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
   star:     <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M6 1l1.5 3 3.3.5-2.4 2.3.6 3.3L6 8.8 3 10.1l.6-3.3L1.2 4.5l3.3-.5L6 1z"/></svg>,
   check:    <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2.5 6.5l3 3.5 5-6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
@@ -121,10 +123,13 @@ function ProgressRing({ pct, color=C.primary, size=70, label='', sub='' }:{ pct:
 // to initials derived from their real name (see getInitials below) — never
 // a fabricated photo or placeholder initials.
 function AgentAvatar({ initials='', avatarUrl, size=52, ring=false }:{ initials?:string; avatarUrl?:string|null; size?:number; ring?:boolean }) {
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [avatarUrl])
+  const showImage = !!avatarUrl && !broken
   return (
     <div style={{ position:'relative' as const, display:'inline-flex', flexShrink:0 }}>
-      <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:avatarUrl?C.bg:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:size*0.32, border:ring?`3px solid ${C.primary}`:undefined, boxShadow:ring?`0 0 0 3px white, 0 4px 16px ${C.primary}40`:undefined }}>
-        {avatarUrl ? <img src={avatarUrl} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' as const }} /> : initials}
+      <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?C.bg:`linear-gradient(135deg,${C.primary},#005D63)`, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontFamily:'Manrope,sans-serif', fontWeight:900, fontSize:size*0.32, border:ring?`3px solid ${C.primary}`:undefined, boxShadow:ring?`0 0 0 3px white, 0 4px 16px ${C.primary}40`:undefined }}>
+        {showImage ? <img src={avatarUrl} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} /> : initials}
       </div>
       {ring&&<div style={{ position:'absolute', bottom:2, right:2, width:12, height:12, borderRadius:'50%', background:C.success, border:'2px solid white' }}/>}
     </div>
@@ -1522,8 +1527,15 @@ function ProfileNotifications() {
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
+const VALID_SUBVIEWS: SubView[] = ['home','publicProfile','experience','services','skills','certifications','portfolio','reviews','availability','serviceAreas','pricing','languages','achievements','insights','learning','settings','preview','documents','notifications']
+
 export default function AgentProfileMgmt() {
-  const [sub, setSub] = useState<SubView>('home')
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedTab = searchParams.get('tab') as SubView | null
+  // Deep-link support — e.g. the dashboard's "View Public Profile" action
+  // lands directly on the client-facing preview instead of the home tab.
+  const [sub, setSub] = useState<SubView>(requestedTab && VALID_SUBVIEWS.includes(requestedTab) ? requestedTab : 'home')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
@@ -1607,6 +1619,10 @@ export default function AgentProfileMgmt() {
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
       {/* Sidebar */}
       <div className="ap-sidebar" style={{ width:218, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
+        <button onClick={()=>navigate('/agent/agentdashboard')}
+          style={{ display:'flex', gap:7, alignItems:'center', padding:'12px 18px', border:'none', borderBottom:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, textAlign:'left' as const }}>
+          <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
+        </button>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <AgentAvatar initials={sidebarInitials} avatarUrl={sidebarAvatarUrl} size={42} ring />
           <p style={{ fontSize:13, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginTop:10, marginBottom:2 }}>{sidebarName}</p>

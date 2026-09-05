@@ -430,10 +430,10 @@ function ChatWindow({
 }
 
 // ─── Inbox sidebar ────────────────────────────────────────────────────────────
-function Inbox({ conversations, activeId, onSelect, onTogglePin, onToggleMute, onNewConversation }: {
+function Inbox({ conversations, activeId, onSelect, onTogglePin, onToggleMute, onNewConversation, onBack }: {
   conversations:Conversation[]; activeId:string|null; onSelect:(id:string)=>void
   onTogglePin:(c:Conversation)=>void; onToggleMute:(c:Conversation)=>void
-  onNewConversation:()=>void
+  onNewConversation:()=>void; onBack:()=>void
 }) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'All'|'Pinned'>('All')
@@ -493,7 +493,10 @@ function Inbox({ conversations, activeId, onSelect, onTogglePin, onToggleMute, o
       {/* Header */}
       <div style={{ padding:'16px 14px 10px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
-          <h2 style={{ fontSize:17, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Messages</h2>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <button onClick={onBack} title="Back" style={{ width:26, height:26, borderRadius:8, border:'none', background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.sub }}>{I.chevL}</button>
+            <h2 style={{ fontSize:17, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Messages</h2>
+          </div>
           <button onClick={onNewConversation} title="Start a conversation from a booking" style={{ width:30, height:30, borderRadius:9, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.sub }}>{I.plus}</button>
         </div>
         {/* Search */}
@@ -638,9 +641,10 @@ function EmptyState() {
   )
 }
 
-function NoConversationsState({ onNewConversation }: { onNewConversation:()=>void }) {
+function NoConversationsState({ onNewConversation, onBack }: { onNewConversation:()=>void; onBack:()=>void }) {
   return (
-    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:14, background:'#F8FAFA' }}>
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:14, background:'#F8FAFA', position:'relative' as const }}>
+      <button onClick={onBack} style={{ position:'absolute' as const, top:18, left:18, display:'flex', gap:6, alignItems:'center', background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub }}>{I.chevL} Back</button>
       <div style={{ width:80, height:80, borderRadius:'50%', background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center' }}>
         <svg width="36" height="36" viewBox="0 0 36 36" fill="none"><path d="M4 6h28a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H10l-8 6V8a2 2 0 0 1 2-2z" stroke={C.primary} strokeWidth="1.5" strokeLinejoin="round"/><path d="M12 14h12M12 19h8" stroke={C.primary} strokeWidth="1.4" strokeLinecap="round"/></svg>
       </div>
@@ -718,6 +722,7 @@ function NewConversationModal({ onClose, onCreated, onToast }: {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function MessagingHub() {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [loading, setLoading] = useState(true)
@@ -819,13 +824,13 @@ export default function MessagingHub() {
       )
     }
     if (conversations.length === 0) {
-      return <NoConversationsState onNewConversation={()=>setShowNewConv(true)} />
+      return <NoConversationsState onNewConversation={()=>setShowNewConv(true)} onBack={()=>navigate(-1)} />
     }
     return (
       <>
         <div className={`msg-inbox${mobileView==='chat'?' msg-hide':''}`} style={{ display:'flex' }}>
           <Inbox conversations={conversations} activeId={activeId} onSelect={handleSelect}
-            onTogglePin={togglePin} onToggleMute={toggleMute} onNewConversation={()=>setShowNewConv(true)} />
+            onTogglePin={togglePin} onToggleMute={toggleMute} onNewConversation={()=>setShowNewConv(true)} onBack={()=>navigate(-1)} />
         </div>
         <div className={`msg-chat${mobileView==='inbox'?' msg-hide':''}`} style={{ flex:1, display:'flex', overflow:'hidden', minWidth:0 }}>
           {activeConv && currentUserId

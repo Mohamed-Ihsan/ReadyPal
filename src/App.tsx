@@ -1,5 +1,6 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom"
 
+import Navbar from "./components/Navbar"
 import MarketingWebsite from "./screens/MarketingWebsite"
 import AuthOnboarding from "./screens/AuthOnboarding"
 import ClientDashboard from "./screens/ClientDashboard"
@@ -30,12 +31,40 @@ import CareRequestWizard from "./screens/CareRequestWizard"
 import HiringNegotiation from "./screens/HiringNegotiation"
 import BeneficiaryManagement from "./screens/BeneficiaryManagement"
 
+// Renders the global Navbar once, above whichever PUBLIC route is active
+// (marketing site + the login/signup flow), so it stays mounted (no
+// remount/flicker) across navigation between them instead of being
+// recreated inside each page. It's `position:sticky` (see Navbar.tsx), so it
+// occupies real space in normal document flow at rest, pushing this
+// wrapper's pages down automatically with no top padding to maintain.
+//
+// Deliberately scoped to just these two routes via nested routing (not a
+// `useLocation()` path-match run on every render) — every dashboard, admin
+// panel, wizard, and full-screen workspace route below already has its own
+// complete header/sidebar chrome and a `height:'100vh'` shell tuned for
+// zero navbar offset; rendering the marketing Navbar above those doubles up
+// the chrome and pushes their shells past the viewport. The route tree
+// itself is the single source of truth for which pages are "public" — a
+// new public page joins by nesting under here, a new dashboard page by
+// staying outside it, with no separate allow/deny list to keep in sync.
+function PublicLayout() {
+  return (
+    <>
+      <Navbar />
+      <Outlet />
+    </>
+  )
+}
+
 function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<MarketingWebsite />} />
-        <Route path="/auth" element={<AuthOnboarding />} />
+        <Route element={<PublicLayout />}>
+          <Route path="/" element={<MarketingWebsite />} />
+          <Route path="/auth" element={<AuthOnboarding />} />
+        </Route>
+
         <Route path="/dashboard" element={<ClientDashboard />} />
 
         <Route path="/settings" element={<Navigate to="/dashboard?tab=settings" replace />} />

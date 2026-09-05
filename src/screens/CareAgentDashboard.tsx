@@ -1,11 +1,14 @@
-﻿import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+﻿import { useState, useEffect, useRef, type ReactNode, type CSSProperties, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 import {
   getCurrentUser,
   getMyProfile,
   updateProfile,
+  uploadProfilePhoto,
+  onProfileUpdate,
   getMyAgentDetails,
+  updateMyAvailability,
   getMyAgentSkills,
   getMyCertifications,
   getMyIdentityDocuments,
@@ -19,6 +22,13 @@ import {
   markNotificationRead,
   markAllNotificationsRead,
   getMyApplications,
+  getMyCompletedBookings,
+  getMyTransactions,
+  getMyPayouts,
+  getMyActiveBooking,
+  getVisitLog,
+  getMyConversations,
+  getOrCreateBookingConversation,
 } from '../lib/api'
 import { computeOnboardingCompletion, type OnboardingStepStatus } from '../lib/onboardingCompletion'
 
@@ -56,6 +66,7 @@ const I: Record<string,ReactNode> = {
   shield:   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1.5l5 1.8v3.8C12 10.8 9.5 13 7 14 4.5 13 2 10.8 2 7.1V3.3L7 1.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>,
   settings: <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.2"/><path d="M7 1.5v1.5M7 11v1.5M1.5 7h1.5M11 7h1.5M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M10.1 3.9L11.2 2.8M2.8 11.2l1.1-1.1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>,
   logout:   <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M6 13H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M10 10.5L13.5 7 10 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M13.5 7H5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
+  camera:   <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4.5h2l1-1.5h5l1 1.5h2v7.5h-11V4.5z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><circle cx="7" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.2"/></svg>,
 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
@@ -102,8 +113,33 @@ function Bdg({ label, color=C.primary, dot=false }:{ label:string; color?:string
   </span>
 }
 
-function Avatar({ initials='', color=C.primary, size=40 }:{ initials?:string; color?:string; size?:number }) {
-  return <div style={{ width:size, height:size, borderRadius:'50%', background:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>{initials}</div>
+function Avatar({ initials='', color=C.primary, size=40, src=null }:{ initials?:string; color?:string; size?:number; src?:string|null }) {
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [src])
+  const showImage = !!src && !broken
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:showImage?`${color}0A`:`${color}18`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.28, color, fontFamily:'Manrope,sans-serif', flexShrink:0 }}>
+      {showImage
+        ? <img src={src as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        : initials}
+    </div>
+  )
+}
+
+// Same photo-with-initials-fallback behavior as Avatar, but on the
+// translucent-white styling used inside the gradient header banner (which
+// Avatar's teal-tinted background doesn't match).
+function AgentPhotoOrInitials({ src, initials='', size=52 }:{ src?:string|null; initials?:string; size?:number }) {
+  const [broken, setBroken] = useState(false)
+  useEffect(() => { setBroken(false) }, [src])
+  const showImage = !!src && !broken
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', overflow:'hidden', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:size*0.38, color:'#fff', fontFamily:'Manrope,sans-serif' }}>
+      {showImage
+        ? <img src={src as string} alt="" onError={()=>setBroken(true)} style={{ width:'100%', height:'100%', objectFit:'cover' as const }} />
+        : initials}
+    </div>
+  )
 }
 
 // Derives display initials from a real full name — never a fabricated
@@ -264,34 +300,45 @@ function isSameDate(iso: string | null, date: Date): boolean {
   return d.getFullYear()===date.getFullYear() && d.getMonth()===date.getMonth() && d.getDate()===date.getDate()
 }
 
-const INVITATIONS = [
-  { id:'I001', client:'Chamari Dissanayake', beneficiary:'Siripala Dissanayake', service:'Post-Surgery Care', date:'Tomorrow, 9 AM', location:'Malay Street, Colombo 02', amount:5500, distance:'3.2 km', timer:'2h 14m remaining' },
-  { id:'I002', client:'Fathima Rasheed',     beneficiary:'Hassan Rasheed',       service:'Wheelchair Assistance',date:'Sat 18 Jan, 10 AM',location:'Lady Ridgeway Hospital',    amount:2800, distance:'5.8 km', timer:'18h remaining' },
-]
+// ─── Message previews (real `getMyConversations()` rows) ──────────────────────
+// getMyConversations() has no per-conversation "unread" flag (only
+// per-message `starred`/`pinned`), so no unread badge is fabricated here —
+// MessagingHub itself is the place to add real unread tracking if that
+// becomes a requirement.
+type MessagePreview = { id:string; name:string; initials:string; msg:string; time:string }
 
-const MESSAGES = [
-  { name:'Mohamed Ihsan',     initials:'MI', msg:'Thank you for today! Will you be available next week?', time:'11:30 AM', unread:2 },
-  { name:'Priya Fernando',    initials:'PF', msg:"Please arrive 10 minutes early if possible.",           time:'Yesterday', unread:0 },
-  { name:'Arjuna Wijesinghe', initials:'AW', msg:"Job confirmed for 5:30 PM.",                           time:'Mon',       unread:0 },
-]
+function messagePreviewFromConversation(c: any): MessagePreview {
+  const other = c.otherParticipants?.[0]
+  const name = other?.preferred_name || other?.full_name || 'Client'
+  const initials = getInitials(name)
+  const lastMsg = c.lastMessage
+  const msg = !lastMsg ? 'No messages yet' : lastMsg.deleted ? 'Message deleted' : lastMsg.type==='text' ? (lastMsg.text ?? '') : 'Attachment'
+  const iso = lastMsg?.created_at ?? c.created_at
+  const time = iso ? formatRelativeTime(iso) : ''
+  return { id: c.id, name, initials, msg, time }
+}
 
 // ─── Dashboard Home ───────────────────────────────────────────────────────────
-function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInitials, agentSubtitle, notifications, notifLoading, notifError, onMarkNotifRead, todaysJobs, jobsLoading, jobsError }:{
-  status:Status; setStatus:(s:Status)=>void; onNav:(s:SubView)=>void; onToast:(m:string)=>void
-  agentName:string; agentInitials:string; agentSubtitle:string
+function DashboardHome({ status, onNav, onToast, agentName, agentInitials, agentAvatarUrl, agentSubtitle,
+  agentDetails, isAvailableNow, availabilityUpdating, onToggleAvailability, monthlyEarnings, earningsLoading,
+  notifications, notifLoading, notifError, onMarkNotifRead, todaysJobs, jobsLoading, jobsError,
+  activeBooking, activeBookingLoading, activeBookingError,
+  messagePreviews, conversationsLoading, conversationsError }:{
+  status:Status; onNav:(s:SubView)=>void; onToast:(m:string)=>void
+  agentName:string; agentInitials:string; agentAvatarUrl:string|null; agentSubtitle:string
+  agentDetails:any; isAvailableNow:boolean; availabilityUpdating:boolean; onToggleAvailability:()=>void
+  monthlyEarnings:number; earningsLoading:boolean
   notifications:any[]; notifLoading:boolean; notifError:string; onMarkNotifRead:(id:string)=>void
   todaysJobs:ScheduledJob[]; jobsLoading:boolean; jobsError:string
+  activeBooking:any; activeBookingLoading:boolean; activeBookingError:string
+  messagePreviews:MessagePreview[]; conversationsLoading:boolean; conversationsError:string
 }) {
-  const [online, setOnline] = useState(true)
-  // Monthly Earnings, Average Rating, and Completion Rate have no backing
-  // Supabase table/status lifecycle yet (see Phase 1B audit) — rather than
-  // fabricate numbers, those three KPI cards show an honest "coming soon"
-  // placeholder. Today's Jobs is real, from getMyApplications().
+  const navigate = useNavigate()
   const kpis = [
     { label:"Today's Jobs",     value:jobsLoading?'…':String(todaysJobs.length), sub:jobsLoading?'Loading…':jobsError?'Could not load':`${todaysJobs.length} job${todaysJobs.length===1?'':'s'} scheduled`, icon:I.calendar, color:C.primary, accent:true },
-    { label:'Monthly Earnings', value:'—', sub:'Earnings tracking coming soon', icon:I.wallet,  color:C.success },
-    { label:'Average Rating',   value:'—', sub:'Reviews coming soon',           icon:I.star,     color:C.warning },
-    { label:'Completion Rate',  value:'—', sub:'Coming soon',                   icon:I.target,   color:C.info },
+    { label:'Monthly Earnings', value:earningsLoading?'…':`LKR ${monthlyEarnings.toLocaleString()}`, sub:earningsLoading?'Loading…':'This calendar month', icon:I.wallet,  color:C.success },
+    { label:'Average Rating',   value:agentDetails?.rating!=null?`${Number(agentDetails.rating).toFixed(1)} ★`:'—', sub:agentDetails?.review_count!=null?`${agentDetails.review_count} review${agentDetails.review_count===1?'':'s'}`:'No reviews yet', icon:I.star, color:C.warning },
+    { label:'Jobs Completed',   value:agentDetails?.jobs_completed!=null?String(agentDetails.jobs_completed):'—', sub:agentDetails?.verified?'Verified agent':'Not yet verified', icon:I.target, color:C.info },
   ]
   const quickActions = [
     { icon:I.calendar,label:'My Schedule',   k:'schedule'   as SubView },
@@ -309,8 +356,8 @@ function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInit
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:16 }}>
           <div style={{ display:'flex', gap:14, alignItems:'center' }}>
             <div style={{ position:'relative' as const }}>
-              <div style={{ width:52, height:52, borderRadius:'50%', background:'rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:20, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{agentInitials}</div>
-              <div style={{ position:'absolute', bottom:1, right:1, width:13, height:13, borderRadius:'50%', background:online?C.success:C.muted, border:'2px solid #fff' }} />
+              <AgentPhotoOrInitials src={agentAvatarUrl} initials={agentInitials} size={52} />
+              <div style={{ position:'absolute', bottom:1, right:1, width:13, height:13, borderRadius:'50%', background:isAvailableNow?C.success:C.muted, border:'2px solid #fff' }} />
             </div>
             <div>
               <p style={{ fontSize:13, color:'rgba(255,255,255,0.7)', marginBottom:2 }}>Good morning 👋</p>
@@ -325,8 +372,8 @@ function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInit
             <div>
               <p style={{ fontSize:11, color:'rgba(255,255,255,0.6)', marginBottom:4, textAlign:'right' as const }}>Availability</p>
               <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                <p style={{ fontSize:12, fontWeight:700, color:online?'rgba(255,255,255,0.9)':'rgba(255,255,255,0.45)' }}>{online?'Online':'Offline'}</p>
-                <Toggle on={online} onToggle={()=>{ setOnline(v=>!v); onToast(online?'Status set to Offline':'Status set to Online'); setStatus(online?'offline':'online') }} size="md" />
+                <p style={{ fontSize:12, fontWeight:700, color:isAvailableNow?'rgba(255,255,255,0.9)':'rgba(255,255,255,0.45)' }}>{isAvailableNow?'Online':'Offline'}</p>
+                <Toggle on={isAvailableNow} onToggle={availabilityUpdating?()=>{}:onToggleAvailability} size="md" />
               </div>
             </div>
             <div style={{ textAlign:'right' as const }}>
@@ -387,57 +434,54 @@ function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInit
             )}
           </Card>
 
-          {/* Active task tracking depends on an application-status lifecycle
-              (accepted/in-progress/completed) that doesn't exist in the
-              database yet — see Phase 1B audit. Rather than fabricate a
-              live task/checklist, this stays an honest coming-soon note. */}
+          {/* Active task — real assigned/confirmed/in_progress booking, if any.
+              The actual check-in/out/GPS/checklist/vitals flow lives in
+              CareExecution.tsx; this only summarises and links out to it. */}
           <Card style={{ padding:22, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1.5px solid ${C.primary}20` }}>
             <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
-              <div style={{ width:8, height:8, borderRadius:'50%', background:C.muted }} />
+              <div style={{ width:8, height:8, borderRadius:'50%', background:activeBooking?C.success:C.muted }} />
               <p style={{ fontSize:12, fontWeight:800, color:C.primary, textTransform:'uppercase' as const, letterSpacing:'0.07em' }}>Active Task</p>
             </div>
-            <p style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>Live task tracking (checklists, time remaining) will appear here once a job is in progress. This feature is coming soon.</p>
+            {activeBookingLoading ? (
+              <p style={{ fontSize:13, color:C.muted }}>Loading…</p>
+            ) : activeBookingError ? (
+              <p style={{ fontSize:13, color:C.error }}>{activeBookingError}</p>
+            ) : activeBooking ? (
+              <>
+                <p style={{ fontSize:13, color:C.sub, lineHeight:1.6, marginBottom:10 }}>
+                  {activeBooking.service_type || activeBooking.service || 'Job'} · {activeBooking.status?.replace('_',' ')}
+                </p>
+                <Btn label="Go to Task" variant="primary" small onClick={()=>onNav('activeTask')} />
+              </>
+            ) : (
+              <p style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>You have no active job right now.</p>
+            )}
           </Card>
         </div>
 
         {/* Right column */}
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          {/* Invitations */}
-          <Card style={{ padding:22 }}>
-            <SectionTitle title="Job Invitations" action={`View All (${INVITATIONS.length})`} onAction={()=>onNav('invitations')} />
-            {INVITATIONS.map((inv,i)=>(
-              <div key={inv.id} style={{ padding:'14px 0', borderBottom:i<INVITATIONS.length-1?`1px solid ${C.border}`:'none' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-                  <div>
-                    <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{inv.service}</p>
-                    <p style={{ fontSize:11, color:C.muted }}>{inv.client} · {inv.date}</p>
-                  </div>
-                  <div style={{ textAlign:'right' as const }}>
-                    <p style={{ fontSize:13, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {inv.amount.toLocaleString()}</p>
-                    <p style={{ fontSize:10, color:C.muted }}>{inv.distance}</p>
-                  </div>
-                </div>
-                <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:8 }}>
-                  <span style={{ color:C.muted, display:'flex', transform:'scale(0.85)' }}>{I.clock}</span>
-                  <p style={{ fontSize:11, color:C.warning, fontWeight:700 }}>{inv.timer}</p>
-                </div>
-                <div style={{ display:'flex', gap:8 }}>
-                  <Btn label="Accept" variant="success" small onClick={()=>onToast('Job accepted!')} />
-                  <Btn label="Decline" variant="ghost" small onClick={()=>onToast('Invitation declined')} />
-                </div>
-              </div>
-            ))}
+          {/* Job feed — browsing/applying now lives entirely in BrowseJobs.tsx
+              (/agent/jobs), so this is a prompt out to it rather than a
+              second, duplicate open-jobs list + apply flow. */}
+          <Card style={{ padding:22, background:`linear-gradient(135deg,${C.primary}06,${C.primary}02)`, border:`1.5px solid ${C.primary}20` }}>
+            <SectionTitle title="Find Your Next Job" />
+            <p style={{ fontSize:12, color:C.sub, lineHeight:1.6, marginBottom:14 }}>Browse open care requests that match your services and submit a bid.</p>
+            <Btn label="Browse Jobs" variant="primary" onClick={()=>navigate('/agent/jobs')} />
           </Card>
 
           {/* Messages */}
           <Card style={{ padding:22 }}>
             <SectionTitle title="Messages" action="Open All" onAction={()=>onNav('messages')} />
-            {MESSAGES.map((m,i)=>(
-              <div key={i} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'9px 0', borderBottom:i<MESSAGES.length-1?`1px solid ${C.border}`:'none', cursor:'pointer' }} onClick={()=>onNav('messages')}>
-                <div style={{ position:'relative' as const }}>
-                  <Avatar initials={m.initials} size={36} />
-                  {m.unread>0&&<div style={{ position:'absolute', top:-2, right:-2, width:16, height:16, borderRadius:'50%', background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{m.unread}</div>}
-                </div>
+            {conversationsLoading ? (
+              <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>Loading messages…</p>
+            ) : conversationsError ? (
+              <p style={{ fontSize:12, color:C.error, padding:'8px 0' }}>{conversationsError}</p>
+            ) : messagePreviews.length===0 ? (
+              <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>No conversations yet.</p>
+            ) : messagePreviews.map((m,i)=>(
+              <div key={m.id} style={{ display:'flex', gap:10, alignItems:'flex-start', padding:'9px 0', borderBottom:i<messagePreviews.length-1?`1px solid ${C.border}`:'none', cursor:'pointer' }} onClick={()=>onNav('messages')}>
+                <Avatar initials={m.initials} size={36} />
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
                     <p style={{ fontSize:12, fontWeight:700, color:C.type }}>{m.name}</p>
@@ -522,6 +566,7 @@ function DashboardHome({ status, setStatus, onNav, onToast, agentName, agentInit
 
 // ─── Today's Schedule ─────────────────────────────────────────────────────────
 function Schedule({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; jobs:ScheduledJob[]; loading:boolean; error:string }) {
+  const navigate = useNavigate()
   const todayLabel = new Date().toLocaleDateString('en-GB',{ weekday:'long', day:'numeric', month:'long', year:'numeric' })
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:800 }}>
@@ -568,6 +613,7 @@ function Schedule({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; 
                     </div>}
                   </div>
                   <div style={{ display:'flex', gap:8 }}>
+                    <Btn label="Manage Task" variant="secondary" small onClick={()=>navigate(`/agent/taskmanagement?taskId=${job.id}`)} />
                     <Btn label="Navigate" variant="ghost" small icon={I.pin} onClick={()=>onToast('Opening navigation…')} />
                     <Btn label="Call Client" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling client…')} />
                   </div>
@@ -582,128 +628,153 @@ function Schedule({ onToast, jobs, loading, error }:{ onToast:(m:string)=>void; 
 }
 
 // ─── Active Task ──────────────────────────────────────────────────────────────
-function ActiveTask({ onToast }:{ onToast:(m:string)=>void }) {
-  const [taskStep, setTaskStep] = useState<'ready'|'active'|'done'>('active')
-  const checks = [
-    { l:'Arrived at client home',         done:true },
-    { l:'Beneficiary collected & seated', done:true },
-    { l:'Arrived at Colombo National Hospital', done:true },
-    { l:'Registration desk attended',     done:false },
-    { l:'Doctor consultation complete',   done:false },
-    { l:'Medication prescription collected', done:false },
-    { l:'Client returned home safely',    done:false },
-  ]
-  const donePct = Math.round((checks.filter(c=>c.done).length/checks.length)*100)
+function ActiveTask({ onToast, booking, visitLog, loading, error }:{ onToast:(m:string)=>void; booking:any; visitLog:any; loading:boolean; error:string }) {
+  const navigate = useNavigate()
+  const [messaging, setMessaging] = useState(false)
+  const messageClient = async () => {
+    if(!booking || messaging) return
+    setMessaging(true)
+    try {
+      const conversationId = await getOrCreateBookingConversation(booking.id)
+      navigate(`/agent/messaginghub?conversationId=${conversationId}`)
+    } catch(err: any) {
+      console.error('Failed to open conversation:', err)
+      onToast(err?.message || "Couldn't open messages. Please try again.")
+    } finally {
+      setMessaging(false)
+    }
+  }
+  if(loading) {
+    return <div style={{ padding:'28px 32px 60px', maxWidth:700 }}><p style={{ fontSize:13, color:C.muted }}>Loading your active task…</p></div>
+  }
+  if(error) {
+    return <div style={{ padding:'28px 32px 60px', maxWidth:700 }}><p style={{ fontSize:13, color:C.error }}>{error}</p></div>
+  }
+  if(!booking) {
+    return (
+      <div style={{ padding:'28px 32px 60px', maxWidth:700 }}>
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>🗓️</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Active Task</p>
+          <p style={{ fontSize:12, color:C.muted }}>You don't have an assigned, confirmed, or in-progress booking right now.</p>
+        </Card>
+      </div>
+    )
+  }
+
+  const checklist: Record<string, boolean> = visitLog?.checklist ?? {}
+  const checkEntries = Object.entries(checklist)
+  const donePct = checkEntries.length ? Math.round((checkEntries.filter(([,v])=>v).length/checkEntries.length)*100) : 0
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:700 }}>
       <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:20 }}>
         <div style={{ width:10, height:10, borderRadius:'50%', background:C.primary }} />
-        <p style={{ fontSize:12, fontWeight:800, color:C.primary, textTransform:'uppercase' as const, letterSpacing:'0.07em' }}>Active Task · {taskStep==='done'?'Complete':'In Progress'}</p>
+        <p style={{ fontSize:12, fontWeight:800, color:C.primary, textTransform:'uppercase' as const, letterSpacing:'0.07em' }}>Active Task · {String(booking.status ?? '').replace('_',' ')}</p>
       </div>
       <Card style={{ padding:28, background:`linear-gradient(135deg,${C.primary}06,${C.surface})`, border:`2px solid ${C.primary}20`, marginBottom:18 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:20 }}>
           <div>
-            <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Hospital Appointment</h2>
+            <h2 style={{ fontSize:24, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>{booking.service_type || booking.service || 'Care Visit'}</h2>
             <div style={{ display:'flex', gap:14, flexWrap:'wrap' as const }}>
-              <p style={{ fontSize:13, color:C.muted }}>Beneficiary: <strong style={{color:C.type}}>Nimal Perera</strong></p>
-              <p style={{ fontSize:13, color:C.muted }}>Client: <strong style={{color:C.type}}>Mohamed Ihsan</strong></p>
-              <p style={{ fontSize:13, color:C.muted }}>Job #J001</p>
+              {booking.beneficiary?.preferred_name && <p style={{ fontSize:13, color:C.muted }}>Beneficiary: <strong style={{color:C.type}}>{booking.beneficiary.preferred_name}</strong></p>}
+              {booking.client?.full_name && <p style={{ fontSize:13, color:C.muted }}>Client: <strong style={{color:C.type}}>{booking.client.full_name}</strong></p>}
+              <p style={{ fontSize:13, color:C.muted }}>Booking #{String(booking.id).slice(0,8)}</p>
             </div>
           </div>
-          {taskStep==='active'&&(
-            <div style={{ textAlign:'right' as const }}>
-              <p style={{ fontSize:11, color:C.muted }}>Time remaining</p>
-              <p style={{ fontSize:32, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif', lineHeight:1 }}>1:42</p>
-              <p style={{ fontSize:11, color:C.muted }}>hrs</p>
+        </div>
+        {checkEntries.length>0 && (
+          <div style={{ marginBottom:16 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+              <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Checklist Progress</p>
+              <p style={{ fontSize:13, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{donePct}%</p>
             </div>
-          )}
-        </div>
-        <div style={{ marginBottom:16 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-            <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>Task Progress</p>
-            <p style={{ fontSize:13, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif' }}>{donePct}%</p>
+            <div style={{ height:8, borderRadius:99, background:`${C.primary}12`, overflow:'hidden' }}>
+              <div style={{ width:`${donePct}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
+            </div>
           </div>
-          <div style={{ height:8, borderRadius:99, background:`${C.primary}12`, overflow:'hidden' }}>
-            <div style={{ width:`${donePct}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.5s' }} />
-          </div>
-        </div>
+        )}
         <div style={{ display:'flex', gap:10 }}>
-          {taskStep==='active'&&<Btn label="Pause Task" variant="secondary" icon={I.stop} onClick={()=>{ setTaskStep('ready'); onToast('Task paused') }} />}
-          {taskStep==='ready'&&<Btn label="Resume Task" variant="primary" icon={I.play} onClick={()=>{ setTaskStep('active'); onToast('Task resumed') }} />}
-          {taskStep==='active'&&<Btn label="Complete Task" variant="success" onClick={()=>{ setTaskStep('done'); onToast('Task completed! 🎉') }} />}
-          <Btn label="Call Client" variant="ghost" small icon={I.phone} onClick={()=>onToast('Calling Mohamed Ihsan…')} />
+          <Btn label="Open Visit Execution" variant="primary" onClick={()=>navigate(`/agent/careexecution?bookingId=${booking.id}`)} />
+          <Btn label={messaging?'Opening…':'Message Client'} variant="ghost" small icon={I.msg} disabled={messaging} onClick={messageClient} />
         </div>
       </Card>
 
-      <Card style={{ padding:22 }}>
-        <SectionTitle title="Checklist" />
-        <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-          {checks.map((c,i)=>(
-            <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
-              <div style={{ width:22, height:22, borderRadius:7, background:c.done?C.success:`${C.primary}10`, border:`2px solid ${c.done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all 0.2s' }}>
-                {c.done&&<span style={{color:'#fff',display:'flex',transform:'scale(0.7)'}}>{I.check}</span>}
+      {checkEntries.length>0 && (
+        <Card style={{ padding:22 }}>
+          <SectionTitle title="Checklist" />
+          <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+            {checkEntries.map(([label,done],i)=>(
+              <div key={i} style={{ display:'flex', gap:10, alignItems:'center' }}>
+                <div style={{ width:22, height:22, borderRadius:7, background:done?C.success:`${C.primary}10`, border:`2px solid ${done?C.success:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all 0.2s' }}>
+                  {done&&<span style={{color:'#fff',display:'flex',transform:'scale(0.7)'}}>{I.check}</span>}
+                </div>
+                <p style={{ fontSize:13, color:done?C.type:C.muted, fontWeight:done?600:400, textDecoration:done?'line-through':undefined }}>{label}</p>
               </div>
-              <p style={{ fontSize:13, color:c.done?C.type:C.muted, fontWeight:c.done?600:400, textDecoration:c.done?'line-through':undefined }}>{c.l}</p>
-            </div>
-          ))}
-        </div>
-      </Card>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   )
 }
 
-// ─── Job Invitations ──────────────────────────────────────────────────────────
-function Invitations({ onToast }:{ onToast:(m:string)=>void }) {
-  const [accepted, setAccepted] = useState<Set<string>>(new Set())
-  const [declined, setDeclined] = useState<Set<string>>(new Set())
+// ─── My Applications ──────────────────────────────────────────────────────────
+// Browsing/applying to open care requests now lives entirely in BrowseJobs.tsx
+// (/agent/jobs) — this tab only tracks bids the agent has already submitted,
+// so there is no second, redundant "apply" surface to keep in sync with it.
+//
+// A negotiation is only "active" once the application's status is actually
+// 'negotiating' — the DB flips it there the moment either side sends a real
+// negotiation_messages row (see sendNegotiationMessage in lib/api.ts), so
+// this is equivalent to "a counter-offer exists" without a second query.
+// 'applied'/'shortlisted' just means the client hasn't responded yet: no
+// Negotiate action, just an honest "Application Pending" state.
+const NEGOTIABLE_APP_STATUSES = ['negotiating']
+
+function Invitations({ applications, loading, error }:{
+  applications:any[]; loading:boolean; error:string
+}) {
+  const navigate = useNavigate()
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:760 }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Job Invitations</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{INVITATIONS.length} pending invitations · Respond quickly to maintain your acceptance rate</p>
-      <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
-        {INVITATIONS.map((inv)=>{
-          const isAccepted = accepted.has(inv.id)
-          const isDeclined = declined.has(inv.id)
-          return (
-            <Card key={inv.id} style={{ padding:24, border:`1.5px solid ${isAccepted?C.success+'40':isDeclined?C.muted+'30':C.border}`, background:isAccepted?`${C.success}04`:isDeclined?`${C.bg}`:C.surface, opacity:isDeclined?0.6:1 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap' as const, gap:12 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:6 }}>
-                    <h3 style={{ fontSize:15, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{inv.service}</h3>
-                    {isAccepted&&<Bdg label="Accepted" color={C.success} />}
-                    {isDeclined&&<Bdg label="Declined" color={C.muted} />}
-                  </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px 20px', marginBottom:12 }} className="cad-inv-grid">
-                    {([{label:'Client',value:inv.client},{label:'Beneficiary',value:inv.beneficiary},{label:'Date',value:inv.date},{label:'Distance',value:inv.distance}] as {label:string;value:string}[]).map((row,i)=>(
-                      <div key={i}>
-                        <p style={{ fontSize:10, fontWeight:700, color:C.muted, textTransform:'uppercase' as const, letterSpacing:'0.06em' }}>{row.label}</p>
-                        <p style={{ fontSize:12, color:C.type, fontWeight:600 }}>{row.value}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                    <span style={{color:C.warning,display:'flex'}}>{I.clock}</span>
-                    <p style={{ fontSize:12, fontWeight:700, color:C.warning }}>{inv.timer}</p>
-                    <span style={{color:C.muted,display:'flex',marginLeft:8}}>{I.pin}</span>
-                    <p style={{ fontSize:12, color:C.muted }}>{inv.location}</p>
-                  </div>
-                </div>
-                <div style={{ textAlign:'right' as const, flexShrink:0 }}>
-                  <p style={{ fontSize:11, color:C.muted, marginBottom:2 }}>Offered amount</p>
-                  <p style={{ fontSize:22, fontWeight:900, color:C.success, fontFamily:'Manrope,sans-serif' }}>LKR {inv.amount.toLocaleString()}</p>
-                </div>
-              </div>
-              {!isAccepted&&!isDeclined&&(
-                <div style={{ display:'flex', gap:10, marginTop:16, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
-                  <Btn label="Accept Job" variant="success" onClick={()=>{ setAccepted(p=>new Set([...p,inv.id])); onToast('Job accepted! Client notified.') }} />
-                  <Btn label="Decline" variant="ghost" onClick={()=>{ setDeclined(p=>new Set([...p,inv.id])); onToast('Invitation declined') }} />
-                  <Btn label="View Details" variant="secondary" small />
-                </div>
-              )}
-            </Card>
-          )
-        })}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:6, flexWrap:'wrap' as const }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>My Applications</h2>
+        <Btn label="Browse Jobs" variant="primary" icon={I.calendar} onClick={()=>navigate('/agent/jobs')} />
       </div>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>{loading?'Loading…':`${applications.length} application${applications.length===1?'':'s'} submitted`}</p>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your applications…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : applications.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>📭</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Applications Yet</p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:16 }}>You haven't applied to any jobs. Browse open care requests to find your next opportunity.</p>
+          <Btn label="Browse Jobs" variant="primary" onClick={()=>navigate('/agent/jobs')} />
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {applications.map((a:any)=>{
+            const canNegotiate = NEGOTIABLE_APP_STATUSES.includes(a.status)
+            const isPending = a.status==='applied' || a.status==='shortlisted'
+            return (
+              <Card key={a.id} style={{ padding:18 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap' as const, gap:10 }}>
+                  <div>
+                    <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{a.care_request?.title ?? a.care_request?.service_type ?? 'Care request'}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>{a.care_request?.client?.full_name ?? 'Client'} · <span style={{ textTransform:'capitalize' as const }}>{a.status}</span></p>
+                  </div>
+                  {canNegotiate
+                    ? <Btn label="Negotiate" variant="secondary" small onClick={()=>navigate(`/agent/jobs?negotiate=${a.id}`)} />
+                    : isPending && <p style={{ fontSize:11, fontWeight:700, color:C.muted, fontStyle:'italic' as const }}>Application Pending</p>}
+                </div>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -862,46 +933,65 @@ function Performance() {
 }
 
 // ─── Earnings ─────────────────────────────────────────────────────────────────
-function Earnings({ onToast }:{ onToast:(m:string)=>void }) {
-  const txns = [
-    { desc:'Hospital Appointment · Mohamed Ihsan',  date:'15 Jan · 12:30 PM', amount:3750,  type:'credit' },
-    { desc:'Home Care · Priya Fernando',            date:'14 Jan · 7:00 PM',  amount:4800,  type:'credit' },
-    { desc:'Medication Collection · Wijesinghe',    date:'14 Jan · 6:00 PM',  amount:1500,  type:'credit' },
-    { desc:'Platform fee (5%)',                     date:'14 Jan',            amount:-508,  type:'debit'  },
-    { desc:'Bank Transfer Payout',                  date:'13 Jan',            amount:-22000,type:'payout' },
-  ]
+function Earnings({ onToast:_onToast, completedBookings, payouts, transactions, loading, error,
+  todayEarnings, monthlyEarnings, totalEarnings, pendingPayoutTotal, totalPaidOut }:{
+  onToast:(m:string)=>void
+  completedBookings:any[]; payouts:any[]; transactions:any[]; loading:boolean; error:string
+  todayEarnings:number; monthlyEarnings:number; totalEarnings:number; pendingPayoutTotal:number; totalPaidOut:number
+}) {
+  const navigate = useNavigate()
+  type Row = { desc:string; date:string; amount:number; kind:'credit'|'debit'|'payout' }
+  const bookingRows: Row[] = completedBookings
+    .filter(b=>b.scheduled_date)
+    .map(b=>({ desc:[b.service_type || b.service, b.client?.full_name].filter(Boolean).join(' · ') || 'Completed booking', date:new Date(b.scheduled_date).toLocaleDateString('en-GB',{ day:'numeric', month:'short' }), amount:Number(b.payment_amount)||0, kind:'credit' as const }))
+  const txnRows: Row[] = transactions.map(t=>({ desc:t.description || (t.type==='payout'?'Payout':'Transaction'), date:t.created_at?new Date(t.created_at).toLocaleDateString('en-GB',{ day:'numeric', month:'short' }):'', amount:Number(t.amount)||0, kind:t.type==='payout'?'payout' as const:(Number(t.amount)||0)>=0?'credit' as const:'debit' as const }))
+  const rows = [...txnRows, ...bookingRows].slice(0,10)
+  const pendingPayout = payouts.find(p=>p.status==='pending')
+
+  if(loading) {
+    return <div style={{ padding:'28px 32px 60px', maxWidth:760 }}><p style={{ fontSize:13, color:C.muted }}>Loading your earnings…</p></div>
+  }
+  if(error) {
+    return <div style={{ padding:'28px 32px 60px', maxWidth:760 }}><p style={{ fontSize:13, color:C.error }}>{error}</p></div>
+  }
+
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:760 }}>
-      <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Earnings Overview</h2>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:24, flexWrap:'wrap' as const }}>
+        <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Earnings Overview</h2>
+        <Btn label="Full Earnings & Payouts" variant="secondary" small icon={I.wallet} onClick={()=>navigate('/agent/agentearnings')} />
+      </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:14, marginBottom:24 }} className="cad-3col">
-        <KPICard label="Today's Earnings"  value="LKR 3,750"   sub="1 job completed"    trend="↑ from LKR 0 yesterday" icon={I.wallet} color={C.primary} accent />
-        <KPICard label="Weekly Earnings"   value="LKR 24,500"  sub="7 jobs this week"   trend="↑ 8% vs last week"       icon={I.trending} color={C.success} />
-        <KPICard label="Monthly Earnings"  value="LKR 145,000" sub="38 jobs this month" trend="↑ 12% vs last month"      icon={I.star} color={C.warning} />
+        <KPICard label="Today's Earnings"  value={`LKR ${todayEarnings.toLocaleString()}`}   sub="Completed bookings today"    icon={I.wallet} color={C.primary} accent />
+        <KPICard label="Monthly Earnings"  value={`LKR ${monthlyEarnings.toLocaleString()}`}  sub="This calendar month"         icon={I.trending} color={C.success} />
+        <KPICard label="Total Earnings"    value={`LKR ${totalEarnings.toLocaleString()}`}    sub={`${completedBookings.length} completed job${completedBookings.length===1?'':'s'}`} icon={I.star} color={C.warning} />
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:20 }} className="cad-2col">
         <Card style={{ padding:22 }}>
           <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:4 }}>Pending Payout</p>
-          <p style={{ fontSize:26, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>LKR 9,750</p>
-          <p style={{ fontSize:11, color:C.muted, marginBottom:14 }}>Clears on Monday 20 Jan</p>
-          <Btn label="View Wallet" variant="secondary" small icon={I.wallet} onClick={()=>onToast('Opening wallet…')} />
+          <p style={{ fontSize:26, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>LKR {pendingPayoutTotal.toLocaleString()}</p>
+          <p style={{ fontSize:11, color:C.muted, marginBottom:14 }}>{pendingPayout?.scheduled_date?`Clears on ${new Date(pendingPayout.scheduled_date).toLocaleDateString('en-GB',{ day:'numeric', month:'long' })}`:'No payout scheduled yet'}</p>
+          <Btn label="View Payouts" variant="secondary" small icon={I.wallet} onClick={()=>navigate('/agent/agentearnings?tab=payouts')} />
         </Card>
         <Card style={{ padding:22 }}>
           <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:4 }}>Total Paid Out</p>
-          <p style={{ fontSize:26, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>LKR 520,000</p>
-          <p style={{ fontSize:11, color:C.muted, marginBottom:14 }}>All time · Commercial Bank</p>
-          <Bdg label="Account Verified" color={C.success} />
+          <p style={{ fontSize:26, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>LKR {totalPaidOut.toLocaleString()}</p>
+          <p style={{ fontSize:11, color:C.muted, marginBottom:14 }}>All time</p>
+          <Btn label="Manage Bank Account" variant="ghost" small onClick={()=>navigate('/agent/agentearnings?tab=bankAccounts')} />
         </Card>
       </div>
       <Card style={{ padding:22 }}>
         <SectionTitle title="Recent Transactions" />
-        {txns.map((t,i)=>(
-          <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:i<txns.length-1?`1px solid ${C.border}`:'none' }}>
+        {rows.length===0 ? (
+          <p style={{ fontSize:12, color:C.muted, padding:'8px 0' }}>No transactions yet.</p>
+        ) : rows.map((t,i)=>(
+          <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:i<rows.length-1?`1px solid ${C.border}`:'none' }}>
             <div>
               <p style={{ fontSize:13, fontWeight:600, color:C.type, marginBottom:2 }}>{t.desc}</p>
               <p style={{ fontSize:11, color:C.muted }}>{t.date}</p>
             </div>
-            <p style={{ fontSize:13, fontWeight:800, color:t.type==='credit'?C.success:t.type==='debit'?C.error:C.muted, fontFamily:'Manrope,sans-serif' }}>
-              {t.amount>0?'+':''}{t.type==='payout'?'':''}LKR {Math.abs(t.amount).toLocaleString()}
+            <p style={{ fontSize:13, fontWeight:800, color:t.kind==='credit'?C.success:t.kind==='debit'?C.error:C.muted, fontFamily:'Manrope,sans-serif' }}>
+              {t.amount>=0?'+':''}LKR {Math.abs(t.amount).toLocaleString()}
             </p>
           </div>
         ))}
@@ -980,39 +1070,45 @@ function NotificationCenter({ notifications, loading, error, onMarkRead, onMarkA
 }
 
 // ─── Messages Preview ─────────────────────────────────────────────────────────
-function MessagesPreview({ onToast }:{ onToast:(m:string)=>void }) {
-  const [reply, setReply] = useState('')
+// Real conversations (getMyConversations()) with previews only — the actual
+// thread view / send-message flow lives in MessagingHub, so this links out
+// to it rather than re-implementing chat here.
+function MessagesPreview({ conversations, loading, error }:{ conversations:MessagePreview[]; loading:boolean; error:string }) {
+  const navigate = useNavigate()
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
         <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Messages</h2>
-        <Btn label="Open Full Chat" variant="secondary" small icon={I.msg} onClick={()=>onToast('Opening messaging…')} />
+        <Btn label="Open Full Chat" variant="secondary" small icon={I.msg} onClick={()=>navigate('/agent/messaginghub')} />
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {MESSAGES.map((m,i)=>(
-          <Card key={i} hover style={{ padding:20 }}>
-            <div style={{ display:'flex', gap:12, alignItems:'flex-start', marginBottom:m.unread>0?12:0 }}>
-              <div style={{ position:'relative' as const }}>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading your conversations…</p>
+      ) : error ? (
+        <p style={{ fontSize:13, color:C.error }}>{error}</p>
+      ) : conversations.length===0 ? (
+        <Card style={{ padding:'40px 24px', textAlign:'center' as const }}>
+          <div style={{ fontSize:36, marginBottom:10 }}>💬</div>
+          <p style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:6 }}>No Conversations Yet</p>
+          <p style={{ fontSize:12, color:C.muted }}>Messages from clients will show up here.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {conversations.map((m)=>(
+            <Card key={m.id} hover style={{ padding:20 }} onClick={()=>navigate('/agent/messaginghub')}>
+              <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
                 <Avatar initials={m.initials} size={44} />
-                {m.unread>0&&<div style={{ position:'absolute', top:-3, right:-3, width:18, height:18, borderRadius:'50%', background:C.error, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{m.unread}</div>}
-              </div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{m.name}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>{m.time}</p>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{m.name}</p>
+                    <p style={{ fontSize:11, color:C.muted }}>{m.time}</p>
+                  </div>
+                  <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{m.msg}</p>
                 </div>
-                <p style={{ fontSize:12, color:C.sub, lineHeight:1.5 }}>{m.msg}</p>
               </div>
-            </div>
-            {m.unread>0&&(
-              <div style={{ display:'flex', gap:8, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
-                <input value={reply} onChange={e=>setReply(e.target.value)} placeholder="Quick reply…" style={{ flex:1, padding:'8px 12px', borderRadius:8, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:12, color:C.type, background:'#FAFAFA', outline:'none' }} />
-                <Btn label="Send" variant="primary" small onClick={()=>{ onToast('Message sent'); setReply('') }} />
-              </div>
-            )}
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -1081,7 +1177,8 @@ function Goals({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Profile Completion ───────────────────────────────────────────────────────
-function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
+function ProfileCompletion({ onToast:_onToast }:{ onToast:(m:string)=>void }) {
+  const navigate = useNavigate()
   const [steps, setSteps] = useState<OnboardingStepStatus[]|null>(null)
   const [percent, setPercent] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -1175,7 +1272,8 @@ function ProfileCompletion({ onToast }:{ onToast:(m:string)=>void }) {
           <div style={{ width:`${percent}%`, height:'100%', background:`linear-gradient(90deg,${C.primary},${C.success})`, borderRadius:99, transition:'width 0.6s' }} />
         </div>
         <div style={{ display:'flex', gap:10, marginTop:14 }}>
-          <Btn label="Complete Profile" icon={I.edit} onClick={()=>onToast('Opening registration…')} />
+          <Btn label="Complete Profile" icon={I.edit} onClick={()=>navigate('/agent/onboarding')} />
+          <Btn label="View Public Profile" variant="secondary" onClick={()=>navigate('/agent/agentprofilemgmt?tab=preview')} />
         </div>
       </Card>
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
@@ -1314,7 +1412,7 @@ function ServiceAreas({ onToast }:{ onToast:(m:string)=>void }) {
 }
 
 // ─── Status Center ────────────────────────────────────────────────────────────
-function StatusCenter({ status, setStatus, onToast }:{ status:Status; setStatus:(s:Status)=>void; onToast:(m:string)=>void }) {
+function StatusCenter({ status, onSetStatus, updating, onToast:_onToast }:{ status:Status; onSetStatus:(s:Status)=>void; updating:boolean; onToast:(m:string)=>void }) {
   const statuses: { k:Status; l:string; d:string; icon:string }[] = [
     { k:'online',    l:'Online',           d:'Accepting new job invitations',      icon:'🟢' },
     { k:'offline',   l:'Offline',          d:'Not visible to clients',             icon:'⚫' },
@@ -1326,10 +1424,10 @@ function StatusCenter({ status, setStatus, onToast }:{ status:Status; setStatus:
   return (
     <div style={{ padding:'28px 32px 60px', maxWidth:680 }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Status Center</h2>
-      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Your current status is visible to clients and affects job matching.</p>
+      <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Your current status is visible to clients and affects job matching. Online maps to "Available Now"; every other status maps to "Booked" in your live availability.</p>
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }} className="cad-2col">
         {statuses.map(s=>(
-          <Card key={s.k} hover style={{ padding:20, border:`2px solid ${status===s.k?STATUS_CONFIG[s.k].color+'50':C.border}`, background:status===s.k?`${STATUS_CONFIG[s.k].color}06`:C.surface }} onClick={()=>{ setStatus(s.k); onToast(`Status set to ${s.l}`) }}>
+          <Card key={s.k} hover style={{ padding:20, border:`2px solid ${status===s.k?STATUS_CONFIG[s.k].color+'50':C.border}`, background:status===s.k?`${STATUS_CONFIG[s.k].color}06`:C.surface, opacity:updating?0.7:1, pointerEvents:updating?'none':'auto' }} onClick={()=>{ if(!updating) onSetStatus(s.k) }}>
             <div style={{ display:'flex', gap:12, alignItems:'center' }}>
               <span style={{ fontSize:24 }}>{s.icon}</span>
               <div style={{ flex:1 }}>
@@ -1424,6 +1522,32 @@ function AgentSettings({ onToast }:{ onToast:(m:string)=>void }) {
     load()
     return () => { cancelled = true }
   }, [])
+
+  // ─── Profile photo (real, uploadProfilePhoto -> Supabase Storage "avatars"
+  // bucket + profiles.avatar_url) — emits onProfileUpdate so the sidebar and
+  // header avatar (driven by the dashboard's own profile fetch) update
+  // immediately, without needing this page to be reloaded. ─────────────────
+  const avatarInputRef = useRef<HTMLInputElement>(null)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [avatarError, setAvatarError] = useState('')
+
+  const handleAvatarChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if(!file || uploadingAvatar) return
+    setUploadingAvatar(true)
+    setAvatarError('')
+    try {
+      const { avatarUrl } = await uploadProfilePhoto(file)
+      setProfile((p:any)=>({ ...p, avatar_url: avatarUrl }))
+      onToast('Profile photo updated')
+    } catch(err: any) {
+      console.error('Failed to upload profile photo:', err)
+      setAvatarError(err?.message || "Couldn't upload your photo. Please try again.")
+    } finally {
+      setUploadingAvatar(false)
+    }
+  }
 
   // ─── Account details (real, persisted via profiles.full_name / preferred_name) ───
   const [editingName, setEditingName] = useState(false)
@@ -1527,6 +1651,25 @@ function AgentSettings({ onToast }:{ onToast:(m:string)=>void }) {
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:6 }}>Settings</h2>
       <p style={{ fontSize:13, color:C.muted, marginBottom:24 }}>Manage your account, security, and sign-in — for your professional profile, skills, and services, go to Profile instead.</p>
 
+      {/* Profile photo */}
+      <Card style={{ padding:24, marginBottom:16 }}>
+        <SectionTitle title="Profile Photo" />
+        <div style={{ display:'flex', gap:16, alignItems:'center' }}>
+          <div style={{ position:'relative' as const, opacity:uploadingAvatar?0.6:1 }}>
+            <Avatar initials={getInitials(profile?.full_name)} src={profile?.avatar_url || null} size={64} />
+            <input ref={avatarInputRef} type="file" accept="image/*" onChange={handleAvatarChange} style={{ display:'none' }} />
+            <button onClick={()=>avatarInputRef.current?.click()} disabled={uploadingAvatar} style={{ position:'absolute', bottom:-2, right:-2, width:24, height:24, borderRadius:'50%', background:C.primary, border:'2px solid #fff', display:'flex', alignItems:'center', justifyContent:'center', cursor:uploadingAvatar?'default':'pointer', color:'#fff' }}>
+              <span style={{ display:'flex', transform:'scale(0.8)' }}>{I.camera}</span>
+            </button>
+          </div>
+          <div>
+            <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{uploadingAvatar?'Uploading…':'Update your photo'}</p>
+            <p style={{ fontSize:11, color:C.muted }}>JPG or PNG, up to 5MB. Visible to clients on your profile.</p>
+            {avatarError && <p style={{ fontSize:11, color:C.error, marginTop:4 }}>{avatarError}</p>}
+          </div>
+        </div>
+      </Card>
+
       {/* Account */}
       <Card style={{ padding:24, marginBottom:16 }}>
         <SectionTitle title="Account" action={editingName?undefined:'Edit'} onAction={editingName?undefined:startEditingName} />
@@ -1566,6 +1709,29 @@ function AgentSettings({ onToast }:{ onToast:(m:string)=>void }) {
             </div>
           </div>
         )}
+      </Card>
+
+      {/* Professional profile & payments — these fields live on the
+          dedicated screens that already own them, not here, so this links
+          out instead of duplicating that editing UI. */}
+      <Card style={{ padding:24, marginBottom:16 }}>
+        <SectionTitle title="Professional Profile & Payments" />
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0', borderBottom:`1px solid ${C.border}` }}>
+            <div>
+              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Public Profile</p>
+              <p style={{ fontSize:11, color:C.muted }}>Headline, experience, services, skills, and certifications clients see</p>
+            </div>
+            <Btn label="Edit Profile" variant="secondary" small onClick={()=>navigate('/agent/agentprofilemgmt')} />
+          </div>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0 0' }}>
+            <div>
+              <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Bank Account & Payouts</p>
+              <p style={{ fontSize:11, color:C.muted }}>Where your earnings are paid out to</p>
+            </div>
+            <Btn label="Manage Bank Account" variant="secondary" small onClick={()=>navigate('/agent/agentearnings?tab=bankAccounts')} />
+          </div>
+        </div>
       </Card>
 
       {/* Security */}
@@ -1730,10 +1896,20 @@ export default function CareAgentDashboard() {
   // ─── Real agent identity ────────────────────────────────────────────────
   const agentName = profile?.full_name?.trim() || 'Care Agent'
   const agentInitials = getInitials(profile?.full_name)
+  const agentAvatarUrl: string | null = profile?.avatar_url || null
   const agentSubtitle = [
     agentDetails?.professional_headline?.trim(),
     profile?.city?.trim() || profile?.district?.trim(),
   ].filter(Boolean).join(' · ') || 'Care Agent'
+
+  // Picks up a new photo the instant it's uploaded (from the Settings tab
+  // below, or another tab open on Account Settings) without needing a
+  // full page reload to see it in the sidebar/header.
+  useEffect(() => {
+    return onProfileUpdate(patch => {
+      setProfile((p: any) => p ? { ...p, ...patch } : p)
+    })
+  }, [])
 
   // ─── Real notifications ─────────────────────────────────────────────────
   const [notifications, setNotifications] = useState<any[]>([])
@@ -1799,6 +1975,147 @@ export default function CareAgentDashboard() {
     })
   const todaysJobs = scheduledJobs.filter(j => isSameDate(j.scheduledDate, new Date()))
 
+  // ─── Real earnings: completed bookings (gross) + payouts (pending/paid) ──
+  const [completedBookings, setCompletedBookings] = useState<any[]>([])
+  const [payouts, setPayouts] = useState<any[]>([])
+  const [transactions, setTransactions] = useState<any[]>([])
+  const [earningsLoading, setEarningsLoading] = useState(true)
+  const [earningsError, setEarningsError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadEarnings = async () => {
+      try {
+        setEarningsLoading(true)
+        setEarningsError('')
+        const [bookingsRes, payoutsRes, txnsRes] = await Promise.all([
+          getMyCompletedBookings(), getMyPayouts(), getMyTransactions(),
+        ])
+        if(cancelled) return
+        setCompletedBookings(bookingsRes ?? [])
+        setPayouts(payoutsRes ?? [])
+        setTransactions(txnsRes ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load earnings:', err)
+        setEarningsError("We couldn't load your earnings. Please try again.")
+      } finally {
+        if(!cancelled) setEarningsLoading(false)
+      }
+    }
+    loadEarnings()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  const isSameMonth = (iso:string|null, date:Date) => {
+    if(!iso) return false
+    const d = new Date(iso)
+    return d.getFullYear()===date.getFullYear() && d.getMonth()===date.getMonth()
+  }
+  const bookingAmount = (b:any) => Number(b.payment_amount) || 0
+  const now = new Date()
+  const todayEarnings = completedBookings.filter(b=>isSameDate(b.scheduled_date, now)).reduce((s,b)=>s+bookingAmount(b),0)
+  const monthlyEarnings = completedBookings.filter(b=>isSameMonth(b.scheduled_date, now)).reduce((s,b)=>s+bookingAmount(b),0)
+  const totalEarnings = completedBookings.reduce((s,b)=>s+bookingAmount(b),0)
+  const pendingPayoutTotal = payouts.filter(p=>p.status==='pending').reduce((s,p)=>s+(Number(p.amount)||0),0)
+  const totalPaidOut = payouts.filter(p=>p.status==='completed').reduce((s,p)=>s+(Number(p.amount)||0),0)
+
+  // ─── Real active booking + its visit log (for the ActiveTask widget —
+  // the actual check-in/out/GPS/checklist/vitals flow lives in
+  // CareExecution.tsx, so this only summarises status and links out to it
+  // rather than re-implementing that flow a second time). ─────────────────
+  const [activeBooking, setActiveBooking] = useState<any>(null)
+  const [activeVisitLog, setActiveVisitLog] = useState<any>(null)
+  const [activeBookingLoading, setActiveBookingLoading] = useState(true)
+  const [activeBookingError, setActiveBookingError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadActiveBooking = async () => {
+      try {
+        setActiveBookingLoading(true)
+        setActiveBookingError('')
+        const booking = await getMyActiveBooking()
+        if(cancelled) return
+        setActiveBooking(booking)
+        if(booking?.status === 'in_progress') {
+          const log = await getVisitLog(booking.id)
+          if(!cancelled) setActiveVisitLog(log)
+        } else {
+          setActiveVisitLog(null)
+        }
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load active booking:', err)
+        setActiveBookingError("We couldn't load your active task. Please try again.")
+      } finally {
+        if(!cancelled) setActiveBookingLoading(false)
+      }
+    }
+    loadActiveBooking()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  // ─── Real conversation previews ──────────────────────────────────────────
+  const [conversations, setConversations] = useState<any[]>([])
+  const [conversationsLoading, setConversationsLoading] = useState(true)
+  const [conversationsError, setConversationsError] = useState('')
+
+  useEffect(() => {
+    if(accessState !== 'allowed') return
+    let cancelled = false
+    const loadConversations = async () => {
+      try {
+        setConversationsLoading(true)
+        setConversationsError('')
+        const data = await getMyConversations()
+        if(!cancelled) setConversations(data ?? [])
+      } catch(err) {
+        if(cancelled) return
+        console.error('Failed to load conversations:', err)
+        setConversationsError("We couldn't load your messages.")
+      } finally {
+        if(!cancelled) setConversationsLoading(false)
+      }
+    }
+    loadConversations()
+    return () => { cancelled = true }
+  }, [accessState])
+
+  const messagePreviews: MessagePreview[] = conversations.slice(0,3).map(messagePreviewFromConversation)
+  const allMessagePreviews: MessagePreview[] = conversations.map(messagePreviewFromConversation)
+
+  // ─── Real availability toggle (agent_details.availability) ──────────────
+  // The richer 6-value on-screen `status` (online/offline/busy/break/
+  // emergency/vacation) is dashboard-local flavour with no matching column;
+  // it maps onto the two real marketplace-visibility states clients
+  // actually see elsewhere in the app: 'online' -> Available Now, anything
+  // else -> Booked (not bookable right now).
+  const [availabilityUpdating, setAvailabilityUpdating] = useState(false)
+  const isAvailableNow = agentDetails?.availability === 'Available Now'
+
+  const applyStatus = async (next: Status) => {
+    const previousStatus = status
+    const previousAgentDetails = agentDetails
+    const nextAvailability = next === 'online' ? 'Available Now' : 'Booked'
+    setStatus(next)
+    setAgentDetails((d:any) => d ? { ...d, availability: nextAvailability } : d)
+    setAvailabilityUpdating(true)
+    try {
+      await updateMyAvailability(nextAvailability)
+      showToast(`Status set to ${STATUS_CONFIG[next].label}`)
+    } catch(err) {
+      console.error('Failed to update availability:', err)
+      setStatus(previousStatus)
+      setAgentDetails(previousAgentDetails)
+      showToast("Couldn't update your availability. Please try again.")
+    } finally {
+      setAvailabilityUpdating(false)
+    }
+  }
+
   const markNotifRead = async (id:string) => {
     const target = notifications.find(n=>n.id===id)
     if(!target || target.read) return
@@ -1831,29 +2148,40 @@ export default function CareAgentDashboard() {
 
   const renderSub = () => {
     switch(sub) {
-      case 'home':        return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
-                             agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
+      case 'home':        return <DashboardHome status={status} onNav={s=>setSub(s)} onToast={showToast}
+                             agentName={agentName} agentInitials={agentInitials} agentAvatarUrl={agentAvatarUrl} agentSubtitle={agentSubtitle}
+                             agentDetails={agentDetails} isAvailableNow={isAvailableNow} availabilityUpdating={availabilityUpdating}
+                             onToggleAvailability={()=>applyStatus(isAvailableNow?'offline':'online')}
+                             monthlyEarnings={monthlyEarnings} earningsLoading={earningsLoading}
                              notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead}
-                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError} />
+                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError}
+                             activeBooking={activeBooking} activeBookingLoading={activeBookingLoading} activeBookingError={activeBookingError}
+                             messagePreviews={messagePreviews} conversationsLoading={conversationsLoading} conversationsError={conversationsError} />
       case 'schedule':    return <Schedule onToast={showToast} jobs={todaysJobs} loading={jobsLoading} error={jobsError} />
-      case 'activeTask':  return <ActiveTask onToast={showToast} />
-      case 'invitations': return <Invitations onToast={showToast} />
+      case 'activeTask':  return <ActiveTask onToast={showToast} booking={activeBooking} visitLog={activeVisitLog} loading={activeBookingLoading} error={activeBookingError} />
+      case 'invitations': return <Invitations applications={applications} loading={jobsLoading} error={jobsError} />
       case 'calendar':    return <CalendarView onToast={showToast} jobs={scheduledJobs} loading={jobsLoading} error={jobsError} />
       case 'performance': return <Performance />
-      case 'earnings':    return <Earnings onToast={showToast} />
+      case 'earnings':    return <Earnings onToast={showToast} completedBookings={completedBookings} payouts={payouts} transactions={transactions} loading={earningsLoading} error={earningsError}
+                             todayEarnings={todayEarnings} monthlyEarnings={monthlyEarnings} totalEarnings={totalEarnings} pendingPayoutTotal={pendingPayoutTotal} totalPaidOut={totalPaidOut} />
       case 'notifications':return <NotificationCenter notifications={notifications} loading={notifLoading} error={notifError} onMarkRead={markNotifRead} onMarkAllRead={markAllNotifsRead} />
-      case 'messages':    return <MessagesPreview onToast={showToast} />
+      case 'messages':    return <MessagesPreview conversations={allMessagePreviews} loading={conversationsLoading} error={conversationsError} />
       case 'goals':       return <Goals onToast={showToast} />
       case 'profile':     return <ProfileCompletion onToast={showToast} />
       case 'serviceAreas':return <ServiceAreas onToast={showToast} />
-      case 'statusCenter':return <StatusCenter status={status} setStatus={setStatus} onToast={showToast} />
+      case 'statusCenter':return <StatusCenter status={status} onSetStatus={applyStatus} updating={availabilityUpdating} onToast={showToast} />
       case 'timeline':    return <ActivityTimeline notifications={notifications} loading={notifLoading} error={notifError} />
       case 'settings':    return <AgentSettings onToast={showToast} />
       case 'emergency':   return <EmergencyPanel onToast={showToast} />
-      default:            return <DashboardHome status={status} setStatus={setStatus} onNav={s=>setSub(s)} onToast={showToast}
-                             agentName={agentName} agentInitials={agentInitials} agentSubtitle={agentSubtitle}
+      default:            return <DashboardHome status={status} onNav={s=>setSub(s)} onToast={showToast}
+                             agentName={agentName} agentInitials={agentInitials} agentAvatarUrl={agentAvatarUrl} agentSubtitle={agentSubtitle}
+                             agentDetails={agentDetails} isAvailableNow={isAvailableNow} availabilityUpdating={availabilityUpdating}
+                             onToggleAvailability={()=>applyStatus(isAvailableNow?'offline':'online')}
+                             monthlyEarnings={monthlyEarnings} earningsLoading={earningsLoading}
                              notifications={notifications} notifLoading={notifLoading} notifError={notifError} onMarkNotifRead={markNotifRead}
-                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError} />
+                             todaysJobs={todaysJobs} jobsLoading={jobsLoading} jobsError={jobsError}
+                             activeBooking={activeBooking} activeBookingLoading={activeBookingLoading} activeBookingError={activeBookingError}
+                             messagePreviews={messagePreviews} conversationsLoading={conversationsLoading} conversationsError={conversationsError} />
     }
   }
 
@@ -1873,7 +2201,7 @@ export default function CareAgentDashboard() {
         <div style={{ padding:'18px 18px 12px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:8 }}>
             <div style={{ position:'relative' as const }}>
-              <Avatar initials={agentInitials} size={36} />
+              <Avatar initials={agentInitials} src={agentAvatarUrl} size={36} />
               <div style={{ position:'absolute', bottom:0, right:0, width:10, height:10, borderRadius:'50%', background:STATUS_CONFIG[status].color, border:'2px solid #fff' }} />
             </div>
             <div>
@@ -1885,7 +2213,7 @@ export default function CareAgentDashboard() {
             </div>
           </div>
           <div style={{ display:'flex', gap:10, justifyContent:'space-between', alignItems:'center' }}>
-            <p style={{ fontSize:10, color:C.muted }}>4.9★ · 98% completion</p>
+            <p style={{ fontSize:10, color:C.muted }}>{agentDetails?.rating!=null?`${Number(agentDetails.rating).toFixed(1)}★`:'No rating yet'}{agentDetails?.jobs_completed!=null?` · ${agentDetails.jobs_completed} jobs`:''}</p>
             <div style={{ display:'flex', gap:8, alignItems:'center' }}>
               <button onClick={()=>setSub('notifications')} style={{ position:'relative' as const, background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>
                 {I.bell}
@@ -1920,7 +2248,7 @@ export default function CareAgentDashboard() {
         <div style={{ position:'fixed', inset:0, zIndex:50, background:'rgba(0,0,0,0.4)' }} onClick={()=>setSidebarOpen(false)}>
           <div onClick={e=>e.stopPropagation()} style={{ width:240, height:'100%', background:C.surface, overflowY:'auto' }}>
             <div style={{ padding:'16px 18px', borderBottom:`1px solid ${C.border}`, display:'flex', gap:10, alignItems:'center' }}>
-              <Avatar initials={agentInitials} size={36} />
+              <Avatar initials={agentInitials} src={agentAvatarUrl} size={36} />
               <div>
                 <p style={{ fontSize:13, fontWeight:800, color:C.type }}>{agentName}</p>
                 <p style={{ fontSize:11, color:STATUS_CONFIG[status].color, fontWeight:700 }}>{STATUS_CONFIG[status].label}</p>

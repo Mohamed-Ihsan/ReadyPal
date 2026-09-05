@@ -1,11 +1,36 @@
 import { supabase } from "./supabaseClient"
 
+// ─── Avatars ────────────────────────────────────────────────────────────────
+// profiles.avatar_url is normally already a fully-qualified public URL (see
+// uploadProfilePhoto below), but resolves defensively here too in case a row
+// ever holds a bare storage path (legacy data, a manual DB edit, etc.) so
+// every screen that reads a profile gets something an <img> can load.
+export function resolveAvatarUrl(path?: string | null): string | null {
+  if (!path) return null
+  if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path
+  const { data } = supabase.storage.from("avatars").getPublicUrl(path)
+  return data.publicUrl
+}
+
+// Lets UI that isn't in the same component tree as an avatar upload (the
+// global Navbar, a dashboard's own sidebar) pick up a new photo immediately
+// instead of waiting for their next full profile re-fetch.
+type ProfilePatchListener = (patch: Record<string, any>) => void
+const profilePatchListeners = new Set<ProfilePatchListener>()
+export function onProfileUpdate(listener: ProfilePatchListener) {
+  profilePatchListeners.add(listener)
+  return () => { profilePatchListeners.delete(listener) }
+}
+function emitProfileUpdate(patch: Record<string, any>) {
+  profilePatchListeners.forEach(listener => listener(patch))
+}
+
 export async function getCurrentProfile() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error('Not logged in')
   const { data, error } = await supabase.from('profiles').select('*').eq('id', user.id).single()
   if (error) throw error
-  return data
+  return { ...data, avatar_url: resolveAvatarUrl(data.avatar_url) }
 }
 
 export async function updateProfile(fields: Record<string, any>) {
@@ -45,7 +70,7 @@ export async function getMyProfile() {
     throw error
   }
 
-  return data
+  return { ...data, avatar_url: resolveAvatarUrl(data.avatar_url) }
 }
 
 export async function updateMyProfile(updates: {
@@ -97,6 +122,32 @@ export async function getMyAgentDetails() {
     .select("*")
     .eq("id", user.id)
     .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
+// Live marketplace-visibility flag shown on agent cards elsewhere in the app
+// (getAgentsForBrowse/getAgentDetail read this same column) — kept as its
+// own narrow update rather than folded into saveMyAgentDetails, since that
+// function's typed input is for the onboarding/profile-edit fields, not
+// this one-off toggle.
+export async function updateMyAvailability(availability: "Available Now" | "Available Today" | "Available Tomorrow" | "Booked") {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("agent_details")
+    .update({ availability })
+    .eq("id", user.id)
+    .select()
+    .single()
 
   if (error) {
     throw error
@@ -191,6 +242,8 @@ export async function uploadProfilePhoto(file: File) {
   if (profileError) {
     throw profileError
   }
+
+  emitProfileUpdate({ avatar_url: avatarUrl })
 
   return {
     avatarUrl,
@@ -1284,6 +1337,28 @@ export async function applyToCareRequest(input: {
     throw new Error("No authenticated user found")
   }
 
+  // Defends against a stale Browse Jobs page: once a client hires an agent,
+  // hireApplication() flips the care request's status away from 'open', so
+  // any other agent still looking at a cached "open" card can't slip in a
+  // late application for a job that's already been filled.
+  const { data: careRequest, error: careRequestError } = await supabase
+    .from("care_requests")
+    .select("status")
+    .eq("id", input.care_request_id)
+    .maybeSingle()
+
+  if (careRequestError) {
+    throw careRequestError
+  }
+
+  if (!careRequest || careRequest.status !== "open") {
+    const closedError = new Error(
+      "This care request is no longer open."
+    ) as Error & { code?: string }
+    closedError.code = "REQUEST_CLOSED"
+    throw closedError
+  }
+
   // No DB constraint enforces one application per agent per care request,
   // so check here before inserting.
   const { data: existing, error: existingError } = await supabase
@@ -1621,6 +1696,31 @@ export async function getMyActiveBooking() {
   }
 
   return data[0]
+}
+
+// Loads one specific booking by id (as opposed to getMyActiveBooking's
+// auto-picked "most relevant" one) — for deep-linking into CareExecution
+// from a specific booking/task card elsewhere in the app. Scoped to the
+// authenticated agent's own bookings, same as getMyActiveBooking.
+export async function getBookingById(bookingId: string) {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  const { data, error } = await supabase
+    .from("bookings")
+    .select(BOOKING_SELECT)
+    .eq("id", bookingId)
+    .eq("agent_id", user.id)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  return data
 }
 
 export async function updateBookingStatus(bookingId: string, status: BookingStatus) {

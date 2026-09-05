@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, type ReactNode, type CSSProperties } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMyProfile,
   getMyNotifications,
   markNotificationRead,
   markAllNotificationsRead,
   getMyActiveBooking,
+  getBookingById,
   getVisitLog,
   startVisit as apiStartVisit,
   updateVisitStatus,
@@ -14,6 +16,7 @@ import {
   updateVisitNotes,
   submitIncidentReport,
   endVisit as apiEndVisit,
+  getOrCreateBookingConversation,
   type VisitStatus,
 } from '../lib/api'
 
@@ -47,6 +50,8 @@ const I: Record<string,ReactNode> = {
   download: <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 2v7M4 6.5L6.5 9 9 6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/><path d="M1.5 10.5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>,
   shield:   <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1.5l4.5 1.7v3.5C11 9.8 9 12 6.5 13 4 12 2 9.8 2 6.7V3.2L6.5 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>,
   pen:      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M9.5 1.5l2 2-7 7H2.5v-2l7-7z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/></svg>,
+  msg:      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M11.5 2H1.5a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1.7l2.3 2 2.3-2h3.7a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/></svg>,
+  chevL:    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
@@ -255,9 +260,10 @@ const NAV_ITEMS: { k:SubView; l:string; icon:ReactNode; group:string }[] = [
 ]
 
 // ─── Live Dashboard ───────────────────────────────────────────────────────────
-function LiveDashboard({ booking, visitLog, onNav, onToast, onSaveNotes }:{
+function LiveDashboard({ booking, visitLog, onNav, onToast, onSaveNotes, onMessageClient, messagingClient }:{
   booking:ActiveBooking|null; visitLog:VisitLog|null; onNav:(s:SubView)=>void; onToast:(m:string)=>void
   onSaveNotes:(notes:string)=>Promise<void>
+  onMessageClient:()=>void; messagingClient:boolean
 }) {
   const status:LiveStatus = visitLog?.status ?? 'not_started'
   const st = STATUS[status]
@@ -308,11 +314,18 @@ function LiveDashboard({ booking, visitLog, onNav, onToast, onSaveNotes }:{
               ))}
             </div>
           </div>
-          <button onClick={()=>onNav('emergency')}
-            style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:5, padding:'14px 16px', borderRadius:16, background:'rgba(239,68,68,0.85)', border:'2px solid rgba(239,68,68,0.5)', cursor:'pointer', transition:'all 0.15s' }}>
-            <span style={{ color:'#fff', display:'flex' }}>{I.sos}</span>
-            <p style={{ fontSize:9, fontWeight:900, color:'#fff', letterSpacing:'0.08em' }}>EMERGENCY</p>
-          </button>
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={onMessageClient} disabled={messagingClient}
+              style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:5, padding:'14px 16px', borderRadius:16, background:'rgba(255,255,255,0.16)', border:'2px solid rgba(255,255,255,0.3)', cursor:messagingClient?'default':'pointer', opacity:messagingClient?0.7:1, transition:'all 0.15s' }}>
+              <span style={{ color:'#fff', display:'flex' }}>{I.msg}</span>
+              <p style={{ fontSize:9, fontWeight:900, color:'#fff', letterSpacing:'0.08em' }}>{messagingClient?'OPENING…':'MESSAGE'}</p>
+            </button>
+            <button onClick={()=>onNav('emergency')}
+              style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:5, padding:'14px 16px', borderRadius:16, background:'rgba(239,68,68,0.85)', border:'2px solid rgba(239,68,68,0.5)', cursor:'pointer', transition:'all 0.15s' }}>
+              <span style={{ color:'#fff', display:'flex' }}>{I.sos}</span>
+              <p style={{ fontSize:9, fontWeight:900, color:'#fff', letterSpacing:'0.08em' }}>EMERGENCY</p>
+            </button>
+          </div>
         </div>
         {/* progress bar */}
         <div style={{ marginTop:16 }}>
@@ -1876,6 +1889,10 @@ function SuccessStates({ onToast }:{ onToast:(m:string)=>void }) {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function CareExecution() {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedBookingId = searchParams.get('bookingId')
+
   const [sub, setSub] = useState<SubView>('dashboard')
   const [toast, setToast] = useState<string|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -1888,19 +1905,35 @@ export default function CareExecution() {
   const [loadError, setLoadError] = useState<string|null>(null)
   const [starting, setStarting] = useState(false)
   const [ending, setEnding] = useState(false)
+  const [messagingClient, setMessagingClient] = useState(false)
 
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
 
+  const handleMessageClient = async () => {
+    if(!booking || messagingClient) return
+    setMessagingClient(true)
+    try {
+      const conversationId = await getOrCreateBookingConversation(booking.id)
+      navigate(`/agent/messaginghub?conversationId=${conversationId}`)
+    } catch(e:any) {
+      showToast(e?.message || "Couldn't open messages. Please try again.")
+    } finally {
+      setMessagingClient(false)
+    }
+  }
+
   // Loads real profile/booking/visit-log/notification data once on mount.
-  // Nothing here is mocked — a failure surfaces as loadError rather than
-  // falling back to demo content.
+  // A specific ?bookingId= (from a booking/task card elsewhere in the app)
+  // loads that exact booking; otherwise falls back to the agent's single
+  // auto-picked "most relevant" active booking. Nothing here is mocked — a
+  // failure surfaces as loadError rather than falling back to demo content.
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
         const [profileData, bookingData, notifData] = await Promise.all([
           getMyProfile(),
-          getMyActiveBooking(),
+          requestedBookingId ? getBookingById(requestedBookingId) : getMyActiveBooking(),
           getMyNotifications(),
         ])
         if(cancelled) return
@@ -1919,7 +1952,7 @@ export default function CareExecution() {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [requestedBookingId])
 
   async function handleStartVisit(gps:{lat:number;lng:number}|null) {
     if(!booking) return
@@ -2069,7 +2102,7 @@ export default function CareExecution() {
       return <div style={{ padding:'24px 28px 60px' }}><p style={{ fontSize:13, color:C.error }}>{loadError}</p></div>
     }
     switch(sub) {
-      case 'dashboard':     return <LiveDashboard booking={booking} visitLog={visitLog} onNav={setSub} onToast={showToast} onSaveNotes={handleSaveNotes} />
+      case 'dashboard':     return <LiveDashboard booking={booking} visitLog={visitLog} onNav={setSub} onToast={showToast} onSaveNotes={handleSaveNotes} onMessageClient={handleMessageClient} messagingClient={messagingClient} />
       case 'startVisit':    return <StartVisit booking={booking} visitLog={visitLog} profile={profile} starting={starting} onStart={handleStartVisit} onNav={setSub} />
       case 'liveStatus':    return <LiveStatusView visitLog={visitLog} onSetStatus={handleSetStatus} />
       case 'gps':           return <GPSTracking onToast={showToast} />
@@ -2101,6 +2134,10 @@ export default function CareExecution() {
     <div style={{ display:'flex', minHeight:'100vh', background:C.bg, fontFamily:'Manrope,sans-serif' }}>
       {/* Sidebar */}
       <div className="lce-sidebar" style={{ width:224, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', position:'sticky', top:0, height:'100vh', overflowY:'auto', flexShrink:0 }}>
+        <button onClick={()=>navigate('/agent/agentdashboard')}
+          style={{ display:'flex', gap:7, alignItems:'center', padding:'12px 18px', border:'none', borderBottom:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, textAlign:'left' as const }}>
+          <span style={{ display:'flex' }}>{I.chevL}</span> Back to Dashboard
+        </button>
         <div style={{ padding:'16px 18px 14px', borderBottom:`1px solid ${C.border}` }}>
           <div style={{ display:'flex', gap:10, alignItems:'center' }}>
             <Avatar initials={initials(profile?.full_name)} size={36} />

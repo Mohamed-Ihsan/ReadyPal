@@ -1486,9 +1486,15 @@ export default function HiringNegotiation() {
         <>
           {/* Header */}
           <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`, padding:'0 28px', position:'sticky', top:0, zIndex:30 }}>
-            <div style={{ padding:'12px 0 0', marginBottom:0 }}>
-              <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:4 }}>Hiring & Negotiation</p>
-              <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:0 }}>{CARE_REQUEST.title}</p>
+            <div style={{ padding:'12px 0 0', marginBottom:0, display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12 }}>
+              <div>
+                <p style={{ fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:4 }}>Hiring & Negotiation</p>
+                <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:0 }}>{CARE_REQUEST.title}</p>
+              </div>
+              <button onClick={()=>navigate('/dashboard')}
+                style={{ display:'flex', gap:6, alignItems:'center', padding:'7px 12px', borderRadius:9, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub, flexShrink:0 }}>
+                {I.chevronL} Back to Dashboard
+              </button>
             </div>
             <div style={{ display:'flex', gap:0, overflowX:'auto' }}>
               {NAV.map(n=>(

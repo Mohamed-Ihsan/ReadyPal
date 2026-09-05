@@ -2,10 +2,11 @@ import {
   useState, useEffect, useRef, useCallback,
   type ReactNode, type CSSProperties, type PointerEvent as RE,
 } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import logoFull from '@/imports/20260723_170707.png'
 import logoIcon from '@/imports/20260723_164632.png'
 import logoWhite from '@/imports/20260723_165045.png'
+import type { Page } from '../components/Navbar'
 
 // ─── Icon map (inline SVGs, no emoji) ────────────────────────────────────────
 const MWI: Record<string, ReactNode> = {
@@ -56,21 +57,7 @@ const PHOTOS = {
   team2:      UP('photo-1622253694238-3b22139576c6', 320, 320),
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-type Page = 'home'|'about'|'how-it-works'|'become-agent'|'services'|'contact'|'pricing'|'faq'|'privacy'|'terms'|'404'
-
 // ─── Hooks ────────────────────────────────────────────────────────────────────
-function useScrollProgress(range = 120) {
-  const [progress, setProgress] = useState(0)
-  useEffect(() => {
-    const h = () => setProgress(Math.min(window.scrollY / range, 1))
-    window.addEventListener('scroll', h, { passive: true })
-    h()
-    return () => window.removeEventListener('scroll', h)
-  }, [range])
-  return progress
-}
-
 function useInView(threshold = 0.25) {
   const ref = useRef<HTMLDivElement>(null)
   const [inView, setInView] = useState(false)
@@ -233,91 +220,6 @@ function StarRow({ value = 5 }: { value?: number }) {
   )
 }
 
-// ─── Navbar ───────────────────────────────────────────────────────────────────
-function Navbar({ nav, cur }: { nav: (p: Page) => void; cur: Page }) {
-  const scrollP = useScrollProgress(120)
-  const lerp = (a: number, b: number, t: number) => a + (b - a) * t
-  const [mob, setMob] = useState(false)
-  const navigate = useNavigate()
-
-  const links: [string, Page][] = [
-    ['How It Works','how-it-works'],['Services','services'],
-    ['Become an Agent','become-agent'],['About','about'],['Contact','contact'],
-  ]
-
-  return (
-    <nav style={{
-      position:'fixed', top:0, left:0, right:0, zIndex:100,
-      padding: `${lerp(18,10,scrollP)}px 32px`,
-      background: `rgba(255,255,255,${lerp(0.45,0.88,scrollP)})`,
-      backdropFilter: `blur(${lerp(14,40,scrollP)}px) saturate(${lerp(1.5,2.2,scrollP)})`,
-      WebkitBackdropFilter: `blur(${lerp(14,40,scrollP)}px) saturate(${lerp(1.5,2.2,scrollP)})`,
-      borderBottom: `1px solid rgba(255,255,255,${lerp(0.38,0.72,scrollP)})`,
-      boxShadow: `0 4px 32px rgba(44,62,67,${lerp(0,0.07,scrollP)})`,
-      display:'flex', alignItems:'center', justifyContent:'space-between',
-    }}>
-      <button onClick={() => nav('home')} style={{ background:'none', border:'none', cursor:'pointer', padding:0, display:'flex', alignItems:'center', gap:10 }}>
-        <img src={logoFull} alt="ReadyPal" style={{ height:84, objectFit:'contain' }} />
-      </button>
-
-      {/* Desktop links */}
-      <div className="hidden md:flex items-center gap-1">
-        {links.map(([label, page]) => (
-          <button key={page} onClick={() => nav(page)} style={{
-            padding:'7px 14px', borderRadius:10, border:'none', cursor:'pointer',
-            fontFamily:'Manrope,sans-serif', fontSize:14, fontWeight:500,
-            background: cur === page ? 'rgba(0,115,122,0.08)' : 'transparent',
-            color: cur === page ? '#00737A' : '#4A5E65',
-            transition:'all 0.15s',
-          }}>{label}</button>
-        ))}
-      </div>
-
-      <div className="hidden md:flex items-center gap-2.5">
-        <div style={{
-          padding:'4px 10px', borderRadius:8, fontSize:12, fontWeight:600, cursor:'pointer',
-          background:'rgba(0,115,122,0.06)', color:'#00737A', border:'none',
-          display:'flex', alignItems:'center', gap:5,
-        }}>
-          <span>🌐</span> EN
-        </div>
-        <Btn variant="ghost" size="sm" onClick={() => navigate('/auth?mode=login')}>Log in</Btn>
-        <Btn variant="primary" size="sm" onClick={() => navigate('/auth?mode=signup')}>Get Started</Btn>
-      </div>
-
-      {/* Mobile hamburger */}
-      <button className="md:hidden" onClick={() => setMob(v => !v)}
-        style={{ background:'none', border:'none', cursor:'pointer', color:'#2C3E43', padding:4 }}>
-        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-          <path d={mob ? 'M3 3l16 16M19 3L3 19' : 'M3 6h16M3 11h16M3 16h16'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
-      </button>
-
-      {mob && (
-        <div style={{
-          position:'absolute', top:'100%', left:0, right:0,
-          background:'rgba(255,255,255,0.96)', backdropFilter:'blur(24px)', WebkitBackdropFilter:'blur(24px)',
-          borderBottom:'1px solid rgba(255,255,255,0.70)',
-          padding:'12px 24px 20px', display:'flex', flexDirection:'column', gap:4,
-          boxShadow:'0 8px 32px rgba(44,62,67,0.10)',
-        }}>
-          {links.map(([label, page]) => (
-            <button key={page} onClick={() => { nav(page); setMob(false) }} style={{
-              padding:'12px 4px', textAlign:'left', border:'none', background:'none', cursor:'pointer',
-              fontFamily:'Manrope,sans-serif', fontSize:15, fontWeight:600, color:'#2C3E43',
-              borderBottom:'1px solid #F2F4F5',
-            }}>{label}</button>
-          ))}
-          <div style={{ marginTop:12, display:'flex', gap:10 }}>
-            <Btn variant="secondary" size="md" fullWidth onClick={() => { setMob(false); navigate('/auth?mode=login') }}>Log in</Btn>
-            <Btn variant="primary" size="md" fullWidth onClick={() => { setMob(false); navigate('/auth?mode=signup') }}>Get Started</Btn>
-          </div>
-        </div>
-      )}
-    </nav>
-  )
-}
-
 // ─── Footer ───────────────────────────────────────────────────────────────────
 function Footer({ nav }: { nav: (p: Page) => void }) {
   const links: [string, Page[]][] = [
@@ -463,7 +365,7 @@ function HomePage({ nav }: { nav: (p: Page) => void }) {
     <div>
       {/* ── 1. HERO ─────────────────────────────────────────────────────── */}
       <section ref={heroRef} onMouseMove={onHeroMove}
-        style={{ minHeight:'100vh', display:'flex', alignItems:'center', paddingTop:100, paddingBottom:80, paddingLeft:32, paddingRight:32, position:'relative', overflow:'hidden', background:'linear-gradient(160deg,#F0F7F8 0%,#F9F6F3 60%,#F5EDE8 100%)' }}>
+        style={{ minHeight:'100vh', display:'flex', alignItems:'center', paddingTop:40, paddingBottom:80, paddingLeft:32, paddingRight:32, position:'relative', overflow:'hidden', background:'linear-gradient(160deg,#F0F7F8 0%,#F9F6F3 60%,#F5EDE8 100%)' }}>
         {/* mesh blobs */}
         <div aria-hidden style={{ position:'absolute', inset:0, pointerEvents:'none' }}>
           <div style={{ position:'absolute', top:-120, left:-80, width:600, height:600, borderRadius:'50%', background:'radial-gradient(circle,rgba(0,149,158,0.18) 0%,transparent 70%)', filter:'blur(2px)' }} />
@@ -861,7 +763,7 @@ function HomePage({ nav }: { nav: (p: Page) => void }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function AboutPage({ nav }: { nav: (p: Page) => void }) {
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       {/* Hero */}
       <section style={{ padding:'80px 32px 64px', background:'linear-gradient(160deg,#F0F7F8,#F9F6F3)', textAlign:'center' }}>
         <div style={{ maxWidth:720, margin:'0 auto' }}>
@@ -956,7 +858,7 @@ function HowItWorksPage({ nav }: { nav: (p: Page) => void }) {
   const navigate = useNavigate()
   const [tab, setTab] = useState<'family'|'agent'>('family')
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       <section style={{ padding:'80px 32px 64px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
         <Chip>How It Works</Chip>
         <h1 style={{ fontSize:'clamp(32px,5vw,52px)', fontWeight:900, color:'#2C3E43', marginTop:16, marginBottom:16, letterSpacing:'-0.025em', lineHeight:1.1 }}>
@@ -1051,7 +953,7 @@ function HowItWorksPage({ nav }: { nav: (p: Page) => void }) {
 function BecomeAgentPage({ nav }: { nav: (p: Page) => void }) {
   const navigate = useNavigate()
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       {/* Hero */}
       <section style={{ padding:'80px 32px 64px', background:'linear-gradient(135deg,#00737A 0%,#00959E 55%,#EE8153 100%)', position:'relative', overflow:'hidden' }}>
         <div aria-hidden style={{ position:'absolute', inset:0, opacity:0.12 }}>
@@ -1151,7 +1053,7 @@ function ServicesPage({ nav }: { nav: (p: Page) => void }) {
     (search === '' || s.title.toLowerCase().includes(search.toLowerCase()) || s.desc.toLowerCase().includes(search.toLowerCase()))
   )
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       <section style={{ padding:'80px 32px 48px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
         <Chip>Services</Chip>
         <h1 style={{ fontSize:'clamp(30px,5vw,50px)', fontWeight:900, color:'#2C3E43', marginTop:16, marginBottom:16, letterSpacing:'-0.025em', lineHeight:1.1 }}>
@@ -1209,7 +1111,7 @@ function ContactPage() {
   const [form, setForm] = useState({ name:'', email:'', subject:'', message:'' })
   const [sent, setSent] = useState(false)
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       <section style={{ padding:'80px 32px 48px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
         <Chip>Contact</Chip>
         <h1 style={{ fontSize:'clamp(30px,5vw,50px)', fontWeight:900, color:'#2C3E43', marginTop:16, marginBottom:16, letterSpacing:'-0.025em' }}>
@@ -1297,7 +1199,7 @@ function ContactPage() {
 function PricingPage({ nav }: { nav: (p: Page) => void }) {
   const navigate = useNavigate()
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       <section style={{ padding:'80px 32px 48px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
         <Chip>Pricing</Chip>
         <h1 style={{ fontSize:'clamp(30px,5vw,50px)', fontWeight:900, color:'#2C3E43', marginTop:16, marginBottom:16, letterSpacing:'-0.025em' }}>
@@ -1386,7 +1288,7 @@ function FAQPage({ nav }: { nav: (p: Page) => void }) {
   ]
   let globalIdx = 0
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       <section style={{ padding:'80px 32px 48px', background:'linear-gradient(160deg,#F0F7F8,#F9F9F9)', textAlign:'center' }}>
         <Chip>FAQ</Chip>
         <h1 style={{ fontSize:'clamp(30px,5vw,50px)', fontWeight:900, color:'#2C3E43', marginTop:16, marginBottom:16, letterSpacing:'-0.025em' }}>Frequently asked questions</h1>
@@ -1437,7 +1339,7 @@ function FAQPage({ nav }: { nav: (p: Page) => void }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function LegalPage({ title, sections }: { title: string; sections: { heading: string; body: string }[] }) {
   return (
-    <div style={{ paddingTop:90 }}>
+    <div style={{ paddingTop:40 }}>
       <section style={{ padding:'60px 32px 32px', background:'#F9F9F9', textAlign:'center' }}>
         <h1 style={{ fontSize:'clamp(28px,4vw,44px)', fontWeight:900, color:'#2C3E43', letterSpacing:'-0.02em' }}>{title}</h1>
         <p style={{ fontSize:14, color:'#9AAAB0', marginTop:8 }}>Last updated: 1 January 2025</p>
@@ -1461,7 +1363,7 @@ function LegalPage({ title, sections }: { title: string; sections: { heading: st
 // ═══════════════════════════════════════════════════════════════════════════════
 function NotFoundPage({ nav }: { nav: (p: Page) => void }) {
   return (
-    <div style={{ paddingTop:90, minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(160deg,#F0F7F8,#F9F6F3)' }}>
+    <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(160deg,#F0F7F8,#F9F6F3)' }}>
       <div style={{ textAlign:'center', padding:'0 32px' }}>
         <div style={{ fontSize:80, marginBottom:16 }}>🌿</div>
         <h1 style={{ fontSize:'clamp(60px,10vw,120px)', fontWeight:900, color:'#00737A', letterSpacing:'-0.04em', lineHeight:0.9, marginBottom:12 }}>404</h1>
@@ -1482,12 +1384,18 @@ function NotFoundPage({ nav }: { nav: (p: Page) => void }) {
 //  MAIN MARKETING WEBSITE ROUTER
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function MarketingWebsite() {
-  const [page, setPage] = useState<Page>('home')
+  // The active "page" is the `?page=` search param, not local state — this
+  // is the same contract the global Navbar (rendered above this component
+  // by App.tsx's PublicLayout) reads and writes, so the two always agree on
+  // what's current without any prop-drilling between them, and a page is
+  // now bookmarkable/shareable and survives a refresh.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const page = (searchParams.get('page') as Page) || 'home'
 
   const nav = useCallback((p: Page) => {
-    setPage(p)
+    setSearchParams(p === 'home' ? {} : { page: p })
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [])
+  }, [setSearchParams])
 
   const privacySections = [
     { heading:'1. Information We Collect', body:'We collect information you provide directly, such as name, email, phone number, and address when you create an account. We also collect usage data, device information, and location data only when you opt in for visit tracking.' },
@@ -1523,7 +1431,9 @@ export default function MarketingWebsite() {
 
   return (
     <div style={{ fontFamily:'Manrope,sans-serif', background:'#FAFAF9', minHeight:'100vh' }}>
-      {page !== '404' && <Navbar nav={nav} cur={page} />}
+      {/* The Navbar itself is now rendered once, globally, by App.tsx's
+          PublicLayout — not here — so it stays mounted across route changes
+          instead of remounting with this page. */}
       <div key={page} className="page-enter">
         {renderPage()}
       </div>
