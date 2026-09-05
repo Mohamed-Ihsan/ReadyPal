@@ -179,7 +179,14 @@ export default function Navbar() {
     navigate('/')
   }
 
-  const menuItems = profileMenuItems(profile?.role)
+  // A session with no role yet (a Google OAuth sign-in that hasn't chosen
+  // client/agent on /auth's role-select step) is still mid-onboarding — the
+  // real app destinations below (Dashboard, Find Care, Settings) all assume
+  // a role exists, so they're hidden rather than sending a half-signed-up
+  // user into a screen that doesn't know what to do with them. The one way
+  // out of the dropdown is back into /auth to finish choosing a role.
+  const hasRole = !!profile?.role && String(profile.role).trim() !== ''
+  const menuItems = hasRole ? profileMenuItems(profile?.role) : []
   const centerLinks = isAuthed ? AUTHED_MARKETING_LINKS : MARKETING_LINKS
 
   return (
@@ -251,12 +258,17 @@ export default function Navbar() {
                   </p>
                 </div>
                 <div style={{ padding: '6px 0', borderBottom: '1px solid #F2F4F5' }}>
-                  {menuItems.map(([label, href]) => (
+                  {hasRole ? menuItems.map(([label, href]) => (
                     <button key={href} onClick={() => goToApp(href)} style={{
                       width: '100%', padding: '9px 16px', textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer',
                       fontFamily: 'Manrope,sans-serif', fontSize: 13, fontWeight: 600, color: '#2C3E43',
                     }}>{label}</button>
-                  ))}
+                  )) : (
+                    <button onClick={() => goToApp('/auth')} style={{
+                      width: '100%', padding: '9px 16px', textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer',
+                      fontFamily: 'Manrope,sans-serif', fontSize: 13, fontWeight: 700, color: '#00737A',
+                    }}>Finish setting up your account</button>
+                  )}
                 </div>
                 <button onClick={handleLogout} style={{
                   width: '100%', padding: '12px 16px', textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer',
@@ -302,12 +314,17 @@ export default function Navbar() {
                   </p>
                 </div>
               </div>
-              {menuItems.map(([label, href]) => (
+              {hasRole ? menuItems.map(([label, href]) => (
                 <button key={href} onClick={() => goToApp(href)} style={{
                   padding: '10px 4px', textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer',
                   fontFamily: 'Manrope,sans-serif', fontSize: 14, fontWeight: 600, color: '#00737A',
                 }}>{label}</button>
-              ))}
+              )) : (
+                <button onClick={() => goToApp('/auth')} style={{
+                  padding: '10px 4px', textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer',
+                  fontFamily: 'Manrope,sans-serif', fontSize: 14, fontWeight: 700, color: '#00737A',
+                }}>Finish setting up your account</button>
+              )}
               <div style={{ borderBottom: '1px solid #F2F4F5', margin: '8px 0' }} />
             </>
           )}

@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabaseClient'
-import { getMyProfile, getMyAgentDetails, updateProfile } from '../lib/api'
+import { getMyProfile, getMyAgentDetails, updateProfile, signInWithGoogle, getCurrentUser } from '../lib/api'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
 
@@ -505,6 +505,7 @@ function LoginScreen({ go, onAuthenticated }: { go: (s: AuthScreen) => void; onA
   const [show, setShow] = useState(false)
   const [remember, setRemember] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
   const [error, setError] = useState('')
 
   const submit = async () => {
@@ -525,6 +526,19 @@ function LoginScreen({ go, onAuthenticated }: { go: (s: AuthScreen) => void; onA
 
   // Real stored role/status is the source of truth for where to land — not the URL.
   onAuthenticated()
+  }
+
+  const submitWithGoogle = async () => {
+  if (googleLoading) return
+  setError(''); setGoogleLoading(true)
+  try {
+    // Navigates away to Google's consent screen — the loading state here
+    // only covers the brief window before that redirect actually happens.
+    await signInWithGoogle()
+  } catch (err) {
+    setGoogleLoading(false)
+    setError(err instanceof Error ? err.message : "Couldn't sign in with Google. Please try again.")
+  }
   }
 
 
@@ -577,10 +591,11 @@ function LoginScreen({ go, onAuthenticated }: { go: (s: AuthScreen) => void; onA
 
       {/* Social */}
       <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        <button style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, padding:'11px 16px', borderRadius:12, border:`1.5px solid ${C.border}`, background:'#fff', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:14, fontWeight:600, color:C.type, transition:'all 0.15s' }}
+        <button onClick={submitWithGoogle} disabled={googleLoading}
+          style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, padding:'11px 16px', borderRadius:12, border:`1.5px solid ${C.border}`, background:'#fff', cursor:googleLoading?'default':'pointer', opacity:googleLoading?0.7:1, fontFamily:'Manrope,sans-serif', fontSize:14, fontWeight:600, color:C.type, transition:'all 0.15s' }}
           onMouseEnter={e => e.currentTarget.style.borderColor = '#C8D0D4'}
           onMouseLeave={e => e.currentTarget.style.borderColor = C.border}>
-          {Ico.google} Continue with Google
+          {Ico.google} {googleLoading ? 'Redirecting to Google…' : 'Continue with Google'}
         </button>
         <button style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10, padding:'11px 16px', borderRadius:12, border:`1.5px solid ${C.border}`, background:'#fff', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:14, fontWeight:600, color:C.type, transition:'all 0.15s' }}
           onMouseEnter={e => e.currentTarget.style.borderColor = '#C8D0D4'}
@@ -593,11 +608,77 @@ function LoginScreen({ go, onAuthenticated }: { go: (s: AuthScreen) => void; onA
 }
 
 // ─── Role select ──────────────────────────────────────────────────────────────
-function RoleSelectScreen({ go, role, setRole }: {
+// `hasSession` distinguishes two very different visitors landing here:
+//  - No session: a normal unauthenticated visitor starting signup — Continue
+//    walks them into the client-1 form, which is what actually calls
+//    supabase.auth.signUp().
+//  - A session already exists (most commonly a first-time Google OAuth
+//    sign-in — signUp() was never called, and the DB's own new-user trigger
+//    already created a bare profiles row with no role) — Continue saves the
+//    chosen role straight onto that existing row instead of trying to sign
+//    them up a second time, then hands off to the same real-role router
+//    LoginScreen uses.
+//
+// The DB's check_role_update() trigger only permits this write while
+// OLD.role IS NULL — i.e. exactly this one-time "choose your role" moment.
+// Any later attempt to change it (this screen reached again with a role
+// already set, which routeAuthenticatedUser's own routing should already
+// prevent in normal use) is rejected by the trigger itself, not by
+// anything client-side — so the choice made here is effectively permanent.
+function RoleSelectScreen({ go, role, setRole, hasSession, onRoleSaved }: {
   go: (s: AuthScreen) => void
   role: 'client'|'agent'|null
   setRole: (r: 'client'|'agent'|null) => void
+  hasSession: boolean
+  onRoleSaved: () => void | Promise<void>
 }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const continueClick = async () => {
+    if (!role) return
+    if (!hasSession) {
+      go('client-1')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const user = await getCurrentUser()
+      const meta = user?.user_metadata ?? {}
+
+      // Whitelist exactly the columns this write is allowed to touch — never
+      // forward the raw OAuth metadata object wholesale (it also carries
+      // picture/sub/provider_id/email_verified/etc., none of which are
+      // profiles columns, and any one of which could be what a PostgREST
+      // 400 is actually complaining about).
+      if (role !== 'agent' && role !== 'client') {
+        throw new Error('Please select a valid role before continuing.')
+      }
+      const payload: { role: 'agent'|'client'; full_name?: string; email?: string } = { role }
+      const fullName = String(meta.full_name || meta.name || '').trim()
+      if (fullName) payload.full_name = fullName
+      const email = String(user?.email || '').trim()
+      if (email) payload.email = email
+
+      await updateProfile(payload)
+      await onRoleSaved()
+    } catch (err: any) {
+      setSaving(false)
+      console.error('Profile update error details:', err)
+      const rawMessage: string = err?.message || err?.error_description || err?.details || ''
+      // The DB trigger's own wording ("Changing your own role is not
+      // permitted") is written for the one-time-choice case being blocked a
+      // second time, not for someone choosing for the first time — surface
+      // something that actually explains what happened instead of that raw text.
+      setError(
+        /role.*not permitted|not permitted.*role/i.test(rawMessage)
+          ? "Your role has already been set and can't be changed here. Contact support if this needs to change."
+          : rawMessage || 'Something went wrong. Please try again.'
+      )
+    }
+  }
+
   const roles = [
     {
       key: 'client' as const,
@@ -628,7 +709,10 @@ function RoleSelectScreen({ go, role, setRole }: {
         {Ico.arrowL} Back
       </button>
       <h1 style={{ fontSize:26, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:6 }}>Who are you?</h1>
-      <p style={{ fontSize:14, color:C.sub, marginBottom:28 }}>Select the role that best describes you.</p>
+      <p style={{ fontSize:14, color:C.sub, marginBottom:6 }}>Select the role that best describes you.</p>
+      <p style={{ fontSize:12, color:C.muted, marginBottom:28 }}>This can't be changed later, so pick the one that matches what you'll actually be doing on ReadyPal.</p>
+
+      {error && <InlineAlert type="error" message={error} />}
 
       <div style={{ display:'flex', flexDirection:'column', gap:14, marginBottom:28 }}>
         {roles.map(r => (
@@ -656,7 +740,7 @@ function RoleSelectScreen({ go, role, setRole }: {
         ))}
       </div>
 
-      <Btn variant="primary" size="lg" fullWidth disabled={!role} onClick={() => role && go('client-1')}>
+      <Btn variant="primary" size="lg" fullWidth disabled={!role} loading={saving} onClick={continueClick}>
         Continue {Ico.arrowR}
       </Btn>
     </AuthShell>
@@ -1729,6 +1813,11 @@ export default function AuthOnboarding() {
     modeParam === 'login' ? 'login' : modeParam === 'signup' ? 'role-select' : 'welcome'
   )
   const [signupRole, setSignupRole] = useState<'client'|'agent'|null>(roleParam === 'agent' ? 'agent' : null)
+  // Whether an auth session already exists (e.g. a Google OAuth redirect
+  // that landed here with no role chosen yet) — RoleSelectScreen needs this
+  // to know whether "Continue" should save straight onto that session's
+  // profile row, or walk the visitor through the normal signUp() form.
+  const [hasSession, setHasSession] = useState(false)
 
   // Shared client-signup state — owned here (not inside each step) so Back/
   // Forward navigation across client-1..4 never loses previously entered data.
@@ -1745,36 +1834,90 @@ export default function AuthOnboarding() {
   // Entry query params (mode/role/intent) are entry intent only. Once a user
   // is authenticated, their real stored profile role + agent application
   // status are the source of truth for where they land — never the URL.
+  //
+  // A brand-new account (Google OAuth included) has a `profiles` row with no
+  // role yet — the same trigger that creates it on signup doesn't know
+  // whether they're a client or an agent, and if the row doesn't exist at
+  // all yet, getMyProfile() throws PGRST116. Neither case — nor any other
+  // failure to read the profile at all — is ever grounds to land someone on
+  // a dashboard. Landing on a dashboard requires a *confirmed* role read
+  // back from the database; anything less than that keeps them on
+  // role-select instead. This also covers the moment right after an OAuth
+  // redirect where onAuthStateChange can fire before Supabase has fully
+  // finished its session exchange — getMyProfile() briefly has no user to
+  // look up then, and that must never be misread as "existing client".
+  // onAuthStateChange fires again once the session actually settles, so a
+  // transient failure here self-corrects on its own shortly after.
   const routeAuthenticatedUser = useCallback(async () => {
+    let profile: any = null
     try {
-      const profile = await getMyProfile()
-      if (profile?.role === 'agent') {
-        const agentDetails = await getMyAgentDetails()
-        navigate(agentDetails?.application_status === 'approved' ? '/agent/agentdashboard' : '/agent/onboarding')
-      } else {
-        navigate(intentParam === 'care-request' ? '/request/new' : '/dashboard')
+      profile = await getMyProfile()
+    } catch (err: any) {
+      if (err?.code !== 'PGRST116') {
+        console.error('Failed to load profile while resolving destination:', err)
       }
-    } catch (err) {
-      console.error('Failed to resolve authenticated destination:', err)
-      navigate('/dashboard')
+      go('role-select')
+      return
     }
-  }, [navigate, intentParam])
+
+    console.log('Profile fetched on OAuth login:', profile)
+
+    // Strict: a role of only whitespace (e.g. ' ') is truthy but still not a
+    // real, chosen role, so !profile.role alone isn't enough here.
+    const roleIsUnset = !profile || !profile.role || String(profile.role).trim() === ''
+    if (roleIsUnset) {
+      go('role-select')
+      return
+    }
+
+    // Exhaustive by design, not if/else-with-a-catch-all: /dashboard is
+    // reachable ONLY for a confirmed role === 'client'. Any role value that
+    // is neither 'agent' nor 'client' (a typo'd/legacy value, say) must not
+    // silently fall through to the client dashboard — it goes back to
+    // role-select just like an unset role would.
+    if (profile.role === 'agent') {
+      let agentDetails: any = null
+      try {
+        agentDetails = await getMyAgentDetails()
+      } catch (err) {
+        console.error('Failed to load agent details:', err)
+      }
+      navigate(agentDetails?.application_status === 'approved' ? '/agent/agentdashboard' : '/agent/onboarding')
+    } else if (profile.role === 'client') {
+      navigate(intentParam === 'care-request' ? '/request/new' : '/dashboard')
+    } else {
+      console.error('Unexpected profile role, sending to role-select:', profile.role)
+      go('role-select')
+    }
+  }, [navigate, intentParam, go])
 
   // Don't trap an already-authenticated user on the auth screen — send them
   // straight to their real destination (still honouring care-request intent).
+  // Also the landing point for Google's OAuth redirect (see
+  // signInWithGoogle's redirectTo): the code exchange it triggers resolves
+  // asynchronously after this component has already mounted, so a one-shot
+  // getSession() alone can race it — onAuthStateChange is what reliably
+  // catches the session the moment Supabase finishes processing it.
   useEffect(() => {
     let cancelled = false
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!cancelled && session?.user) routeAuthenticatedUser()
+      if (cancelled) return
+      setHasSession(!!session?.user)
+      if (session?.user) routeAuthenticatedUser()
     })
-    return () => { cancelled = true }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (cancelled) return
+      setHasSession(!!session?.user)
+      if (session?.user) routeAuthenticatedUser()
+    })
+    return () => { cancelled = true; subscription.unsubscribe() }
   }, [routeAuthenticatedUser])
 
   const render = () => {
     switch (screen) {
       case 'welcome':         return <WelcomeScreen go={go} />
       case 'login':           return <LoginScreen go={go} onAuthenticated={routeAuthenticatedUser} />
-      case 'role-select':     return <RoleSelectScreen go={go} role={signupRole} setRole={setSignupRole} />
+      case 'role-select':     return <RoleSelectScreen go={go} role={signupRole} setRole={setSignupRole} hasSession={hasSession} onRoleSaved={routeAuthenticatedUser} />
       case 'client-1':        return <ClientStep1 go={go} role={signupRole ?? 'client'} data={clientData} onChange={updateClientData} />
       case 'client-2':        return <ClientStep2 go={go} data={clientData} onChange={updateClientData} />
       case 'client-3':        return <ClientStep3 go={go} data={clientData} onChange={updateClientData} />
