@@ -3870,25 +3870,7 @@ export async function getBeneficiariesFull(clientId: string) {
     const bks = bookingsByBene[r.id] || []
     const today = new Date().toISOString().slice(0, 10)
     const upcoming = bks.find((b: any) => b.scheduled_date >= today) || bks[bks.length - 1]
-    return {
-      id: r.id, name: r.name, preferred: r.preferred_name || r.name, dob: r.dob || '', age: r.age || 0,
-      gender: r.gender || '', relationship: r.relationship || '', nic: r.nic || '', province: r.province || '',
-      city: r.city || '', address: r.address || '', postalCode: r.postal_code || '', landmark: r.landmark || '',
-      bloodGroup: r.blood_group || '', allergies: r.allergies || '', conditions: r.conditions || [],
-      medications: r.medications || [], doctor: r.doctor || '', hospital: r.hospital || '', mobility: r.mobility || '',
-      vision: r.vision || '', hearing: r.hearing || '', memory: r.memory || '', medNotes: r.med_notes || '',
-      emergencyContacts: r.emergency_contacts || [], prefLang: r.pref_languages || [], prefGender: r.pref_gender || '',
-      dietary: r.dietary || '', religious: r.religious || '', visitTimes: r.visit_times || '', commPref: r.comm_pref || '',
-      specialReq: r.special_req || '', documents: [], careHistory: [], notes: [],
-      status: r.status || 'active',
-      careStatus: upcoming ? (careStatusMap[upcoming.status] || 'Open Request') : 'Open Request',
-      assignedAgent: (upcoming?.profiles as any)?.full_name || '—',
-      nextVisit: upcoming?.scheduled_date ? `${upcoming.scheduled_date}${upcoming.scheduled_time ? ' · ' + upcoming.scheduled_time : ''}` : '—',
-      rating: 0,
-    }
-  })
-
-  return mapBeneficiaryRow(r, upcoming, [])
+    return mapBeneficiaryRow(r, upcoming, [])
   })
 }
 

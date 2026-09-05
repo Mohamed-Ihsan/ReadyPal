@@ -9,7 +9,7 @@ import {
 import logoFull from '@/imports/20260723_170707.png'
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
 import '../lib/leafletSetup'
-import { createBeneficiary } from '../lib/api'
+
 
 type GeocodeResult = { lat:string; lon:string; display_name:string }
 
@@ -1068,52 +1068,26 @@ function beneficiaryToAddData(b: Beneficiary): AddData {
     ec1Name:ec1?.name||'', ec1Rel:ec1?.relationship||'', ec1Phone:ec1?.phone||'', ec1Email:ec1?.email||'',
     ec2Name:ec2?.name||'', ec2Rel:ec2?.relationship||'', ec2Phone:ec2?.phone||'', ec2Email:ec2?.email||'',
     prefLang:b.prefLang, prefGender:b.prefGender||'No Preference', dietary:b.dietary, religious:b.religious, visitTimes:b.visitTimes, commPref:b.commPref, specialReq:b.specialReq,
+    lat:b.lat??6.9271, lng:b.lng??79.8612,
   }
 }
 
-// Module-scope (not declared inside AddWizard): defining these as inline
-// functions inside AddWizard's render body would give them a new function
-// identity on every re-render (i.e. every keystroke, since typing calls
-// setData). React treats a changed component identity as a different
-// component type and remounts the whole subtree — including the real
-// <input>/<textarea> DOM nodes — which is what was destroying focus after
-// every character. Keeping them at module scope keeps their identity
-// stable across renders, so React only patches props/DOM instead of
-// remounting.
+function AddWizardG2({ children }: { children:ReactNode }) {
+  return <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}} className="bm-2col">{children}</div>
+}
 
-
-
-function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
-  const [step, setStep] = useState(1)
-  const [data, setData] = useState<AddData>(defaultAdd)
-  const [done, setDone] = useState(false)
-
-  const provinces = ['Western','Central','Southern','Northern','Eastern','North Western','North Central','Uva','Sabaragamuwa']
-  const cities: Record<string,string[]> = { Western:['Colombo','Gampaha','Kalutara'], Central:['Kandy','Matale','Nuwara Eliya'], Southern:['Galle','Matara','Hambantota'], 'North Western':['Kurunegala','Puttalam'] }
-  const langs = ['Sinhala','Tamil','English','Malay']
-  const genders = ['No Preference','Female','Male']
-
-  const total = 7
-  const next = () => step<total ? setStep(s=>s+1) : setDone(true)
-  const back = () => step>1 ? setStep(s=>s-1) : onBack()
-
-  if (done) {
-    return (
-      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:40, textAlign:'center' }}>
-        <div style={{ width:80, height:80, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#00959E)`, display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 20px', boxShadow:`0 8px 28px ${C.primary}30` }}>
-          <svg width="36" height="36" viewBox="0 0 36 36" fill="none"><path d="M6 18l8 8 16-18" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </div>
-        <h2 style={{ fontSize:28, fontWeight:900, color:C.type, letterSpacing:'-0.02em', marginBottom:8, fontFamily:'Manrope,sans-serif' }}>Beneficiary Added!</h2>
-        <p style={{ fontSize:15, color:C.muted, maxWidth:400, lineHeight:1.6, marginBottom:32 }}><strong>{data.name||'The beneficiary'}</strong> has been added to your ReadyPal account. You can now create care requests for them.</p>
-        <div style={{ display:'flex', gap:12 }}>
-          <Btn label="View Profile" variant="primary" icon={I.eye} onClick={onDone} />
-          <Btn label="Back to Beneficiaries" variant="secondary" onClick={onBack} />
-        </div>
-      </div>
-    )
-  }
-
-  const Shell = ({ title, sub, canNext=true, children }: { title:string; sub:string; canNext?:boolean; children:ReactNode }) => (
+// Module-scope shared step shell used by every step of the wizard below.
+// Kept outside AddWizard (like AddWizardG2) so it has a stable component
+// identity across re-renders — defining it inside AddWizard's render body
+// would give it a new identity on every keystroke (since typing calls
+// setData), which makes React remount the whole subtree — including the
+// real <input>/<textarea> DOM nodes — destroying focus after every
+// character.
+function AddWizardShell({ title, sub, canNext=true, step, total, saving, saveError, onClose, onBack, onNext, children }: {
+  title:string; sub:string; canNext?:boolean; step:number; total:number; saving:boolean; saveError:string
+  onClose:()=>void; onBack:()=>void; onNext:()=>void; children:ReactNode
+}) {
+  return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
       {/* Top bar */}
       <div style={{ height:58, borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', padding:'0 28px', gap:12, flexShrink:0 }}>
@@ -1141,14 +1115,10 @@ function AddWizard({ onBack, onDone }: { onBack:()=>void; onDone:()=>void }) {
       <div style={{ borderTop:`1px solid ${C.border}`, padding:'14px 28px', display:'flex', gap:10, background:C.surface, flexShrink:0 }}>
         <Btn label={step===1?'Cancel':'Back'} variant="secondary" icon={I.chevronL} onClick={onBack} disabled={saving} />
         <div style={{ flex:1 }} />
-        <Btn label={step===total?(saving?'Saving…':(saving?'Saving...':'Save Beneficiary')):'Continue'} variant="primary" icon={step===total?I.save:I.chevronR} onClick={onNext} disabled={!canNext || saving || (step===total && saving)} />
+        <Btn label={step===total?(saving?'Saving…':'Save Beneficiary'):'Continue'} variant="primary" icon={step===total?I.save:I.chevronR} onClick={onNext} disabled={!canNext || saving} />
       </div>
     </div>
   )
-}
-
-function AddWizardG2({ children }: { children:ReactNode }) {
-  return <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}} className="bm-2col">{children}</div>
 }
 
 // Same categories/types the standalone Documents tab uses, keyed by the real
@@ -1715,27 +1685,21 @@ export default function BeneficiaryManagement() {
   const [documentsError, setDocumentsError] = useState('')
 
   const loadBeneficiaries = (id: string) => {
-    setListLoading(true)
-    setListError('')
-    return getBeneficiariesFull(id)
-      .then(setBeneficiaries)
-      .catch(err => { console.error('Failed to load beneficiaries:', err); setListError("We couldn't load your beneficiaries. Please try again.") })
-      .finally(() => setListLoading(false))
-  }
-  const [clientId, setClientId] = useState('')
-
-  const refetch = () => { if (clientId) getBeneficiariesFull(clientId).then(setBeneficiaries).catch(console.error) }
+  setListLoading(true)
+  setListError('')
+  return getBeneficiariesFull(id)
+    .then((data) => setBeneficiaries(data as Beneficiary[]))
+    .catch(err => { console.error('Failed to load beneficiaries:', err); setListError("We couldn't load your beneficiaries. Please try again.") })
+    .finally(() => setListLoading(false))
+}
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (data.user) {
         setClientId(data.user.id)
-        {
-        setClientId(data.user.id)
         loadBeneficiaries(data.user.id)
       } else {
         setListLoading(false)
-      }
       }
     })
   }, [])
@@ -1835,7 +1799,7 @@ export default function BeneficiaryManagement() {
         )}
         {view==='add-wizard' && (
           <div style={{ flex:1, display:'flex', flexDirection:'column', background:C.surface, overflow:'hidden' }}>
-            <AddWizard onBack={()=>setView('dashboard')} onDone={()=>{ setView('dashboard'); if (clientId) loadBeneficiaries(clientId) }} clientId={clientId} clientId={clientId} onSaved={refetch} />
+            <AddWizard onBack={()=>setView('dashboard')} onDone={()=>{ setView('dashboard'); if (clientId) loadBeneficiaries(clientId) }} clientId={clientId} />
           </div>
         )}
         {view==='edit-wizard' && profileBene && (
