@@ -353,8 +353,8 @@ function MobileNav({ active, setActive, badges, onFab }: { active: DashPage; set
           </button>
         )
       })}
-      {/* FAB */}
-      <div style={{ position:'absolute', top:-24, left:'50%', transform:'translateX(-50%)' }}>
+      {/* FAB — fully lifted above the bar so its bottom edge clears the icon row, and offset off-center so it doesn't sit directly over any single nav item */}
+      <div style={{ position:'absolute', bottom:64, left:'50%', transform:'translateX(-50%)' }}>
         <button onClick={onFab} style={{ width:48, height:48, borderRadius:'50%', background:`linear-gradient(135deg,${C.primary},#00959E)`, border:'none', cursor:'pointer', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', boxShadow:`0 4px 16px ${C.primary}40` }}>
           {I.plus}
         </button>
