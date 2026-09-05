@@ -198,6 +198,130 @@ export async function uploadProfilePhoto(file: File) {
   }
 }
 
+// ─── Account Settings: activity log ────────────────────────────────────────
+// Best-effort: a failed log write should never block the real action (a
+// password change, a profile edit) that triggered it, so this swallows its
+// own errors instead of throwing.
+export async function logUserActivity(
+  eventType: string,
+  description?: string,
+  metadata?: Record<string, unknown>
+): Promise<void> {
+  try {
+    const user = await getCurrentUser()
+    if (!user) return
+    const { error } = await supabase.from('user_activity_logs').insert({
+      user_id: user.id,
+      event_type: eventType,
+      description: description ?? null,
+      metadata: metadata ?? null,
+    })
+    if (error) throw error
+  } catch (err) {
+    console.error('Failed to log user activity:', err)
+  }
+}
+
+export async function getUserActivityLog(limit = 25) {
+  const user = await getCurrentUser()
+  if (!user) {
+    throw new Error('No authenticated user found')
+  }
+
+  const { data, error } = await supabase
+    .from('user_activity_logs')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (error) {
+    throw error
+  }
+
+  return data ?? []
+}
+
+export async function deleteUserActivityLog(id: string): Promise<void> {
+  const { error } = await supabase.from('user_activity_logs').delete().eq('id', id)
+  if (error) {
+    throw error
+  }
+}
+
+// ─── Account Settings: auth (MFA + linked identities) ──────────────────────
+export async function getMfaFactors() {
+  const { data, error } = await supabase.auth.mfa.listFactors()
+  if (error) {
+    throw error
+  }
+  return data
+}
+
+export async function getLinkedIdentities() {
+  const { data, error } = await supabase.auth.getUserIdentities()
+  if (error) {
+    throw error
+  }
+  return data.identities
+}
+
+export async function linkOAuthIdentity(provider: 'google' | 'apple' | 'facebook' | 'azure' | 'linkedin_oidc') {
+  const { data, error } = await supabase.auth.linkIdentity({ provider })
+  if (error) {
+    throw error
+  }
+  return data
+}
+
+export async function unlinkOAuthIdentity(identity: Awaited<ReturnType<typeof getLinkedIdentities>>[number]) {
+  const { error } = await supabase.auth.unlinkIdentity(identity)
+  if (error) {
+    throw error
+  }
+}
+
+// ─── Account Settings: data export ──────────────────────────────────────────
+export async function exportMyAccountData() {
+  const user = await getCurrentUser()
+  if (!user) {
+    throw new Error('No authenticated user found')
+  }
+
+  const [{ data: profile, error: profileError }, { data: careRequests, error: crError }, { data: bookings, error: bookingsError }] =
+    await Promise.all([
+      supabase.from('profiles').select('*').eq('id', user.id).maybeSingle(),
+      supabase.from('care_requests').select('*').eq('client_id', user.id),
+      supabase.from('bookings').select('*').eq('client_id', user.id),
+    ])
+
+  if (profileError) throw profileError
+  if (crError) throw crError
+  if (bookingsError) throw bookingsError
+
+  return {
+    exported_at: new Date().toISOString(),
+    profile: profile ?? null,
+    care_requests: careRequests ?? [],
+    bookings: bookings ?? [],
+  }
+}
+
+// ─── Account Settings: account deletion ─────────────────────────────────────
+// Soft-delete: flips profiles.status so the account can be recovered/purged
+// by a backend process, rather than attempting to delete the auth.users row
+// directly from the client (that requires the service role and must happen
+// server-side).
+export async function requestAccountDeletion(): Promise<void> {
+  const user = await getCurrentUser()
+  if (!user) {
+    throw new Error('No authenticated user found')
+  }
+  const { error } = await supabase.from('profiles').update({ status: 'deleted' }).eq('id', user.id)
+  if (error) {
+    throw error
+  }
+}
 
 export async function saveMyAgentDetails(details: {
   professional_headline?: string
@@ -2616,7 +2740,33 @@ export async function getOrCreateBookingConversation(bookingId: string) {
 
   return data as string
 }
-  
+
+// Client <-> agent direct conversation, started outside of a booking (e.g.
+// from the hiring/negotiation flow). Reuses an existing direct conversation
+// between the two users if one already exists.
+export async function getOrCreateDirectConversation(otherUserId: string): Promise<string> {
+  const user = await getCurrentUser()
+
+  if (!user) {
+    throw new Error("No authenticated user found")
+  }
+
+  if (!otherUserId) {
+    throw new Error("No agent to message yet")
+  }
+
+  const { data, error } = await supabase.rpc("create_direct_conversation", {
+    other_user_id: otherUserId,
+  })
+
+  if (error) {
+    console.error("create_direct_conversation failed:", error)
+    throw new Error("Failed to start conversation")
+  }
+
+  return data as string
+}
+
 export async function getAgentsForBrowse() {
   const { data, error } = await supabase
     .from('agent_details')
@@ -2946,6 +3096,7 @@ export async function getCareRequestDetail(id: string) {
     budget: `${data.currency} ${data.budget_min}–${data.budget_max}`,
     dates: data.scheduled_date || '',
     status: data.status,
+    createdAt: data.created_at || '',
     views: data.views || 0,
     applications: appCount || 0,
     shortlisted: shortlistedCount || 0,
@@ -3141,6 +3292,52 @@ export async function sendNegotiationMessage(input: {
 // idempotent instead of creating a second booking — closing the specific gap
 // confirmed live: bookings.application_id currently has no UNIQUE
 // constraint, so a naive duplicate insert previously succeeded silently.
+// bookings.application_id has no UNIQUE constraint, so more than one
+// booking can legitimately exist for the same application (e.g. left over
+// from an earlier duplicate-insert bug). Every lookup keyed by
+// application_id goes through here instead of .single()/.maybeSingle(),
+// both of which throw PGRST116 ("multiple rows returned") the moment more
+// than one row matches — .limit(1) + data?.[0] tolerates that.
+export async function getBookingForApplication(applicationId: string) {
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+
+  if (error) {
+    throw error
+  }
+
+  return data?.[0] ?? null
+}
+
+// For the Application Timeline: whether any negotiation_messages row exists
+// across a set of applications (i.e. a real counter-offer was ever sent),
+// plus the most recent one's timestamp for display.
+export async function getNegotiationActivityForRequest(
+  applicationIds: string[]
+): Promise<{ hasActivity: boolean; lastMessageAt: string | null }> {
+  if (applicationIds.length === 0) {
+    return { hasActivity: false, lastMessageAt: null }
+  }
+
+  const { data, error } = await supabase
+    .from('negotiation_messages')
+    .select('created_at')
+    .in('application_id', applicationIds)
+    .order('created_at', { ascending: false })
+    .limit(1)
+
+  if (error) {
+    throw error
+  }
+
+  const latest = data?.[0]
+  return { hasActivity: !!latest, lastMessageAt: latest?.created_at ?? null }
+}
+
 export async function hireApplication(applicationId: string, careRequestId: string, agentId: string, clientId: string, beneficiaryId: string) {
   const { data: careRequest, error: careRequestError } = await supabase
     .from('care_requests')
@@ -3156,15 +3353,7 @@ export async function hireApplication(applicationId: string, careRequestId: stri
     throw new Error("You don't have access to this care request")
   }
 
-  const { data: existingBooking, error: existingBookingError } = await supabase
-    .from('bookings')
-    .select('*')
-    .eq('application_id', applicationId)
-    .maybeSingle()
-
-  if (existingBookingError) {
-    throw existingBookingError
-  }
+  const existingBooking = await getBookingForApplication(applicationId)
   if (existingBooking) {
     // Already hired and booked (e.g. a retry after the first attempt's
     // response was lost) — return the existing booking instead of creating
@@ -3219,7 +3408,7 @@ export async function hireApplication(applicationId: string, careRequestId: stri
     if (!updatedApp) {
       // Someone else won the race between our read above and this update —
       // see if they already finished creating the booking.
-      const { data: raceBooking } = await supabase.from('bookings').select('*').eq('application_id', applicationId).maybeSingle()
+      const raceBooking = await getBookingForApplication(applicationId)
       if (raceBooking) {
         return raceBooking
       }
@@ -3237,28 +3426,52 @@ export async function hireApplication(applicationId: string, careRequestId: stri
     throw careRequestUpdateError
   }
 
+  const bookingPayload = {
+    care_request_id: careRequestId,
+    application_id: applicationId,
+    client_id: clientId,
+    agent_id: agentId,
+    beneficiary_id: beneficiaryId,
+    status: 'confirmed',
+    payment_amount: finalPrice,
+  }
+
+  // Guard against a bookings insert failing on an opaque FK/RLS/constraint
+  // error when one of these came through missing or malformed.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const requiredIdFields = ['care_request_id', 'application_id', 'client_id', 'agent_id', 'beneficiary_id'] as const
+  const invalidFields = requiredIdFields.filter((key) => !UUID_RE.test(String(bookingPayload[key] ?? '')))
+
+  if (invalidFields.length > 0) {
+    throw new Error(`Cannot create booking — missing or invalid: ${invalidFields.join(', ')}`)
+  }
+
   const { data: booking, error: bookingError } = await supabase
     .from('bookings')
-    .insert({
-      care_request_id: careRequestId,
-      application_id: applicationId,
-      client_id: clientId,
-      agent_id: agentId,
-      beneficiary_id: beneficiaryId,
-      status: 'confirmed',
-      payment_amount: finalPrice,
-    })
+    .insert(bookingPayload)
     .select()
-    .single()
+    .maybeSingle()
 
   if (bookingError) {
     if ((bookingError as any).code === '23505') {
-      const { data: raceBooking } = await supabase.from('bookings').select('*').eq('application_id', applicationId).maybeSingle()
+      const raceBooking = await getBookingForApplication(applicationId)
       if (raceBooking) {
         return raceBooking
       }
     }
     throw bookingError
+  }
+
+  if (!booking) {
+    // The insert succeeded (no error) but RETURNING came back empty — most
+    // likely an RLS SELECT policy hiding the row from the immediate
+    // read-back. Reload it explicitly instead of throwing "no rows" at the
+    // caller for a booking that was actually created.
+    const createdBooking = await getBookingForApplication(applicationId)
+    if (createdBooking) {
+      return createdBooking
+    }
+    throw new Error('The booking was created but could not be loaded. Please refresh and check your bookings.')
   }
 
   return booking

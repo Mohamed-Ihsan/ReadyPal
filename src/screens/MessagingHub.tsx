@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   getMyConversations, getConversationMessages, sendMessage, editMessage, deleteMessage,
   toggleMessageStar, toggleMessagePin, updateConversationPreferences, getMyBookings,
@@ -718,6 +718,7 @@ function NewConversationModal({ onClose, onCreated, onToast }: {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function MessagingHub() {
+  const [searchParams] = useSearchParams()
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string|null>(null)
@@ -727,6 +728,7 @@ export default function MessagingHub() {
   const [mobileView, setMobileView] = useState<'inbox'|'chat'>('inbox')
   const [currentUserId, setCurrentUserId] = useState<string|null>(null)
   const [toast, setToast] = useState<{msg:string; kind:'success'|'error'}|null>(null)
+  const appliedDeepLink = useRef(false)
 
   const showToast = (msg:string, kind:'success'|'error'='success') => setToast({ msg, kind })
 
@@ -752,6 +754,22 @@ export default function MessagingHub() {
     })()
     return () => { cancelled = true }
   }, [])
+
+  // Auto-open the conversation named by ?conversationId=… (e.g. from the
+  // "Send Message" action on the negotiation screen). Only applied once, so
+  // it doesn't fight with the user picking a different conversation later.
+  useEffect(() => {
+    if (appliedDeepLink.current) return
+    const conversationId = searchParams.get('conversationId')
+    if (!conversationId || conversations.length === 0) return
+    appliedDeepLink.current = true
+    if (conversations.some(c => c.id === conversationId)) {
+      setActiveId(conversationId)
+      setMobileView('chat')
+    } else {
+      showToast("Couldn't find that conversation", 'error')
+    }
+  }, [conversations, searchParams])
 
   const activeConv = conversations.find(c=>c.id===activeId) ?? null
 

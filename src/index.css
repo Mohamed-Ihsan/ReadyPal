@@ -23,6 +23,47 @@
   }
 }
 
+/* ─── Account Settings: accessibility & appearance preferences ──────────── */
+/* Real, app-wide effects for the toggles in Accessibility/Appearance —
+   applied as classes on <html> so a refresh (which re-reads localStorage)
+   keeps the effect without needing React context plumbing. */
+html.rp-font-sm { font-size: 87.5%; }
+html.rp-font-lg { font-size: 118%; }
+
+html.rp-high-contrast {
+  filter: contrast(1.2) saturate(1.15);
+}
+
+html.rp-reduced-motion *,
+html.rp-reduced-motion *::before,
+html.rp-reduced-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+html.rp-keyboard-nav :focus-visible {
+  outline: 3px solid #00737A !important;
+  outline-offset: 2px !important;
+}
+
+html.rp-colorblind {
+  filter: saturate(0.55);
+}
+
+html.rp-large-targets button,
+html.rp-large-targets a,
+html.rp-large-targets input,
+html.rp-large-targets select {
+  min-height: 44px;
+}
+
+html.rp-density-compact .as-page {
+  padding: 18px 22px 36px !important;
+  gap: 16px !important;
+}
+
 /* ─── Care Agent Onboarding: responsive layout ─────────────────────────── */
 .cao-container {
   width: 100%;

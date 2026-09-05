@@ -1,7 +1,12 @@
-import { getCurrentProfile, updateProfile } from '../lib/api'
+import {
+  getCurrentProfile, updateProfile, uploadProfilePhoto, getCurrentUser,
+  logUserActivity, getUserActivityLog, deleteUserActivityLog,
+  getMfaFactors, getLinkedIdentities, linkOAuthIdentity, unlinkOAuthIdentity,
+  exportMyAccountData, requestAccountDeletion, createSupportTicket,
+} from '../lib/api'
 import { supabase } from '../lib/supabaseClient'
 import { useNavigate } from 'react-router-dom'
-import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, type ReactNode, type CSSProperties, type ChangeEvent } from 'react'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
 const C = {
@@ -81,16 +86,24 @@ function Toggle({ on, onToggle }: { on:boolean; onToggle:()=>void }) {
   )
 }
 
-function Field({ label, value, type='text', onSave, hint, verified=false }: { label:string; value:string; type?:string; onSave?:(v:string)=>void; hint?:string; verified?:boolean }) {
+function Field({ label, value, type='text', onSave, hint, verified=false }: { label:string; value:string; type?:string; onSave?:(v:string)=>void|Promise<void>; hint?:string; verified?:boolean }) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(value)
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
 
-  const handleSave = () => {
-    onSave?.(val)
+  const handleSave = async () => {
     setEditing(false)
-    setSaved(true)
-    setTimeout(()=>setSaved(false), 2000)
+    setSaving(true)
+    try {
+      await onSave?.(val)
+      setSaved(true)
+      setTimeout(()=>setSaved(false), 2000)
+    } catch {
+      // The caller already surfaces a toast for the failure — nothing more to do here.
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -99,7 +112,8 @@ function Field({ label, value, type='text', onSave, hint, verified=false }: { la
         <p style={{ fontSize:12, fontWeight:700, color:C.muted }}>{label}</p>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
           {verified && <span style={{ display:'inline-flex', alignItems:'center', gap:3, fontSize:11, fontWeight:700, color:C.success, padding:'2px 8px', borderRadius:99, background:`${C.success}10` }}><span style={{display:'flex',transform:'scale(0.85)'}}>{I.check}</span>Verified</span>}
-          {saved && <span style={{ fontSize:11, fontWeight:700, color:C.success }}>Saved ✓</span>}
+          {saving && <span style={{ fontSize:11, fontWeight:700, color:C.muted }}>Saving…</span>}
+          {saved && !saving && <span style={{ fontSize:11, fontWeight:700, color:C.success }}>Saved ✓</span>}
           {onSave && <button onClick={()=>editing?handleSave():setEditing(true)} style={{ fontSize:12, fontWeight:700, color:editing?C.primary:C.muted, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', gap:4 }}>{editing?'Save':<><span style={{display:'flex'}}>{I.edit}</span>Edit</>}</button>}
         </div>
       </div>
@@ -125,10 +139,10 @@ function Bdg({ label, color=C.primary }: { label:string; color?:string }) {
   return <span style={{ display:'inline-flex', alignItems:'center', padding:'3px 10px', borderRadius:999, fontSize:11, fontWeight:700, background:`${color}12`, color }}>{label}</span>
 }
 
-function SuccessToast({ msg }:{ msg:string }) {
+function SuccessToast({ msg, kind='success' }:{ msg:string; kind?:'success'|'error' }) {
   return (
     <div style={{ position:'fixed', bottom:28, left:'50%', transform:'translateX(-50%)', zIndex:999, display:'flex', alignItems:'center', gap:10, padding:'12px 22px', borderRadius:14, background:C.type, color:'#fff', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, boxShadow:'0 8px 28px rgba(0,0,0,0.22)', pointerEvents:'none' }}>
-      <span style={{ display:'flex', color:C.success }}>{I.check}</span>{msg}
+      <span style={{ display:'flex', color:kind==='error'?C.error:C.success }}>{kind==='error'?I.warning:I.check}</span>{msg}
     </div>
   )
 }
@@ -158,13 +172,36 @@ const NAV_ITEMS: { key:Section; label:string; icon:ReactNode; group?:string }[] 
 
 // ─── Shared page wrapper ──────────────────────────────────────────────────────
 function Page({ children, style={} }: { children:ReactNode; style?:CSSProperties }) {
-  return <div style={{ padding:'28px 32px 60px', display:'flex', flexDirection:'column', gap:24, maxWidth:760, ...style }}>{children}</div>
+  return <div className="as-page" style={{ padding:'28px 32px 60px', display:'flex', flexDirection:'column', gap:24, maxWidth:760, ...style }}>{children}</div>
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // ACCOUNT HOME
 // ──────────────────────────────────────────────────────────────────────────────
-function AccountHome({ onNav }: { onNav:(s:Section)=>void }) {
+function AccountHome({ profile, onNav }: { profile:any; onNav:(s:Section)=>void }) {
+  const initials = (profile.full_name || '?').split(' ').map((n:string)=>n[0]).join('').slice(0,2).toUpperCase()
+  const memberSince = profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US',{month:'short',year:'numeric'}) : '—'
+
+  const [devices, setDevices] = useState<GroupedDevice[]|null>(null)
+  useEffect(() => {
+    getUserActivityLog(100)
+      .then(rows => setDevices(groupDevicesFromLogs(rows)))
+      .catch(err => { console.error('Failed to load devices:', err); setDevices([]) })
+  }, [])
+
+  const notifPrefs = profile.notification_preferences && typeof profile.notification_preferences === 'object'
+    ? { ...DEFAULT_NOTIFICATION_PREFS, ...profile.notification_preferences }
+    : DEFAULT_NOTIFICATION_PREFS
+  const notifSummary = [
+    { label:'Care Updates',   key:'Care Updates' },
+    { label:'Payment Alerts', key:'Payment Alerts' },
+    { label:'Messages',       key:'Messages' },
+    { label:'Marketing',      key:'Marketing & Offers' },
+  ].map(({ label, key }) => {
+    const p = notifPrefs[key]
+    return { label, on: !!(p?.push || p?.email || p?.sms) }
+  })
+
   const completionItems = [
     { label:'Profile photo', done:true },
     { label:'Verified email', done:true },
@@ -199,15 +236,16 @@ function AccountHome({ onNav }: { onNav:(s:Section)=>void }) {
           <div style={{ position:'absolute', top:-20, right:-20, width:120, height:120, borderRadius:'50%', background:'rgba(255,255,255,0.06)' }} />
         </div>
         <div style={{ padding:'0 28px 24px', position:'relative' }}>
-          <div style={{ width:80, height:80, borderRadius:'50%', background:`${C.primary}18`, border:`4px solid ${C.surface}`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:28, color:C.primary, fontFamily:'Manrope,sans-serif', marginTop:-40, marginBottom:12 }}>MI</div>
+          <div style={{ width:80, height:80, borderRadius:'50%', background:profile.avatar_url?undefined:`${C.primary}18`, border:`4px solid ${C.surface}`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:28, color:C.primary, fontFamily:'Manrope,sans-serif', marginTop:-40, marginBottom:12, overflow:'hidden' }}>
+            {profile.avatar_url ? <img src={profile.avatar_url} alt={profile.full_name || 'Profile photo'} style={{ width:'100%', height:'100%', objectFit:'cover' }} /> : initials}
+          </div>
           <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
             <div>
               <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
-                <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Mohamed Ihsan</h2>
-                <Bdg label="Verified" color={C.success} />
+                <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{profile.full_name || 'Your Account'}</h2>
                 <Bdg label="Member" color={C.primary} />
               </div>
-              <p style={{ fontSize:13, color:C.muted }}>ihsan.m@gmail.com · Sri Lanka · Member since Jan 2024</p>
+              <p style={{ fontSize:13, color:C.muted }}>{profile.email || '—'}{profile.city ? ` · ${profile.city}` : ''} · Member since {memberSince}</p>
             </div>
             <Btn label="Edit Profile" variant="secondary" icon={I.edit} small onClick={()=>onNav('profile')} />
           </div>
@@ -293,13 +331,17 @@ function AccountHome({ onNav }: { onNav:(s:Section)=>void }) {
         <Card style={{ padding:20 }}>
           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:12 }}>
             <h3 style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Devices</h3>
-            <Bdg label="2 active" color={C.primary} />
+            {devices && <Bdg label={`${devices.length} active`} color={C.primary} />}
           </div>
-          {[{l:'MacBook Pro · Chrome',ic:I.device},{l:'iPhone 14 · Safari',ic:I.phone}].map((d,i)=>(
-            <div key={i} style={{ display:'flex', gap:9, alignItems:'center', padding:'7px 0' }}>
-              <span style={{ color:C.primary, display:'flex' }}>{d.ic}</span>
-              <p style={{ fontSize:12, color:C.type, flex:1 }}>{d.l}</p>
-              {i===0&&<Bdg label="Current" color={C.success} />}
+          {devices === null ? (
+            <p style={{ fontSize:12, color:C.muted, padding:'7px 0' }}>Loading devices…</p>
+          ) : devices.length === 0 ? (
+            <p style={{ fontSize:12, color:C.muted, padding:'7px 0' }}>No devices recorded yet.</p>
+          ) : devices.map(d=>(
+            <div key={d.key} style={{ display:'flex', gap:9, alignItems:'center', padding:'7px 0' }}>
+              <span style={{ color:C.primary, display:'flex' }}>{d.isMobile?I.phone:I.device}</span>
+              <p style={{ fontSize:12, color:C.type, flex:1 }}>{d.browser} on {d.os}</p>
+              {d.isCurrent && <Bdg label="Current" color={C.success} />}
             </div>
           ))}
           <button onClick={()=>onNav('devices')} style={{ marginTop:8, fontSize:12, fontWeight:700, color:C.primary, background:'none', border:'none', cursor:'pointer', fontFamily:'Manrope,sans-serif' }}>Manage devices →</button>
@@ -309,9 +351,9 @@ function AccountHome({ onNav }: { onNav:(s:Section)=>void }) {
           <div style={{ display:'flex', justifyContent:'space-between', marginBottom:12 }}>
             <h3 style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>Notification Summary</h3>
           </div>
-          {[{l:'Care Updates',on:true},{l:'Payment Alerts',on:true},{l:'Messages',on:true},{l:'Marketing',on:false}].map((n,i)=>(
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0' }}>
-              <p style={{ fontSize:12, color:C.type }}>{n.l}</p>
+          {notifSummary.map(n=>(
+            <div key={n.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0' }}>
+              <p style={{ fontSize:12, color:C.type }}>{n.label}</p>
               <span style={{ fontSize:11, fontWeight:700, color:n.on?C.success:C.muted }}>{n.on?'On':'Off'}</span>
             </div>
           ))}
@@ -325,29 +367,40 @@ function AccountHome({ onNav }: { onNav:(s:Section)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // PROFILE
 // ──────────────────────────────────────────────────────────────────────────────
-function Profile({ profile, onSave }: { profile:any; onSave:(f:Record<string,any>)=>void }) {
+function Profile({ profile, onSave, onUploadAvatar, uploadingAvatar }: {
+  profile:any; onSave:(f:Record<string,any>)=>void
+  onUploadAvatar:(file:File)=>void; uploadingAvatar:boolean
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const initials = (profile.full_name || '?').split(' ').map((n:string)=>n[0]).join('').slice(0,2).toUpperCase()
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) onUploadAvatar(file)
+    e.target.value = ''
+  }
+
   return (
     <Page>
       <SectionHeader title="Profile" desc="Your public-facing identity on ReadyPal." />
       <Card style={{ padding:0, overflow:'hidden' }}>
-        <div style={{ height:120, background:`linear-gradient(135deg,${C.primary},#00959E)`, position:'relative', cursor:'pointer' }}>
-          <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0)', transition:'background 0.2s' }} onMouseOver={e=>{(e.currentTarget as HTMLElement).style.background='rgba(0,0,0,0.18)'}} onMouseOut={e=>{(e.currentTarget as HTMLElement).style.background='rgba(0,0,0,0)'}}>
-            <span style={{ color:'rgba(255,255,255,0.75)', display:'flex', transform:'scale(1.4)' }}>{I.camera}</span>
-          </div>
-          <p style={{ position:'absolute', bottom:8, right:12, fontSize:11, fontWeight:700, color:'rgba(255,255,255,0.6)' }}>Click to change cover</p>
-        </div>
+        <div style={{ height:120, background:`linear-gradient(135deg,${C.primary},#00959E)`, position:'relative' }} />
         <div style={{ padding:'0 28px 28px', position:'relative' }}>
           <div style={{ position:'relative', width:88, marginTop:-44, marginBottom:16, display:'inline-block' }}>
-            <div style={{ width:88, height:88, borderRadius:'50%', background:`${C.primary}18`, border:`4px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:30, color:C.primary, fontFamily:'Manrope,sans-serif', boxShadow:'0 4px 16px rgba(44,62,67,0.14)' }}>
-              {(profile.full_name || '?').split(' ').map((n:string)=>n[0]).join('').slice(0,2).toUpperCase()}
+            <div style={{ width:88, height:88, borderRadius:'50%', background:profile.avatar_url?undefined:`${C.primary}18`, border:`4px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:900, fontSize:30, color:C.primary, fontFamily:'Manrope,sans-serif', boxShadow:'0 4px 16px rgba(44,62,67,0.14)', overflow:'hidden', opacity:uploadingAvatar?0.5:1 }}>
+              {profile.avatar_url
+                ? <img src={profile.avatar_url} alt={profile.full_name || 'Profile photo'} style={{ width:'100%', height:'100%', objectFit:'cover' }} />
+                : initials}
             </div>
-            <button style={{ position:'absolute', bottom:2, right:2, width:26, height:26, borderRadius:'50%', background:C.primary, border:`2px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', color:'#fff' }}>
+            <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display:'none' }} />
+            <button onClick={()=>fileInputRef.current?.click()} disabled={uploadingAvatar} style={{ position:'absolute', bottom:2, right:2, width:26, height:26, borderRadius:'50%', background:C.primary, border:`2px solid #fff`, display:'flex', alignItems:'center', justifyContent:'center', cursor:uploadingAvatar?'default':'pointer', color:'#fff', opacity:uploadingAvatar?0.7:1 }}>
               <span style={{ display:'flex', transform:'scale(0.75)' }}>{I.camera}</span>
             </button>
           </div>
+          {uploadingAvatar && <p style={{ fontSize:12, color:C.muted, marginBottom:8 }}>Uploading photo…</p>}
           <Field label="Full Name"       value={profile.full_name || ''}     onSave={v=>onSave({full_name:v})} />
           <Field label="Preferred Name"  value={profile.preferred_name || ''} onSave={v=>onSave({preferred_name:v})} />
-          <Field label="Email Address"   value={profile.email || ''}          verified onSave={v=>onSave({email:v})} />
+          <Field label="Email Address"   value={profile.email || ''}          verified onSave={v=>onSave({email:v})} hint="Changing this updates your login email — you'll get a confirmation link at the new address." />
           <Field label="Phone Number"    value={profile.phone || ''}          verified onSave={v=>onSave({phone:v})} />
           <Field label="Country"         value={profile.nationality || ''}    onSave={v=>onSave({nationality:v})} />
           <div style={{ padding:'14px 0' }}>
@@ -355,7 +408,6 @@ function Profile({ profile, onSave }: { profile:any; onSave:(f:Record<string,any
             <p style={{ fontSize:14, color:C.type }}>{profile.created_at ? new Date(profile.created_at).toLocaleDateString('en-US',{month:'long',year:'numeric'}) : '—'}</p>
           </div>
           <div style={{ display:'flex', gap:8, alignItems:'center', marginTop:4 }}>
-            <Bdg label="Verified Account" color={C.success} />
             <Bdg label="Active Member" color={C.primary} />
           </div>
         </div>
@@ -404,14 +456,149 @@ function ContactInfo({ profile, onSave }: { profile:any; onSave:(f:Record<string
 // ──────────────────────────────────────────────────────────────────────────────
 // SECURITY
 // ──────────────────────────────────────────────────────────────────────────────
-function Security({ onToast }: { onToast:(m:string)=>void }) {
-  const [show, setShow] = useState(false)
-  const [tfa, setTfa] = useState(false)
-  const [loginAlerts, setLoginAlerts] = useState(true)
+function passwordStrength(pw: string): { pct:number; label:string; color:string } {
+  if (!pw) return { pct:0, label:'', color:C.border }
+  let score = 0
+  if (pw.length >= 8) score += 40
+  if (pw.length >= 12) score += 15
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score += 20
+  if (/[0-9]/.test(pw)) score += 15
+  if (/[^A-Za-z0-9]/.test(pw)) score += 10
+  const pct = Math.min(score, 100)
+  const color = pct>=80?C.success:pct>=50?C.warning:C.error
+  const label = pct>=80?'Strong':pct>=50?'Fair':'Weak'
+  return { pct, label, color }
+}
 
-  const strength = 82
-  const strengthColor = strength>=80?C.success:strength>=50?C.warning:C.error
-  const strengthLabel = strength>=80?'Strong':strength>=50?'Fair':'Weak'
+function Security({ profile, onSave, onToast }: {
+  profile:any; onSave:(f:Record<string,any>)=>void
+  onToast:(m:string, kind?:'success'|'error')=>void
+}) {
+  const [show, setShow] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [changingPassword, setChangingPassword] = useState(false)
+
+  const [emailConfirmedAt, setEmailConfirmedAt] = useState<string|null|undefined>(undefined)
+  const [factorsLoading, setFactorsLoading] = useState(true)
+  const [totpFactor, setTotpFactor] = useState<{ id:string }|null>(null)
+  const [enrollData, setEnrollData] = useState<{ factorId:string; qrCode:string; secret:string }|null>(null)
+  const [verifyCode, setVerifyCode] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [mfaBusy, setMfaBusy] = useState(false)
+  const [signingOutOthers, setSigningOutOthers] = useState(false)
+  const loginAlerts = profile.notification_preferences?.loginAlerts ?? true
+
+  const loadSecurityStatus = () => {
+    setFactorsLoading(true)
+    Promise.all([getMfaFactors(), getCurrentUser()])
+      .then(([factors, user]) => {
+        setTotpFactor(factors.totp.find(f => f.status === 'verified') ?? null)
+        setEmailConfirmedAt(user?.email_confirmed_at ?? null)
+      })
+      .catch(err => console.error('Failed to load security status:', err))
+      .finally(() => setFactorsLoading(false))
+  }
+  useEffect(() => { loadSecurityStatus() }, [])
+
+  const strength = passwordStrength(newPassword)
+
+  const handleChangePassword = async () => {
+    if (changingPassword) return
+    if (newPassword.length < 6) {
+      onToast('Password must be at least 6 characters', 'error')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      onToast("Passwords don't match", 'error')
+      return
+    }
+    setChangingPassword(true)
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) throw error
+      setNewPassword('')
+      setConfirmPassword('')
+      logUserActivity('password_changed', 'Password updated from Account Settings')
+      onToast('Password updated successfully')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't update your password. Please try again.", 'error')
+    } finally {
+      setChangingPassword(false)
+    }
+  }
+
+  const startEnroll = async () => {
+    setMfaBusy(true)
+    try {
+      const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp' })
+      if (error) throw error
+      setEnrollData({ factorId: data.id, qrCode: data.totp.qr_code, secret: data.totp.secret })
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't start authenticator setup.", 'error')
+      setMfaBusy(false)
+    }
+  }
+
+  const cancelEnroll = async () => {
+    if (enrollData) {
+      try { await supabase.auth.mfa.unenroll({ factorId: enrollData.factorId }) } catch { /* best-effort cleanup */ }
+    }
+    setEnrollData(null)
+    setVerifyCode('')
+    setMfaBusy(false)
+  }
+
+  const confirmEnroll = async () => {
+    if (!enrollData || verifying) return
+    setVerifying(true)
+    try {
+      const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({ factorId: enrollData.factorId })
+      if (challengeError) throw challengeError
+      const { error: verifyError } = await supabase.auth.mfa.verify({ factorId: enrollData.factorId, challengeId: challenge.id, code: verifyCode })
+      if (verifyError) throw verifyError
+      setEnrollData(null)
+      setVerifyCode('')
+      setMfaBusy(false)
+      logUserActivity('mfa_enabled', 'Authenticator app enabled')
+      onToast('Authenticator app enabled')
+      loadSecurityStatus()
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Invalid code. Please try again.', 'error')
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  const disableTotp = async () => {
+    if (!totpFactor || mfaBusy) return
+    setMfaBusy(true)
+    try {
+      const { error } = await supabase.auth.mfa.unenroll({ factorId: totpFactor.id })
+      if (error) throw error
+      logUserActivity('mfa_disabled', 'Authenticator app disabled')
+      onToast('Authenticator app disabled')
+      loadSecurityStatus()
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't disable the authenticator app.", 'error')
+    } finally {
+      setMfaBusy(false)
+    }
+  }
+
+  const handleSignOutOthers = async () => {
+    if (signingOutOthers) return
+    setSigningOutOthers(true)
+    try {
+      const { error } = await supabase.auth.signOut({ scope: 'others' })
+      if (error) throw error
+      onToast('Signed out of all other sessions')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't sign out other sessions.", 'error')
+    } finally {
+      setSigningOutOthers(false)
+    }
+  }
 
   return (
     <Page>
@@ -419,63 +606,87 @@ function Security({ onToast }: { onToast:(m:string)=>void }) {
 
       {/* Password */}
       <Card style={{ padding:24 }}>
-        <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Password</h3>
-        <div style={{ display:'flex', gap:10, marginBottom:12 }}>
-          <div style={{ flex:1, position:'relative' }}>
-            <input type={show?'text':'password'} value="••••••••••••" readOnly style={{ width:'100%', padding:'10px 40px 10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:14, color:C.type, background:'#FAFAFA', boxSizing:'border-box' as const, outline:'none' }} />
+        <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Change Password</h3>
+        <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:12 }}>
+          <div style={{ position:'relative' }}>
+            <input type={show?'text':'password'} value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="New password" disabled={changingPassword}
+              style={{ width:'100%', padding:'10px 40px 10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:14, color:C.type, background:'#FAFAFA', boxSizing:'border-box' as const, outline:'none' }} />
             <button onClick={()=>setShow(v=>!v)} style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>{show?I.eyeOff:I.eye}</button>
           </div>
-          <Btn label="Change" variant="secondary" small onClick={()=>onToast('Password updated successfully')} />
+          <input type={show?'text':'password'} value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} placeholder="Confirm new password" disabled={changingPassword} onKeyDown={e=>e.key==='Enter'&&handleChangePassword()}
+            style={{ width:'100%', padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.border}`, fontFamily:'Manrope,sans-serif', fontSize:14, color:C.type, background:'#FAFAFA', boxSizing:'border-box' as const, outline:'none' }} />
+          <Btn label={changingPassword?'Updating…':'Update Password'} variant="secondary" small disabled={changingPassword || !newPassword} onClick={handleChangePassword} />
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:4 }}>
-          <div style={{ flex:1, height:6, borderRadius:99, background:C.bg, overflow:'hidden' }}>
-            <div style={{ width:`${strength}%`, height:'100%', background:strengthColor, borderRadius:99, transition:'width 0.4s' }} />
+        {newPassword && (
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <div style={{ flex:1, height:6, borderRadius:99, background:C.bg, overflow:'hidden' }}>
+              <div style={{ width:`${strength.pct}%`, height:'100%', background:strength.color, borderRadius:99, transition:'width 0.4s' }} />
+            </div>
+            <p style={{ fontSize:12, fontWeight:700, color:strength.color, minWidth:40 }}>{strength.label}</p>
           </div>
-          <p style={{ fontSize:12, fontWeight:700, color:strengthColor, minWidth:40 }}>{strengthLabel}</p>
-        </div>
-        <p style={{ fontSize:11, color:C.muted }}>Last changed 2 hours ago</p>
+        )}
       </Card>
 
-      {/* 2FA */}
+      {/* 2FA — real Supabase MFA (TOTP) */}
       <Card style={{ padding:24 }}>
         <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:16 }}>Two-Factor Authentication</h3>
-        {[
-          { label:'Authenticator App', desc:'Use Google Authenticator or Authy', icon:I.key, enabled:tfa, onToggle:()=>{ setTfa(v=>!v); onToast(tfa?'Authenticator app removed':'Authenticator app enabled') } },
-          { label:'SMS Verification',  desc:'+94 77 123 4567', icon:I.phone, enabled:true, onToggle:()=>onToast('SMS 2FA updated') },
-          { label:'Email Verification',desc:'ihsan.m@gmail.com', icon:I.mail, enabled:true, onToggle:()=>{} },
-          { label:'Biometric (coming soon)', desc:'Face ID / Fingerprint placeholder', icon:I.lock, enabled:false, disabled:true, onToggle:()=>{} },
-        ].map(m=>(
-          <div key={m.label} style={{ display:'flex', gap:14, alignItems:'center', padding:'12px 0', borderBottom:`1px solid ${C.border}` }}>
-            <div style={{ width:40, height:40, borderRadius:13, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, flexShrink:0 }}>
-              <span style={{ display:'flex' }}>{m.icon}</span>
+        {factorsLoading ? (
+          <p style={{ fontSize:13, color:C.muted }}>Checking your security status…</p>
+        ) : (
+          <>
+            <div style={{ display:'flex', gap:14, alignItems:'center', padding:'12px 0', borderBottom:`1px solid ${C.border}` }}>
+              <div style={{ width:40, height:40, borderRadius:13, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, flexShrink:0 }}>
+                <span style={{ display:'flex' }}>{I.key}</span>
+              </div>
+              <div style={{ flex:1 }}>
+                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Authenticator App</p>
+                <p style={{ fontSize:11, color:C.muted }}>{totpFactor ? 'Enabled via TOTP' : 'Use Google Authenticator, Authy, or similar'}</p>
+              </div>
+              {totpFactor
+                ? <Btn label="Disable" variant="danger" small disabled={mfaBusy} onClick={disableTotp} />
+                : <Btn label="Enable" variant="secondary" small disabled={mfaBusy} onClick={startEnroll} />}
             </div>
-            <div style={{ flex:1 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:(m as any).disabled?C.muted:C.type }}>{m.label}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{m.desc}</p>
+            <div style={{ display:'flex', gap:14, alignItems:'center', padding:'12px 0' }}>
+              <div style={{ width:40, height:40, borderRadius:13, background:`${C.primary}10`, display:'flex', alignItems:'center', justifyContent:'center', color:C.primary, flexShrink:0 }}>
+                <span style={{ display:'flex' }}>{I.mail}</span>
+              </div>
+              <div style={{ flex:1 }}>
+                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>Email Verification</p>
+                <p style={{ fontSize:11, color:C.muted }}>{profile.email || ''}</p>
+              </div>
+              <Bdg label={emailConfirmedAt ? 'Verified' : 'Unverified'} color={emailConfirmedAt ? C.success : C.warning} />
             </div>
-            <Toggle on={(m as any).disabled?false:m.enabled} onToggle={(m as any).disabled?()=>{}:m.onToggle} />
-          </div>
-        ))}
+
+            {enrollData && (
+              <div style={{ marginTop:14, padding:18, borderRadius:14, background:'#FAFAFA', border:`1px solid ${C.border}` }}>
+                <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:10 }}>Scan this QR code with your authenticator app</p>
+                <img src={enrollData.qrCode} alt="Authenticator QR code" style={{ width:160, height:160, display:'block', margin:'0 auto 10px', background:'#fff', borderRadius:8, border:`1px solid ${C.border}` }} />
+                <p style={{ fontSize:11, color:C.muted, textAlign:'center' as const, marginBottom:14 }}>Or enter this key manually: <span style={{ fontFamily:'monospace', fontWeight:700 }}>{enrollData.secret}</span></p>
+                <div style={{ display:'flex', gap:10 }}>
+                  <input value={verifyCode} onChange={e=>setVerifyCode(e.target.value)} placeholder="6-digit code" maxLength={6} disabled={verifying}
+                    style={{ flex:1, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${C.primary}`, fontFamily:'Manrope,sans-serif', fontSize:14, color:C.type, background:'#fff', boxSizing:'border-box' as const, outline:'none', letterSpacing:'0.2em' }} />
+                  <Btn label={verifying?'Verifying…':'Verify & Enable'} variant="primary" small disabled={verifying || verifyCode.length<6} onClick={confirmEnroll} />
+                  <Btn label="Cancel" variant="ghost" small disabled={verifying} onClick={cancelEnroll} />
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </Card>
 
-      {/* Recovery + Alerts */}
+      {/* Sessions + Alerts */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:18 }} className="as-2col">
         <Card style={{ padding:22 }}>
-          <h3 style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:12 }}>Recovery Codes</h3>
-          <p style={{ fontSize:12, color:C.muted, marginBottom:14, lineHeight:1.6 }}>Store these codes safely. Each can be used once to recover your account if you lose 2FA access.</p>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginBottom:14 }}>
-            {['A1B2-C3D4','E5F6-G7H8','I9J0-K1L2','M3N4-O5P6'].map(c=>(
-              <div key={c} style={{ padding:'7px 10px', borderRadius:8, background:C.bg, border:`1px solid ${C.border}`, fontFamily:'monospace', fontSize:12, fontWeight:700, color:C.type, textAlign:'center' as const }}>{c}</div>
-            ))}
-          </div>
-          <Btn label="Generate New Codes" variant="secondary" small icon={I.refresh} onClick={()=>onToast('New recovery codes generated')} />
+          <h3 style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:12 }}>Other Sessions</h3>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:14, lineHeight:1.6 }}>Sign out of ReadyPal everywhere else — every other browser and device stays signed in until you do this.</p>
+          <Btn label={signingOutOthers?'Signing out…':'Sign Out Other Sessions'} variant="danger" small icon={I.logout} disabled={signingOutOthers} onClick={handleSignOutOthers} />
         </Card>
         <Card style={{ padding:22 }}>
           <h3 style={{ fontSize:13, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:12 }}>Login Alerts</h3>
-          <p style={{ fontSize:12, color:C.muted, marginBottom:14, lineHeight:1.6 }}>Get notified when a new device signs into your account from an unrecognised location.</p>
+          <p style={{ fontSize:12, color:C.muted, marginBottom:14, lineHeight:1.6 }}>Saved to your notification preferences — delivery for this alert type is on our roadmap.</p>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
             <p style={{ fontSize:13, fontWeight:600, color:C.type }}>Email & SMS alerts</p>
-            <Toggle on={loginAlerts} onToggle={()=>{ setLoginAlerts(v=>!v); onToast('Login alert preference saved') }} />
+            <Toggle on={loginAlerts} onToggle={()=>onSave({ notification_preferences: { ...profile.notification_preferences, loginAlerts: !loginAlerts } })} />
           </div>
         </Card>
       </div>
@@ -486,38 +697,139 @@ function Security({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // LOGIN HISTORY
 // ──────────────────────────────────────────────────────────────────────────────
-function LoginHistory({ onToast }: { onToast:(m:string)=>void }) {
-  const logins = [
-    { browser:'Chrome 120', device:'MacBook Pro', location:'Colombo, Sri Lanka', ip:'203.xx.xx.12', date:'14 Jan 2025 · 9:20 AM', current:true },
-    { browser:'Safari 17',  device:'iPhone 14',   location:'Colombo, Sri Lanka', ip:'203.xx.xx.14', date:'13 Jan 2025 · 8:14 AM', current:false },
-    { browser:'Chrome 119', device:'MacBook Pro', location:'Kandy, Sri Lanka',   ip:'110.xx.xx.55', date:'10 Jan 2025 · 11:05 AM',current:false },
-    { browser:'Firefox 121',device:'Windows PC',  location:'Colombo, Sri Lanka', ip:'203.xx.xx.99', date:'5 Jan 2025 · 7:30 PM', current:false },
-  ]
+// Minimal, dependency-free User-Agent parse — good enough to label "Chrome
+// on macOS" style device rows without pulling in a UA-parsing library.
+function parseUserAgent(ua: string): { browser:string; os:string; isMobile:boolean } {
+  const browser =
+    /Edg\//.test(ua) ? 'Edge' :
+    /OPR\//.test(ua) ? 'Opera' :
+    /Chrome\//.test(ua) ? 'Chrome' :
+    /Firefox\//.test(ua) ? 'Firefox' :
+    /Safari\//.test(ua) ? 'Safari' : 'Unknown Browser'
+  const os =
+    /Windows/.test(ua) ? 'Windows' :
+    /Mac OS X/.test(ua) ? 'macOS' :
+    /Android/.test(ua) ? 'Android' :
+    /iPhone|iPad|iPod/.test(ua) ? 'iOS' :
+    /Linux/.test(ua) ? 'Linux' : 'Unknown OS'
+  const isMobile = /Mobi|Android|iPhone|iPad/.test(ua)
+  return { browser, os, isMobile }
+}
+
+function formatLogDate(iso:string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('en-GB', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit' })
+}
+
+type GroupedDevice = { key:string; browser:string; os:string; isMobile:boolean; lastActive:string; isCurrent:boolean; logIds:string[] }
+
+// Shared by the Devices tab and the Account Home "Devices" summary card —
+// groups real user_activity_logs login rows by the browser/OS parsed from
+// their stored User-Agent, so both views agree on what counts as "a device".
+function groupDevicesFromLogs(rows:any[]): GroupedDevice[] {
+  const currentUa = navigator.userAgent
+  const logins = rows.filter(r => r.event_type === 'login' && r.metadata?.userAgent)
+  const byUa = new Map<string, typeof logins>()
+  for (const row of logins) {
+    const ua = row.metadata.userAgent as string
+    if (!byUa.has(ua)) byUa.set(ua, [])
+    byUa.get(ua)!.push(row)
+  }
+  const grouped = Array.from(byUa.entries()).map(([ua, entries]) => {
+    const { browser, os, isMobile } = parseUserAgent(ua)
+    return {
+      key: ua,
+      browser, os, isMobile,
+      lastActive: entries[0].created_at, // rows already ordered desc
+      isCurrent: ua === currentUa,
+      logIds: entries.map(e => e.id),
+    }
+  })
+  grouped.sort((a,b) => (a.isCurrent === b.isCurrent) ? 0 : a.isCurrent ? -1 : 1)
+  return grouped
+}
+
+function LoginHistory({ onToast }: { onToast:(m:string, kind?:'success'|'error')=>void }) {
+  const [logins, setLogins] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [signingOutOthers, setSigningOutOthers] = useState(false)
+  const currentUa = navigator.userAgent
+
+  const load = () => {
+    setLoading(true)
+    setLoadError('')
+    getUserActivityLog(50)
+      .then(rows => setLogins(rows.filter(r => r.event_type === 'login')))
+      .catch(err => { console.error('Failed to load login history:', err); setLoadError("Couldn't load your login history.") })
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
+
+  const forget = async (id:string) => {
+    try {
+      await deleteUserActivityLog(id)
+      setLogins(p => p.filter(l => l.id !== id))
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't remove that entry.", 'error')
+    }
+  }
+
+  const handleSignOutOthers = async () => {
+    if (signingOutOthers) return
+    setSigningOutOthers(true)
+    try {
+      const { error } = await supabase.auth.signOut({ scope: 'others' })
+      if (error) throw error
+      onToast('Signed out of all other sessions')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't sign out other sessions.", 'error')
+    } finally {
+      setSigningOutOthers(false)
+    }
+  }
+
   return (
     <Page>
-      <SectionHeader title="Login History" desc="Recent sign-in activity across all your devices." />
+      <SectionHeader title="Login History" desc="Sign-ins recorded from your recent browsing sessions on this account." />
       <div style={{ display:'flex', justifyContent:'flex-end' }}>
-        <Btn label="Logout All Other Devices" variant="danger" small icon={I.trash} onClick={()=>onToast('All other devices logged out')} />
+        <Btn label={signingOutOthers?'Signing out…':'Sign Out All Other Sessions'} variant="danger" small icon={I.trash} disabled={signingOutOthers} onClick={handleSignOutOthers} />
       </div>
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {logins.map((l,i)=>(
-          <Card key={i} style={{ padding:20 }}>
-            <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-              <div style={{ width:42, height:42, borderRadius:13, background:l.current?`${C.success}10`:C.bg, display:'flex', alignItems:'center', justifyContent:'center', color:l.current?C.success:C.muted, flexShrink:0 }}>
-                <span style={{ display:'flex', transform:'scale(1.2)' }}>{I.device}</span>
-              </div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:3 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{l.browser} · {l.device}</p>
-                  {l.current && <Bdg label="Current Session" color={C.success} />}
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading login history…</p>
+      ) : loadError ? (
+        <p style={{ fontSize:13, color:C.error }}>{loadError}</p>
+      ) : logins.length === 0 ? (
+        <Card style={{ padding:'40px', textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No sign-ins recorded yet.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {logins.map(l => {
+            const ua = l.metadata?.userAgent || ''
+            const { browser, os } = parseUserAgent(ua)
+            const isCurrent = ua === currentUa
+            return (
+              <Card key={l.id} style={{ padding:20 }}>
+                <div style={{ display:'flex', gap:14, alignItems:'center' }}>
+                  <div style={{ width:42, height:42, borderRadius:13, background:isCurrent?`${C.success}10`:C.bg, display:'flex', alignItems:'center', justifyContent:'center', color:isCurrent?C.success:C.muted, flexShrink:0 }}>
+                    <span style={{ display:'flex', transform:'scale(1.2)' }}>{I.device}</span>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:3 }}>
+                      <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{browser} · {os}</p>
+                      {isCurrent && <Bdg label="Current Session" color={C.success} />}
+                    </div>
+                    <p style={{ fontSize:12, color:C.muted }}>{formatLogDate(l.created_at)}</p>
+                  </div>
+                  {!isCurrent && <Btn label="Forget" variant="ghost" small onClick={()=>forget(l.id)} />}
                 </div>
-                <p style={{ fontSize:12, color:C.muted }}>{l.location} · {l.ip} · {l.date}</p>
-              </div>
-              {!l.current && <Btn label="Logout" variant="ghost" small onClick={()=>onToast('Device logged out')} />}
-            </div>
-          </Card>
-        ))}
-      </div>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </Page>
   )
 }
@@ -525,42 +837,67 @@ function LoginHistory({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // CONNECTED DEVICES
 // ──────────────────────────────────────────────────────────────────────────────
-function Devices({ onToast }: { onToast:(m:string)=>void }) {
-  const [devs, setDevs] = useState([
-    { name:'MacBook Pro 14"', type:'desktop', browser:'Chrome 120', last:'Just now',     current:true },
-    { name:'iPhone 14 Pro',   type:'mobile',  browser:'Safari 17',  last:'13 Jan · 8:14',current:false },
-  ])
+function Devices({ onToast }: { onToast:(m:string, kind?:'success'|'error')=>void }) {
+  const [devices, setDevices] = useState<GroupedDevice[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+
+  const load = () => {
+    setLoading(true)
+    setLoadError('')
+    getUserActivityLog(100)
+      .then(rows => setDevices(groupDevicesFromLogs(rows)))
+      .catch(err => { console.error('Failed to load devices:', err); setLoadError("Couldn't load your devices.") })
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
+
+  const forget = async (device: typeof devices[number]) => {
+    try {
+      await Promise.all(device.logIds.map(id => deleteUserActivityLog(id)))
+      setDevices(p => p.filter(d => d.key !== device.key))
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't remove that device.", 'error')
+    }
+  }
+
   return (
     <Page>
-      <SectionHeader title="Connected Devices" desc="Devices currently signed into your ReadyPal account." />
-      <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {devs.map((d,i)=>(
-          <Card key={i} style={{ padding:22 }}>
-            <div style={{ display:'flex', gap:16, alignItems:'center' }}>
-              <div style={{ width:52, height:52, borderRadius:16, background:d.current?`${C.primary}10`:C.bg, border:`1.5px solid ${d.current?C.primary+'30':C.border}`, display:'flex', alignItems:'center', justifyContent:'center', color:d.current?C.primary:C.muted, flexShrink:0 }}>
-                <span style={{ display:'flex', transform:'scale(1.4)' }}>{d.type==='mobile'?I.phone:I.device}</span>
-              </div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
-                  <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{d.name}</p>
-                  {d.current && <Bdg label="This Device" color={C.success} />}
+      <SectionHeader title="Connected Devices" desc="Devices recorded from your recent sign-ins, based on browser and OS." />
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading devices…</p>
+      ) : loadError ? (
+        <p style={{ fontSize:13, color:C.error }}>{loadError}</p>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+          {devices.map(d=>(
+            <Card key={d.key} style={{ padding:22 }}>
+              <div style={{ display:'flex', gap:16, alignItems:'center' }}>
+                <div style={{ width:52, height:52, borderRadius:16, background:d.isCurrent?`${C.primary}10`:C.bg, border:`1.5px solid ${d.isCurrent?C.primary+'30':C.border}`, display:'flex', alignItems:'center', justifyContent:'center', color:d.isCurrent?C.primary:C.muted, flexShrink:0 }}>
+                  <span style={{ display:'flex', transform:'scale(1.4)' }}>{d.isMobile?I.phone:I.device}</span>
                 </div>
-                <p style={{ fontSize:12, color:C.muted }}>{d.browser} · Last active {d.last}</p>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:4 }}>
+                    <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif' }}>{d.browser} on {d.os}</p>
+                    {d.isCurrent && <Bdg label="This Device" color={C.success} />}
+                  </div>
+                  <p style={{ fontSize:12, color:C.muted }}>Last active {formatLogDate(d.lastActive)}</p>
+                </div>
+                {!d.isCurrent && (
+                  <Btn label="Forget" variant="danger" small icon={I.trash} onClick={()=>forget(d)} />
+                )}
               </div>
-              {!d.current && (
-                <Btn label="Remove" variant="danger" small icon={I.trash} onClick={()=>{ setDevs(p=>p.filter((_,j)=>j!==i)); onToast('Device removed') }} />
-              )}
-            </div>
-          </Card>
-        ))}
-        {devs.length===0&&(
-          <Card style={{ padding:'48px', textAlign:'center' as const }}>
-            <p style={{ fontSize:36, marginBottom:10 }}>📱</p>
-            <p style={{ fontSize:15, fontWeight:800, color:C.type, marginBottom:6, fontFamily:'Manrope,sans-serif' }}>No other devices</p>
-            <p style={{ fontSize:13, color:C.muted }}>You are only signed in on this device.</p>
-          </Card>
-        )}
-      </div>
+            </Card>
+          ))}
+          {devices.length===0&&(
+            <Card style={{ padding:'48px', textAlign:'center' as const }}>
+              <p style={{ fontSize:36, marginBottom:10 }}>📱</p>
+              <p style={{ fontSize:15, fontWeight:800, color:C.type, marginBottom:6, fontFamily:'Manrope,sans-serif' }}>No other devices</p>
+              <p style={{ fontSize:13, color:C.muted }}>You are only signed in on this device.</p>
+            </Card>
+          )}
+        </div>
+      )}
     </Page>
   )
 }
@@ -568,42 +905,89 @@ function Devices({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // LINKED ACCOUNTS
 // ──────────────────────────────────────────────────────────────────────────────
-function LinkedAccounts({ onToast }: { onToast:(m:string)=>void }) {
-  const [linked, setLinked] = useState({ google:true, apple:false, facebook:false, microsoft:false, linkedin:false })
-  const providers = [
-    { key:'google',    label:'Google',    icon:I.google,  email:'ihsan.m@gmail.com' },
-    { key:'apple',     label:'Apple',     icon:I.apple,   email:null },
-    { key:'facebook',  label:'Facebook',  icon:<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#1877F2"/><path d="M10 5H9a1 1 0 0 0-1 1v1.5h2l-.3 2H8V14H6V9.5H4.5v-2H6V6a2.5 2.5 0 0 1 2.5-2.5H10V5z" fill="white"/></svg>, email:null },
-    { key:'microsoft', label:'Microsoft', icon:<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6.5" height="6.5" fill="#F25022"/><rect x="8.5" y="1" width="6.5" height="6.5" fill="#7FBA00"/><rect x="1" y="8.5" width="6.5" height="6.5" fill="#00A4EF"/><rect x="8.5" y="8.5" width="6.5" height="6.5" fill="#FFB900"/></svg>, email:null },
-    { key:'linkedin',  label:'LinkedIn',  icon:<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#0A66C2"/><path d="M5 6.5v5M5 4.5v.5M8 11.5v-3a1.5 1.5 0 0 1 3 0v3M8 6.5v5" stroke="white" strokeWidth="1.2" strokeLinecap="round"/></svg>, email:null },
-  ]
+const OAUTH_PROVIDERS: { key:'google'|'apple'|'facebook'|'azure'|'linkedin_oidc'; label:string; icon:ReactNode }[] = [
+  { key:'google',        label:'Google',    icon:I.google },
+  { key:'apple',         label:'Apple',     icon:I.apple },
+  { key:'facebook',      label:'Facebook',  icon:<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#1877F2"/><path d="M10 5H9a1 1 0 0 0-1 1v1.5h2l-.3 2H8V14H6V9.5H4.5v-2H6V6a2.5 2.5 0 0 1 2.5-2.5H10V5z" fill="white"/></svg> },
+  { key:'azure',         label:'Microsoft', icon:<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6.5" height="6.5" fill="#F25022"/><rect x="8.5" y="1" width="6.5" height="6.5" fill="#7FBA00"/><rect x="1" y="8.5" width="6.5" height="6.5" fill="#00A4EF"/><rect x="8.5" y="8.5" width="6.5" height="6.5" fill="#FFB900"/></svg> },
+  { key:'linkedin_oidc', label:'LinkedIn',  icon:<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#0A66C2"/><path d="M5 6.5v5M5 4.5v.5M8 11.5v-3a1.5 1.5 0 0 1 3 0v3M8 6.5v5" stroke="white" strokeWidth="1.2" strokeLinecap="round"/></svg> },
+]
+
+function LinkedAccounts({ onToast }: { onToast:(m:string, kind?:'success'|'error')=>void }) {
+  const [identities, setIdentities] = useState<Awaited<ReturnType<typeof getLinkedIdentities>>>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [busyProvider, setBusyProvider] = useState<string|null>(null)
+
+  const load = () => {
+    setLoading(true)
+    setLoadError('')
+    getLinkedIdentities()
+      .then(setIdentities)
+      .catch(err => { console.error('Failed to load linked accounts:', err); setLoadError("Couldn't load your linked accounts.") })
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
+
+  const handleConnect = async (provider: typeof OAUTH_PROVIDERS[number]['key']) => {
+    setBusyProvider(provider)
+    try {
+      await linkOAuthIdentity(provider)
+      // linkIdentity redirects the browser to the provider — nothing more to do here.
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : `Couldn't connect ${provider}.`, 'error')
+      setBusyProvider(null)
+    }
+  }
+
+  const handleDisconnect = async (identity: Awaited<ReturnType<typeof getLinkedIdentities>>[number]) => {
+    setBusyProvider(identity.provider)
+    try {
+      await unlinkOAuthIdentity(identity)
+      onToast(`${identity.provider} disconnected`)
+      load()
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : `Couldn't disconnect ${identity.provider}.`, 'error')
+    } finally {
+      setBusyProvider(null)
+    }
+  }
+
   return (
     <Page>
       <SectionHeader title="Linked Accounts" desc="Connect third-party accounts for faster sign-in." />
-      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {providers.map(p=>{
-          const isLinked = linked[p.key as keyof typeof linked]
-          return (
-            <Card key={p.key} style={{ padding:20 }}>
-              <div style={{ display:'flex', gap:14, alignItems:'center' }}>
-                <div style={{ width:44, height:44, borderRadius:14, background:C.bg, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                  <span style={{ display:'flex' }}>{p.icon}</span>
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading linked accounts…</p>
+      ) : loadError ? (
+        <p style={{ fontSize:13, color:C.error }}>{loadError}</p>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {OAUTH_PROVIDERS.map(p=>{
+            const identity = identities.find(i => i.provider === p.key)
+            const busy = busyProvider === p.key
+            return (
+              <Card key={p.key} style={{ padding:20 }}>
+                <div style={{ display:'flex', gap:14, alignItems:'center' }}>
+                  <div style={{ width:44, height:44, borderRadius:14, background:C.bg, border:`1px solid ${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                    <span style={{ display:'flex' }}>{p.icon}</span>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{p.label}</p>
+                    <p style={{ fontSize:12, color:C.muted }}>{identity ? ((identity.identity_data?.email as string) || 'Connected') : 'Not connected'}</p>
+                  </div>
+                  <Btn
+                    label={busy ? 'Working…' : identity ? 'Disconnect' : 'Connect'}
+                    variant={identity?'ghost':'secondary'}
+                    small
+                    disabled={busy}
+                    onClick={()=>identity ? handleDisconnect(identity) : handleConnect(p.key)}
+                  />
                 </div>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{p.label}</p>
-                  <p style={{ fontSize:12, color:C.muted }}>{isLinked&&p.email?p.email:isLinked?'Connected':'Not connected'}</p>
-                </div>
-                <Btn
-                  label={isLinked?'Disconnect':'Connect'}
-                  variant={isLinked?'ghost':'secondary'}
-                  small
-                  onClick={()=>{ setLinked(l=>({...l,[p.key]:!isLinked})); onToast(isLinked?`${p.label} disconnected`:`${p.label} connected`) }}
-                />
-              </div>
-            </Card>
-          )
-        })}
-      </div>
+              </Card>
+            )
+          })}
+        </div>
+      )}
     </Page>
   )
 }
@@ -611,7 +995,24 @@ function LinkedAccounts({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // NOTIFICATIONS
 // ──────────────────────────────────────────────────────────────────────────────
-function NotificationSettings({ onToast }: { onToast:(m:string)=>void }) {
+const DEFAULT_NOTIFICATION_PREFS: Record<string,{push:boolean;email:boolean;sms:boolean}> = {
+  'Care Updates':            {push:true, email:true, sms:true},
+  'Task Updates':            {push:true, email:true, sms:false},
+  'Emergency Alerts':        {push:true, email:true, sms:true},
+  'Payment Alerts':          {push:true, email:true, sms:false},
+  'Invoice Ready':           {push:false,email:true, sms:false},
+  'Refund Updates':          {push:true, email:true, sms:false},
+  'Messages':                {push:true, email:false,sms:false},
+  'Review Reminders':        {push:true, email:true, sms:false},
+  'Agent Replies':           {push:true, email:true, sms:false},
+  'Marketing & Offers':      {push:false,email:false,sms:false},
+  'App Updates':             {push:false,email:true, sms:false},
+  'Feature Announcements':   {push:false,email:true, sms:false},
+}
+
+function NotificationSettings({ profile, onSave }: {
+  profile:any; onSave:(f:Record<string,any>)=>void
+}) {
   const groups = [
     { group:'Care',      items:['Care Updates','Task Updates','Emergency Alerts'] },
     { group:'Financial', items:['Payment Alerts','Invoice Ready','Refund Updates'] },
@@ -619,24 +1020,20 @@ function NotificationSettings({ onToast }: { onToast:(m:string)=>void }) {
     { group:'Platform',  items:['Marketing & Offers','App Updates','Feature Announcements'] },
   ]
 
-  const [prefs, setPrefs] = useState<Record<string,{push:boolean;email:boolean;sms:boolean}>>({
-    'Care Updates':            {push:true, email:true, sms:true},
-    'Task Updates':            {push:true, email:true, sms:false},
-    'Emergency Alerts':        {push:true, email:true, sms:true},
-    'Payment Alerts':          {push:true, email:true, sms:false},
-    'Invoice Ready':           {push:false,email:true, sms:false},
-    'Refund Updates':          {push:true, email:true, sms:false},
-    'Messages':                {push:true, email:false,sms:false},
-    'Review Reminders':        {push:true, email:true, sms:false},
-    'Agent Replies':           {push:true, email:true, sms:false},
-    'Marketing & Offers':      {push:false,email:false,sms:false},
-    'App Updates':             {push:false,email:true, sms:false},
-    'Feature Announcements':   {push:false,email:true, sms:false},
-  })
+  const [prefs, setPrefs] = useState<Record<string,{push:boolean;email:boolean;sms:boolean}>>(
+    profile.notification_preferences && typeof profile.notification_preferences === 'object'
+      ? { ...DEFAULT_NOTIFICATION_PREFS, ...profile.notification_preferences }
+      : DEFAULT_NOTIFICATION_PREFS
+  )
 
-  const toggle = (item:string, ch:'push'|'email'|'sms') => {
-    setPrefs(p=>({...p,[item]:{...p[item],[ch]:!p[item][ch]}}))
-    onToast('Notification preference saved')
+  const toggle = async (item:string, ch:'push'|'email'|'sms') => {
+    const next = { ...prefs, [item]: { ...prefs[item], [ch]: !prefs[item][ch] } }
+    setPrefs(next)
+    try {
+      await onSave({ notification_preferences: next })
+    } catch {
+      setPrefs(prefs) // revert the optimistic toggle — the caller already toasted the error
+    }
   }
 
   return (
@@ -673,12 +1070,35 @@ function NotificationSettings({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // PRIVACY
 // ──────────────────────────────────────────────────────────────────────────────
-function Privacy({ onToast }: { onToast:(m:string)=>void }) {
-  const [settings, setSettings] = useState({
-    profileVisible:true, activityVisible:false, reviewVisible:true,
-    searchVisible:true,  dataSharing:false,     marketing:false, cookies:'essential',
-  })
-  const toggle = (k:keyof typeof settings) => { setSettings(p=>({...p,[k]:!p[k as keyof typeof settings]})); onToast('Privacy setting saved') }
+const DEFAULT_PRIVACY_SETTINGS = {
+  profileVisible:true, activityVisible:false, reviewVisible:true,
+  searchVisible:true,  dataSharing:false,     marketing:false,
+}
+
+function Privacy({ profile, onSave, onExportData }: {
+  profile:any; onSave:(f:Record<string,any>)=>void; onExportData:()=>void
+}) {
+  const [settings, setSettings] = useState<typeof DEFAULT_PRIVACY_SETTINGS>(
+    profile.privacy_settings && typeof profile.privacy_settings === 'object'
+      ? { ...DEFAULT_PRIVACY_SETTINGS, ...profile.privacy_settings }
+      : DEFAULT_PRIVACY_SETTINGS
+  )
+  const [cookies, setCookies] = useState<string>(() => localStorage.getItem('rp_cookie_pref') || 'essential')
+
+  const toggle = async (k:keyof typeof settings) => {
+    const next = { ...settings, [k]: !settings[k] }
+    setSettings(next)
+    try {
+      await onSave({ privacy_settings: next })
+    } catch {
+      setSettings(settings) // the caller already toasted the error
+    }
+  }
+
+  const setCookiePref = (k:string) => {
+    setCookies(k)
+    localStorage.setItem('rp_cookie_pref', k)
+  }
 
   const items = [
     {k:'profileVisible' as const, l:'Profile Visibility',    d:'Allow care agents to view your profile when matched'},
@@ -699,19 +1119,19 @@ function Privacy({ onToast }: { onToast:(m:string)=>void }) {
               <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{item.l}</p>
               <p style={{ fontSize:11, color:C.muted, marginTop:2 }}>{item.d}</p>
             </div>
-            <Toggle on={settings[item.k] as boolean} onToggle={()=>toggle(item.k)} />
+            <Toggle on={settings[item.k]} onToggle={()=>toggle(item.k)} />
           </div>
         ))}
       </Card>
 
-      {/* Cookie preferences */}
+      {/* Cookie preferences — a browser-local choice, not tied to your account */}
       <Card style={{ padding:22 }}>
         <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Cookie Preferences</h3>
         {[{k:'essential',l:'Essential',d:'Required for core functionality'},{k:'analytics',l:'Analytics',d:'Help us understand usage patterns'},{k:'marketing',l:'Marketing',d:'Enable personalised advertising'}].map(c=>(
-          <button key={c.k} onClick={()=>{ setSettings(p=>({...p,cookies:c.k})); onToast('Cookie preference saved') }}
-            style={{ width:'100%', display:'flex', gap:12, alignItems:'center', padding:'11px 12px', borderRadius:10, border:`1.5px solid ${settings.cookies===c.k?C.primary:C.border}`, background:settings.cookies===c.k?`${C.primary}06`:'transparent', cursor:'pointer', marginBottom:8, textAlign:'left' as const }}>
-            <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${settings.cookies===c.k?C.primary:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-              {settings.cookies===c.k&&<div style={{ width:9, height:9, borderRadius:'50%', background:C.primary }} />}
+          <button key={c.k} onClick={()=>setCookiePref(c.k)}
+            style={{ width:'100%', display:'flex', gap:12, alignItems:'center', padding:'11px 12px', borderRadius:10, border:`1.5px solid ${cookies===c.k?C.primary:C.border}`, background:cookies===c.k?`${C.primary}06`:'transparent', cursor:'pointer', marginBottom:8, textAlign:'left' as const }}>
+            <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${cookies===c.k?C.primary:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+              {cookies===c.k&&<div style={{ width:9, height:9, borderRadius:'50%', background:C.primary }} />}
             </div>
             <div>
               <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{c.l}{c.k==='essential'&&<span style={{ fontSize:11, color:C.muted }}> (always on)</span>}</p>
@@ -721,7 +1141,7 @@ function Privacy({ onToast }: { onToast:(m:string)=>void }) {
         ))}
       </Card>
 
-      <Btn label="Download My Data" variant="secondary" icon={I.download} onClick={()=>onToast('Data export requested — email in 24 hrs')} />
+      <Btn label="Download My Data" variant="secondary" icon={I.download} onClick={onExportData} />
     </Page>
   )
 }
@@ -729,11 +1149,53 @@ function Privacy({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // ACCESSIBILITY
 // ──────────────────────────────────────────────────────────────────────────────
+function readLocalPref<T>(key:string, fallback:T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw !== null ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeLocalPref<T>(key:string, value:T) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* private mode / quota — preference just won't persist */ }
+}
+
+function setRootClass(cls:string, on:boolean) {
+  document.documentElement.classList.toggle(cls, on)
+}
+
+const FONT_SIZE_CLASSES = { sm:'rp-font-sm', md:'', lg:'rp-font-lg' } as const
+
 function Accessibility({ onToast }: { onToast:(m:string)=>void }) {
-  const [fontSize, setFontSize] = useState<'sm'|'md'|'lg'>('md')
-  const [contrast, setContrast] = useState<'normal'|'high'>('normal')
-  const [toggles, setToggles] = useState({ motion:false, screenReader:false, keyboard:true, colorBlind:false, largeTargets:false })
-  const tog = (k:keyof typeof toggles) => { setToggles(p=>({...p,[k]:!p[k]})); onToast('Accessibility setting saved') }
+  const [fontSize, setFontSizeState] = useState<'sm'|'md'|'lg'>(() => readLocalPref('rp_font_size', 'md' as const))
+  const [contrast, setContrastState] = useState<'normal'|'high'>(() => readLocalPref('rp_contrast', 'normal' as const))
+  const [toggles, setTogglesState] = useState(() => readLocalPref('rp_a11y_toggles', { motion:false, screenReader:false, keyboard:true, colorBlind:false, largeTargets:false }))
+
+  // Apply real <html> classes on mount (so a refresh keeps the effect) and
+  // whenever a preference changes.
+  useEffect(() => {
+    Object.values(FONT_SIZE_CLASSES).forEach(c => c && setRootClass(c, false))
+    const cls = FONT_SIZE_CLASSES[fontSize]
+    if (cls) setRootClass(cls, true)
+  }, [fontSize])
+  useEffect(() => { setRootClass('rp-high-contrast', contrast === 'high') }, [contrast])
+  useEffect(() => { setRootClass('rp-reduced-motion', toggles.motion) }, [toggles.motion])
+  useEffect(() => { setRootClass('rp-keyboard-nav', toggles.keyboard) }, [toggles.keyboard])
+  useEffect(() => { setRootClass('rp-colorblind', toggles.colorBlind) }, [toggles.colorBlind])
+  useEffect(() => { setRootClass('rp-large-targets', toggles.largeTargets) }, [toggles.largeTargets])
+
+  const setFontSize = (v:'sm'|'md'|'lg') => { setFontSizeState(v); writeLocalPref('rp_font_size', v); onToast('Font size updated') }
+  const setContrast = (v:'normal'|'high') => { setContrastState(v); writeLocalPref('rp_contrast', v); onToast('Contrast updated') }
+  const tog = (k:keyof typeof toggles) => {
+    setTogglesState(p => {
+      const next = { ...p, [k]: !p[k] }
+      writeLocalPref('rp_a11y_toggles', next)
+      return next
+    })
+    onToast('Accessibility setting saved')
+  }
 
   return (
     <Page>
@@ -742,7 +1204,7 @@ function Accessibility({ onToast }: { onToast:(m:string)=>void }) {
         <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Font Size</h3>
         <div style={{ display:'flex', gap:10 }}>
           {([['sm','Small'],['md','Default'],['lg','Large']] as const).map(([k,l])=>(
-            <button key={k} onClick={()=>{ setFontSize(k); onToast('Font size updated') }}
+            <button key={k} onClick={()=>setFontSize(k)}
               style={{ flex:1, padding:'10px', borderRadius:10, border:`2px solid ${fontSize===k?C.primary:C.border}`, background:fontSize===k?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:k==='sm'?11:k==='md'?13:16, fontWeight:fontSize===k?800:500, color:fontSize===k?C.primary:C.sub }}>
               {l}
             </button>
@@ -753,7 +1215,7 @@ function Accessibility({ onToast }: { onToast:(m:string)=>void }) {
         <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Contrast</h3>
         <div style={{ display:'flex', gap:10 }}>
           {([['normal','Normal'],['high','High Contrast']] as const).map(([k,l])=>(
-            <button key={k} onClick={()=>{ setContrast(k); onToast('Contrast updated') }}
+            <button key={k} onClick={()=>setContrast(k)}
               style={{ flex:1, padding:'10px', borderRadius:10, border:`2px solid ${contrast===k?C.primary:C.border}`, background:contrast===k?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:contrast===k?800:500, color:contrast===k?C.primary:C.sub }}>
               {l}
             </button>
@@ -784,37 +1246,52 @@ function Accessibility({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // LANGUAGE & REGION
 // ──────────────────────────────────────────────────────────────────────────────
-function LanguageRegion({ onToast }: { onToast:(m:string)=>void }) {
+const DEFAULT_LANGUAGE_REGION = {
+  language:'English', currency:'LKR', timeZone:'Asia/Colombo',
+  dateFormat:'DD/MM/YYYY', timeFormat:'12h',
+}
+
+function LanguageRegion({ profile, onSave }: { profile:any; onSave:(f:Record<string,any>)=>void }) {
   const selStyle = (active:boolean):CSSProperties => ({ flex:1, padding:'9px 0', borderRadius:9, border:`1.5px solid ${active?C.primary:C.border}`, background:active?`${C.primary}08`:'transparent', cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:active?800:500, color:active?C.primary:C.sub, textAlign:'center' as const })
-  const [lang, setLang] = useState('English')
-  const [currency, setCurrency] = useState('LKR')
-  const [tz, setTz] = useState('Asia/Colombo')
-  const [dateFmt, setDateFmt] = useState('DD/MM/YYYY')
-  const [timeFmt, setTimeFmt] = useState('12h')
+  const [region, setRegionState] = useState<typeof DEFAULT_LANGUAGE_REGION>(
+    profile.language_region && typeof profile.language_region === 'object'
+      ? { ...DEFAULT_LANGUAGE_REGION, ...profile.language_region }
+      : DEFAULT_LANGUAGE_REGION
+  )
+
+  const setRegion = async (patch: Partial<typeof DEFAULT_LANGUAGE_REGION>) => {
+    const next = { ...region, ...patch }
+    setRegionState(next)
+    try {
+      await onSave({ language_region: next })
+    } catch {
+      setRegionState(region) // the caller already toasted the error
+    }
+  }
 
   return (
     <Page>
       <SectionHeader title="Language & Region" desc="Localise your ReadyPal experience." />
       {[
-        { label:'Preferred Language', options:['English','Sinhala','Tamil'], val:lang, set:setLang },
-        { label:'Currency', options:['LKR','USD','GBP','EUR'], val:currency, set:setCurrency },
+        { label:'Preferred Language', key:'language' as const,  options:['English','Sinhala','Tamil'] },
+        { label:'Currency',           key:'currency' as const,  options:['LKR','USD','GBP','EUR'] },
       ].map(f=>(
         <Card key={f.label} style={{ padding:22 }}>
           <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:12 }}>{f.label}</p>
           <div style={{ display:'flex', gap:8 }}>
-            {f.options.map(o=><button key={o} onClick={()=>{ f.set(o); onToast('Setting saved') }} style={selStyle(f.val===o)}>{o}</button>)}
+            {f.options.map(o=><button key={o} onClick={()=>setRegion({ [f.key]: o })} style={selStyle(region[f.key]===o)}>{o}</button>)}
           </div>
         </Card>
       ))}
       <Card style={{ padding:'8px 24px 24px' }}>
-        <Field label="Time Zone"   value={tz}       onSave={v=>{ setTz(v); onToast('Saved') }} />
-        <Field label="Date Format" value={dateFmt}  onSave={v=>{ setDateFmt(v); onToast('Saved') }} hint="e.g. DD/MM/YYYY or MM-DD-YYYY" />
+        <Field label="Time Zone"   value={region.timeZone}   onSave={v=>setRegion({ timeZone:v })} />
+        <Field label="Date Format" value={region.dateFormat} onSave={v=>setRegion({ dateFormat:v })} hint="e.g. DD/MM/YYYY or MM-DD-YYYY" />
       </Card>
       <Card style={{ padding:22 }}>
         <p style={{ fontSize:12, fontWeight:700, color:C.muted, marginBottom:12 }}>Time Format</p>
         <div style={{ display:'flex', gap:8 }}>
           {[['12h','12-hour (1:30 PM)'],['24h','24-hour (13:30)']].map(([k,l])=>(
-            <button key={k} onClick={()=>{ setTimeFmt(k); onToast('Saved') }} style={selStyle(timeFmt===k)}>{l}</button>
+            <button key={k} onClick={()=>setRegion({ timeFormat:k })} style={selStyle(region.timeFormat===k)}>{l}</button>
           ))}
         </div>
       </Card>
@@ -825,9 +1302,23 @@ function LanguageRegion({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // APPEARANCE
 // ──────────────────────────────────────────────────────────────────────────────
+function applyTheme(theme:'light'|'dark'|'system') {
+  document.documentElement.setAttribute('data-theme', theme === 'system' ? '' : theme)
+  // A real, honest effect given the app's inline-styled components aren't
+  // CSS-variable driven: this changes native form controls, scrollbars,
+  // and other browser-chrome rendering per the chosen scheme.
+  document.documentElement.style.colorScheme = theme === 'system' ? '' : theme
+}
+
 function Appearance({ onToast }: { onToast:(m:string)=>void }) {
-  const [theme, setTheme] = useState<'light'|'dark'|'system'>('light')
-  const [density, setDensity] = useState<'comfortable'|'compact'>('comfortable')
+  const [theme, setThemeState] = useState<'light'|'dark'|'system'>(() => readLocalPref('rp_theme', 'light' as const))
+  const [density, setDensityState] = useState<'comfortable'|'compact'>(() => readLocalPref('rp_density', 'comfortable' as const))
+
+  useEffect(() => { applyTheme(theme) }, [theme])
+  useEffect(() => { setRootClass('rp-density-compact', density === 'compact') }, [density])
+
+  const setTheme = (v:'light'|'dark'|'system') => { setThemeState(v); writeLocalPref('rp_theme', v); onToast(`Theme set to ${v}`) }
+  const setDensity = (v:'comfortable'|'compact') => { setDensityState(v); writeLocalPref('rp_density', v); onToast('Density preference saved') }
 
   return (
     <Page>
@@ -840,7 +1331,7 @@ function Appearance({ onToast }: { onToast:(m:string)=>void }) {
             ['dark',   'Dark',   I.moon,    '#1A2530'],
             ['system', 'System', I.monitor, 'linear-gradient(135deg,#FAFAFA 50%,#1A2530 50%)'],
             ] as const).map(([k,l,icon,bg])=>(
-            <button key={k} onClick={()=>{ setTheme(k); onToast(`Theme set to ${l}`) }}
+            <button key={k} onClick={()=>setTheme(k)}
               style={{ padding:'20px 16px', borderRadius:14, border:`2px solid ${theme===k?C.primary:C.border}`, background:theme===k?`${C.primary}06`:'transparent', cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:12, transition:'all 0.15s' }}>
               {/* Mini preview */}
               <div style={{ width:72, height:48, borderRadius:10, background:bg, border:`1px solid ${C.border}`, overflow:'hidden', display:'flex', flexDirection:'column', gap:4, padding:6, boxShadow:'0 2px 8px rgba(44,62,67,0.10)' }}>
@@ -861,7 +1352,7 @@ function Appearance({ onToast }: { onToast:(m:string)=>void }) {
         <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:16, fontFamily:'Manrope,sans-serif' }}>Density</h3>
         <div style={{ display:'flex', gap:10 }}>
           {([['comfortable','Comfortable','More breathing room'],['compact','Compact','More content on screen']] as const).map(([k,l,d])=>(
-            <button key={k} onClick={()=>{ setDensity(k); onToast('Density preference saved') }}
+            <button key={k} onClick={()=>setDensity(k)}
               style={{ flex:1, padding:'14px 16px', borderRadius:12, border:`2px solid ${density===k?C.primary:C.border}`, background:density===k?`${C.primary}06`:'transparent', cursor:'pointer', textAlign:'left' as const }}>
               <p style={{ fontSize:13, fontWeight:800, color:density===k?C.primary:C.type, marginBottom:3, fontFamily:'Manrope,sans-serif' }}>{l}</p>
               <p style={{ fontSize:11, color:C.muted }}>{d}</p>
@@ -890,28 +1381,86 @@ function Appearance({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // DOWNLOAD CENTER
 // ──────────────────────────────────────────────────────────────────────────────
-function Downloads({ onToast }: { onToast:(m:string)=>void }) {
+function triggerDownload(filename:string, content:string, mimeType:string) {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+function toCsvBlock(title:string, rows:Record<string, unknown>[]): string {
+  if (rows.length === 0) return `${title}\n(no records)\n`
+  const headers = Array.from(new Set(rows.flatMap(r => Object.keys(r))))
+  const escape = (v:unknown) => {
+    const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s
+  }
+  const lines = [headers.join(','), ...rows.map(r => headers.map(h => escape(r[h])).join(','))]
+  return `${title}\n${lines.join('\n')}\n`
+}
+
+function Downloads({ onToast }: { onToast:(m:string, kind?:'success'|'error')=>void }) {
+  const [exportingJson, setExportingJson] = useState(false)
+  const [exportingCsv, setExportingCsv] = useState(false)
+
+  const exportJson = async () => {
+    if (exportingJson) return
+    setExportingJson(true)
+    try {
+      const data = await exportMyAccountData()
+      triggerDownload(`readypal-data-export-${Date.now()}.json`, JSON.stringify(data, null, 2), 'application/json')
+      logUserActivity('data_exported', 'Downloaded account data (JSON)')
+      onToast('Your data export has downloaded')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't export your data. Please try again.", 'error')
+    } finally {
+      setExportingJson(false)
+    }
+  }
+
+  const exportCsv = async () => {
+    if (exportingCsv) return
+    setExportingCsv(true)
+    try {
+      const data = await exportMyAccountData()
+      const csv = [
+        toCsvBlock('Profile', data.profile ? [data.profile] : []),
+        toCsvBlock('Care Requests', data.care_requests),
+        toCsvBlock('Bookings', data.bookings),
+      ].join('\n')
+      triggerDownload(`readypal-data-export-${Date.now()}.csv`, csv, 'text/csv')
+      logUserActivity('data_exported', 'Downloaded account data (CSV)')
+      onToast('Your data export has downloaded')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't export your data. Please try again.", 'error')
+    } finally {
+      setExportingCsv(false)
+    }
+  }
+
   const items = [
-    { label:'Invoices',          count:5,  size:'~2.4 MB', icon:'🧾' },
-    { label:'Receipts',          count:5,  size:'~1.8 MB', icon:'📄' },
-    { label:'Care Reports',      count:3,  size:'~5.1 MB', icon:'📋' },
-    { label:'Medical Documents', count:2,  size:'~8.3 MB', icon:'🏥' },
-    { label:'Full Care History', count:12, size:'~12 MB',  icon:'📁' },
-    { label:'Data Export (ZIP)', count:1,  size:'~28 MB',  icon:'📦' },
+    { label:'Full Data Export (JSON)', desc:'Your profile, care requests, and bookings in one file', icon:'📦', onClick:exportJson, busy:exportingJson },
+    { label:'Full Data Export (CSV)',  desc:'Same data, spreadsheet-friendly',                        icon:'📊', onClick:exportCsv,  busy:exportingCsv },
   ]
+
   return (
     <Page>
       <SectionHeader title="Download Center" desc="Export your ReadyPal data at any time." />
       <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-        {items.map((item,i)=>(
-          <Card key={i} hover style={{ padding:20 }}>
+        {items.map((item)=>(
+          <Card key={item.label} hover style={{ padding:20 }}>
             <div style={{ display:'flex', gap:14, alignItems:'center' }}>
               <div style={{ width:46, height:46, borderRadius:14, background:C.bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>{item.icon}</div>
               <div style={{ flex:1 }}>
                 <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{item.label}</p>
-                <p style={{ fontSize:12, color:C.muted }}>{item.count} file{item.count!==1?'s':''} · {item.size}</p>
+                <p style={{ fontSize:12, color:C.muted }}>{item.desc}</p>
               </div>
-              <Btn label="Download" variant="secondary" small icon={I.download} onClick={()=>onToast(`${item.label} download started`)} />
+              <Btn label={item.busy?'Preparing…':'Download'} variant="secondary" small icon={I.download} disabled={item.busy} onClick={item.onClick} />
             </div>
           </Card>
         ))}
@@ -923,36 +1472,59 @@ function Downloads({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // ACTIVITY LOG
 // ──────────────────────────────────────────────────────────────────────────────
+const ACTIVITY_EVENT_META: Record<string, { icon:string; color:string }> = {
+  login:              { icon:'🔐', color:C.muted },
+  password_changed:   { icon:'🔑', color:C.warning },
+  mfa_enabled:         { icon:'🔒', color:C.success },
+  mfa_disabled:        { icon:'🔓', color:C.warning },
+  profile_updated:     { icon:'👤', color:C.primary },
+  data_exported:       { icon:'📦', color:C.info },
+  account_deletion_requested: { icon:'⚠️', color:C.error },
+}
+
 function ActivityLog() {
-  const events = [
-    { icon:'🔒', type:'Security Updated',  detail:'Two-factor authentication preference updated',   time:'14 Jan 2025 · 10:30 AM', color:C.warning },
-    { icon:'✅', type:'Review Submitted',   detail:'Review for Kasun Perera — Hospital Companion',   time:'14 Jan 2025 · 9:30 AM',  color:C.success },
-    { icon:'💳', type:'Payment Completed',  detail:'LKR 6,037 · Hospital Companion · INV-1047',      time:'14 Jan 2025 · 9:29 AM',  color:C.primary },
-    { icon:'📱', type:'Device Added',       detail:'iPhone 14 Pro · Safari 17 · Colombo',           time:'13 Jan 2025 · 8:14 AM',  color:C.info },
-    { icon:'🔑', type:'Password Changed',   detail:'Password updated from Colombo, Sri Lanka',       time:'10 Jan 2025 · 9:00 AM',  color:C.warning },
-    { icon:'👤', type:'Profile Updated',    detail:'Phone number verified',                          time:'5 Jan 2025 · 3:45 PM',   color:C.primary },
-    { icon:'🔐', type:'Login',              detail:'Chrome 120 · MacBook Pro · Colombo',            time:'5 Jan 2025 · 3:40 PM',   color:C.muted },
-    { icon:'📝', type:'Profile Updated',    detail:'Preferred name set to "Ihsan"',                  time:'2 Jan 2025 · 11:00 AM',  color:C.primary },
-  ]
+  const [events, setEvents] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+
+  useEffect(() => {
+    getUserActivityLog(50)
+      .then(setEvents)
+      .catch(err => { console.error('Failed to load activity log:', err); setLoadError("Couldn't load your activity log.") })
+      .finally(() => setLoading(false))
+  }, [])
 
   return (
     <Page>
-      <SectionHeader title="Activity Log" desc="A complete timeline of account changes and events." />
-      <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-        {events.map((e,i)=>(
-          <div key={i} style={{ display:'flex', gap:14 }}>
-            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
-              <div style={{ width:38, height:38, borderRadius:12, background:`${e.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>{e.icon}</div>
-              {i<events.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
-            </div>
-            <div style={{ paddingBottom:i<events.length-1?18:0, paddingTop:2 }}>
-              <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{e.type}</p>
-              <p style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{e.detail}</p>
-              <p style={{ fontSize:11, color:C.muted }}>{e.time}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+      <SectionHeader title="Activity Log" desc="A timeline of account changes and events, most recent first." />
+      {loading ? (
+        <p style={{ fontSize:13, color:C.muted }}>Loading activity…</p>
+      ) : loadError ? (
+        <p style={{ fontSize:13, color:C.error }}>{loadError}</p>
+      ) : events.length === 0 ? (
+        <Card style={{ padding:'40px', textAlign:'center' as const }}>
+          <p style={{ fontSize:13, color:C.muted }}>No activity recorded yet.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
+          {events.map((e,i)=>{
+            const meta = ACTIVITY_EVENT_META[e.event_type] ?? { icon:'•', color:C.muted }
+            return (
+              <div key={e.id} style={{ display:'flex', gap:14 }}>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+                  <div style={{ width:38, height:38, borderRadius:12, background:`${meta.color}10`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>{meta.icon}</div>
+                  {i<events.length-1&&<div style={{ width:2, flex:1, background:C.border, margin:'4px 0' }} />}
+                </div>
+                <div style={{ paddingBottom:i<events.length-1?18:0, paddingTop:2 }}>
+                  <p style={{ fontSize:13, fontWeight:700, color:C.type, marginBottom:2 }}>{e.event_type.replace(/_/g,' ').replace(/\b\w/g, (c:string)=>c.toUpperCase())}</p>
+                  {e.description && <p style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{e.description}</p>}
+                  <p style={{ fontSize:11, color:C.muted }}>{formatLogDate(e.created_at)}</p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </Page>
   )
 }
@@ -960,34 +1532,51 @@ function ActivityLog() {
 // ──────────────────────────────────────────────────────────────────────────────
 // SUPPORT
 // ──────────────────────────────────────────────────────────────────────────────
-function Support({ onToast }: { onToast:(m:string)=>void }) {
+function Support({ onToast }: { onToast:(m:string, kind?:'success'|'error')=>void }) {
   const [bugDesc, setBugDesc] = useState('')
+  const [submittingBug, setSubmittingBug] = useState(false)
+  const [submittingContact, setSubmittingContact] = useState(false)
+
+  const submitTicket = async (subject:string, kind:'bug'|'contact') => {
+    const setBusy = kind === 'bug' ? setSubmittingBug : setSubmittingContact
+    setBusy(true)
+    try {
+      await createSupportTicket(subject)
+      if (kind === 'bug') { onToast('Bug report submitted — thank you!'); setBugDesc('') }
+      else onToast('Support request sent — we\'ll reply within 24 hours')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't submit your request. Please try again.", 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Page>
       <SectionHeader title="Support" desc="We're here to help." />
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:14 }} className="as-2col">
         {[
-          { icon:'📚', title:'Help Center',     desc:'Browse guides, tutorials and FAQs', cta:'Open Help Center' },
-          { icon:'💬', title:'Live Chat',        desc:'Chat with our support team (Mon–Fri 8am–8pm)', cta:'Start Chat (Soon)', disabled:true },
-          { icon:'✉️',  title:'Contact Support', desc:'Email our team — response within 24 hours', cta:'Send Email' },
-          { icon:'🗺️', title:'FAQ',             desc:'Quick answers to common questions', cta:'Browse FAQs' },
+          { icon:'📚', title:'Help Center',     desc:'Browse guides, tutorials and FAQs — coming soon', cta:'Coming Soon', disabled:true },
+          { icon:'💬', title:'Live Chat',        desc:'Chat with our support team (Mon–Fri 8am–8pm)', cta:'Coming Soon', disabled:true },
+          { icon:'✉️',  title:'Contact Support', desc:'Send us a message — response within 24 hours', cta:submittingContact?'Sending…':'Send Message', disabled:submittingContact, onClick:()=>submitTicket('General support request from Account Settings', 'contact') },
+          { icon:'🗺️', title:'FAQ',             desc:'Quick answers to common questions — coming soon', cta:'Coming Soon', disabled:true },
         ].map((s,i)=>(
           <Card key={i} hover style={{ padding:22 }}>
             <div style={{ fontSize:28, marginBottom:10 }}>{s.icon}</div>
             <p style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:5 }}>{s.title}</p>
             <p style={{ fontSize:12, color:C.muted, lineHeight:1.6, marginBottom:14 }}>{s.desc}</p>
-            <Btn label={s.cta} variant="secondary" small disabled={(s as any).disabled} onClick={()=>onToast(`${s.title} opened`)} />
+            <Btn label={s.cta} variant="secondary" small disabled={s.disabled} onClick={s.onClick ?? (()=>{})} />
           </Card>
         ))}
       </div>
 
-      {/* Bug report */}
+      {/* Bug report — files a real support ticket */}
       <Card style={{ padding:22 }}>
         <h3 style={{ fontSize:14, fontWeight:800, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:14 }}>Report a Bug</h3>
-        <textarea value={bugDesc} onChange={e=>setBugDesc(e.target.value)} rows={4} placeholder="Describe what happened, what you expected, and steps to reproduce…" style={{ width:'100%', padding:'12px 14px', borderRadius:12, border:`1.5px solid ${bugDesc?C.primary:C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', resize:'none' as const, background:'#FAFAFA', boxSizing:'border-box' as const, lineHeight:1.65 }} />
+        <textarea value={bugDesc} onChange={e=>setBugDesc(e.target.value)} rows={4} placeholder="Describe what happened, what you expected, and steps to reproduce…" disabled={submittingBug}
+          style={{ width:'100%', padding:'12px 14px', borderRadius:12, border:`1.5px solid ${bugDesc?C.primary:C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', resize:'none' as const, background:'#FAFAFA', boxSizing:'border-box' as const, lineHeight:1.65 }} />
         <div style={{ display:'flex', gap:10, marginTop:12 }}>
-          <Btn label="Submit Bug Report" variant="primary" disabled={bugDesc.length<10} onClick={()=>{ onToast('Bug report submitted — thank you!'); setBugDesc('') }} />
-          <Btn label="Feature Request" variant="secondary" onClick={()=>onToast('Feature request sent!')} />
+          <Btn label={submittingBug?'Submitting…':'Submit Bug Report'} variant="primary" disabled={bugDesc.length<10 || submittingBug} onClick={()=>submitTicket(`Bug report: ${bugDesc}`, 'bug')} />
         </div>
       </Card>
     </Page>
@@ -997,13 +1586,53 @@ function Support({ onToast }: { onToast:(m:string)=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // DELETE ACCOUNT
 // ──────────────────────────────────────────────────────────────────────────────
-function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
+function DeleteAccount({ profile, onToast }: { profile:any; onToast:(m:string, kind?:'success'|'error')=>void }) {
+  const navigate = useNavigate()
   const [step, setStep] = useState<1|2|3>(1)
   const [reason, setReason] = useState('')
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   const reasons = ['No longer need care services','Found a better alternative','Privacy concerns','Too expensive','Technical issues','Other']
+
+  const handleExport = async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      const data = await exportMyAccountData()
+      triggerDownload(`readypal-data-export-${Date.now()}.json`, JSON.stringify(data, null, 2), 'application/json')
+      onToast('Your data export has downloaded')
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : "Couldn't export your data.", 'error')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // Second, final confirmation gate — re-verifies the password against
+  // Supabase Auth before anything is flagged, then marks the profile
+  // deleted and signs the session out everywhere.
+  const handleFinalConfirm = async () => {
+    if (deleting) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      if (!profile.email) throw new Error("We couldn't verify your account email. Please refresh and try again.")
+      const { error: authError } = await supabase.auth.signInWithPassword({ email: profile.email, password })
+      if (authError) throw new Error('Incorrect password.')
+      await logUserActivity('account_deletion_requested', reason ? `Reason: ${reason}` : undefined)
+      await requestAccountDeletion()
+      await supabase.auth.signOut()
+      navigate('/', { replace: true })
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Couldn't delete your account. Please try again.")
+      setDeleting(false)
+    }
+  }
 
   return (
     <Page>
@@ -1060,7 +1689,7 @@ function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
           <p style={{ fontSize:13, color:C.muted, lineHeight:1.65, marginBottom:14 }}>Before you go, you can download a complete copy of your data including care history, invoices, and receipts.</p>
           {step===2&&(
             <div style={{ display:'flex', gap:10 }}>
-              <Btn label="Download My Data" variant="secondary" icon={I.download} onClick={()=>onToast('Data export requested — emailed within 24 hrs')} />
+              <Btn label={exporting?'Preparing…':'Download My Data'} variant="secondary" icon={I.download} disabled={exporting} onClick={handleExport} />
               <Btn label="Skip" variant="ghost" onClick={()=>setStep(3)} />
             </div>
           )}
@@ -1081,8 +1710,25 @@ function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
             <input type={showPw?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Your current password" style={{ width:'100%', padding:'10px 40px 10px 14px', borderRadius:10, border:`1.5px solid ${C.error}60`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', background:`${C.error}04`, boxSizing:'border-box' as const }} />
             <button onClick={()=>setShowPw(v=>!v)} style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', cursor:'pointer', color:C.muted, display:'flex' }}>{showPw?I.eyeOff:I.eye}</button>
           </div>
-          <Btn label="Permanently Delete My Account" variant="danger" disabled={password.length<6} onClick={()=>onToast('Account deletion requested — confirmation email sent')} />
+          <Btn label="Permanently Delete My Account" variant="danger" disabled={password.length<6} onClick={()=>{ setDeleteError(''); setConfirming(true) }} />
         </Card>
+      )}
+
+      {/* Final double-confirmation modal — the actual irreversible trigger */}
+      {confirming && (
+        <div style={{ position:'fixed', inset:0, zIndex:200, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div onClick={()=>{ if(!deleting){ setConfirming(false) } }} style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0.4)' }} />
+          <Card style={{ position:'relative', zIndex:1, padding:28, maxWidth:420, width:'100%', border:`1.5px solid ${C.error}40` }}>
+            <div style={{ width:48,height:48,borderRadius:'50%',background:`${C.error}10`,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 14px',color:C.error }}>{I.warning}</div>
+            <h3 style={{ fontSize:16,fontWeight:900,color:C.error,textAlign:'center',marginBottom:8,fontFamily:'Manrope,sans-serif' }}>Are you absolutely sure?</h3>
+            <p style={{ fontSize:13,color:C.muted,textAlign:'center',marginBottom:20,lineHeight:1.6 }}>This is your final confirmation. Your account will be marked for deletion and you'll be signed out immediately. This cannot be undone from the app.</p>
+            {deleteError && <p style={{ fontSize:12, color:C.error, textAlign:'center', marginBottom:14 }}>{deleteError}</p>}
+            <div style={{ display:'flex', gap:10 }}>
+              <Btn label="Cancel" variant="secondary" onClick={()=>setConfirming(false)} disabled={deleting} />
+              <Btn label={deleting?'Deleting…':'Yes, Delete My Account'} variant="danger" onClick={handleFinalConfirm} disabled={deleting} />
+            </div>
+          </Card>
+        </div>
       )}
     </Page>
   )
@@ -1094,18 +1740,58 @@ function DeleteAccount({ onToast }: { onToast:(m:string)=>void }) {
 export default function AccountSettings({ embedded = false, onProfileUpdated }: { embedded?: boolean; onProfileUpdated?: (fields: Record<string, any>) => void } = {}) {
   const navigate = useNavigate()
   const [section, setSection] = useState<Section>('home')
-  const [toast, setToast] = useState<string|null>(null)
+  const [toast, setToast] = useState<{msg:string; kind:'success'|'error'}|null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [profile, setProfile] = useState<any>(null)
+  const [profileError, setProfileError] = useState('')
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState('')
 
+  const loadProfile = () => {
+    setProfileLoading(true)
+    setProfileError('')
+    getCurrentProfile()
+      .then(setProfile)
+      .catch(err => {
+        console.error('Failed to load profile:', err)
+        setProfileError(err instanceof Error ? err.message : "Couldn't load your account. Please try again.")
+      })
+      .finally(() => setProfileLoading(false))
+  }
+
+  useEffect(() => { loadProfile() }, [])
+
+  // Re-apply persisted appearance/accessibility <html> classes whenever
+  // Account Settings mounts — not just when the user is on those specific
+  // tabs — so a fresh page load reflects prior preferences right away.
   useEffect(() => {
-    getCurrentProfile().then(setProfile).catch(console.error)
+    applyTheme(readLocalPref<'light'|'dark'|'system'>('rp_theme', 'light'))
+    setRootClass('rp-density-compact', readLocalPref<'comfortable'|'compact'>('rp_density', 'comfortable') === 'compact')
+    const fontSize = readLocalPref<'sm'|'md'|'lg'>('rp_font_size', 'md')
+    setRootClass('rp-font-sm', fontSize === 'sm')
+    setRootClass('rp-font-lg', fontSize === 'lg')
+    setRootClass('rp-high-contrast', readLocalPref<'normal'|'high'>('rp_contrast', 'normal') === 'high')
+    const a11y = readLocalPref('rp_a11y_toggles', { motion:false, screenReader:false, keyboard:true, colorBlind:false, largeTargets:false })
+    setRootClass('rp-reduced-motion', a11y.motion)
+    setRootClass('rp-keyboard-nav', a11y.keyboard)
+    setRootClass('rp-colorblind', a11y.colorBlind)
+    setRootClass('rp-large-targets', a11y.largeTargets)
   }, [])
 
-  const showToast = (msg:string) => {
-    setToast(msg)
+  // Best-effort, once per browser tab session: real sign-in logs aren't
+  // readable via the client SDK, so this records the closest honest proxy —
+  // this session being active — for Login History / Devices / Activity Log.
+  useEffect(() => {
+    if (!profile) return
+    if (sessionStorage.getItem('rp_login_logged')) return
+    sessionStorage.setItem('rp_login_logged', '1')
+    logUserActivity('login', 'Session started', { userAgent: navigator.userAgent })
+  }, [profile])
+
+  const showToast = (msg:string, kind:'success'|'error'='success') => {
+    setToast({ msg, kind })
     setTimeout(()=>setToast(null), 2800)
   }
 
@@ -1124,37 +1810,88 @@ export default function AccountSettings({ embedded = false, onProfileUpdated }: 
     navigate('/auth?mode=login', { replace: true })
   }
 
+  // Writes to the `profiles` row; when the email itself changes, the actual
+  // Supabase Auth login email must be updated too (this triggers Supabase's
+  // own confirmation-link email to the new address).
   const save = async (fields: Record<string, any>) => {
-    await updateProfile(fields)
-    setProfile((p: any) => ({ ...p, ...fields }))
-    onProfileUpdated?.(fields)
-    showToast('Saved')
+    try {
+      await updateProfile(fields)
+      if (fields.email) {
+        const { error } = await supabase.auth.updateUser({ email: fields.email })
+        if (error) throw error
+      }
+      setProfile((p: any) => ({ ...p, ...fields }))
+      onProfileUpdated?.(fields)
+      showToast(fields.email ? 'Saved — check your new email to confirm the change' : 'Saved')
+      logUserActivity('profile_updated', `Updated: ${Object.keys(fields).join(', ')}`)
+    } catch (err) {
+      console.error('Failed to update profile:', err)
+      showToast(err instanceof Error ? err.message : "Couldn't save changes. Please try again.", 'error')
+      throw err
+    }
+  }
+
+  const handleExportData = async () => {
+    try {
+      const data = await exportMyAccountData()
+      triggerDownload(`readypal-data-export-${Date.now()}.json`, JSON.stringify(data, null, 2), 'application/json')
+      logUserActivity('data_exported', 'Downloaded account data (JSON)')
+      showToast('Your data export has downloaded')
+    } catch (err) {
+      console.error('Failed to export data:', err)
+      showToast(err instanceof Error ? err.message : "Couldn't export your data. Please try again.", 'error')
+    }
+  }
+
+  const handleUploadAvatar = async (file: File) => {
+    if (uploadingAvatar) return
+    setUploadingAvatar(true)
+    try {
+      const { avatarUrl } = await uploadProfilePhoto(file)
+      setProfile((p: any) => ({ ...p, avatar_url: avatarUrl }))
+      onProfileUpdated?.({ avatar_url: avatarUrl })
+      showToast('Profile photo updated')
+    } catch (err) {
+      console.error('Failed to upload avatar:', err)
+      showToast(err instanceof Error ? err.message : "Couldn't upload your photo. Please try again.", 'error')
+    } finally {
+      setUploadingAvatar(false)
+    }
   }
 
   const groups = [...new Set(NAV_ITEMS.map(n=>n.group))]
 
-  if (!profile) return <p style={{ padding: 40 }}>Loading...</p>
+  if (profileLoading) return <p style={{ padding: 40, color:C.muted, fontFamily:'Manrope,sans-serif' }}>Loading your account…</p>
+
+  if (profileError || !profile) {
+    return (
+      <div style={{ padding: 40, display:'flex', flexDirection:'column', gap:12, alignItems:'flex-start', fontFamily:'Manrope,sans-serif' }}>
+        <p style={{ color:C.error, fontSize:14 }}>{profileError || "Couldn't load your account."}</p>
+        <Btn label="Retry" variant="secondary" small icon={I.refresh} onClick={loadProfile} />
+      </div>
+    )
+  }
 
   const renderSection = () => {
     switch(section) {
-      case 'home':          return <AccountHome onNav={s=>setSection(s)} />
-      case 'profile':       return <Profile profile={profile} onSave={save} />
+      case 'home':          return <AccountHome profile={profile} onNav={s=>setSection(s)} />
+      case 'profile':       return <Profile profile={profile} onSave={save} onUploadAvatar={handleUploadAvatar} uploadingAvatar={uploadingAvatar} />
       case 'personal':      return <PersonalInfo profile={profile} onSave={save} />
       case 'contact':       return <ContactInfo profile={profile} onSave={save} />
-      case 'security':      return <Security onToast={showToast} />
+      case 'security':      return <Security profile={profile} onSave={save} onToast={showToast} />
       case 'loginHistory':  return <LoginHistory onToast={showToast} />
       case 'devices':       return <Devices onToast={showToast} />
       case 'linkedAccounts':return <LinkedAccounts onToast={showToast} />
-      case 'notifications': return <NotificationSettings onToast={showToast} />
-      case 'privacy':       return <Privacy onToast={showToast} />
+      case 'notifications': return <NotificationSettings profile={profile} onSave={save} />
+      case 'privacy':       return <Privacy profile={profile} onSave={save} onExportData={handleExportData} />
       case 'accessibility': return <Accessibility onToast={showToast} />
-      case 'language':      return <LanguageRegion onToast={showToast} />
+      case 'language':      return <LanguageRegion profile={profile} onSave={save} />
       case 'appearance':    return <Appearance onToast={showToast} />
       case 'downloads':     return <Downloads onToast={showToast} />
       case 'activity':      return <ActivityLog />
       case 'support':       return <Support onToast={showToast} />
-      case 'deleteAccount': return <DeleteAccount onToast={showToast} />
-      default:              return <AccountHome onNav={s=>setSection(s)} />
+      case 'deleteAccount': return <DeleteAccount profile={profile} onToast={showToast} />
+      default:              return <AccountHome profile={profile} onNav={s=>setSection(s)} />
     }
   }
 
@@ -1236,7 +1973,7 @@ export default function AccountSettings({ embedded = false, onProfileUpdated }: 
         {renderSection()}
       </div>
 
-      {toast && <SuccessToast msg={toast} />}
+      {toast && <SuccessToast msg={toast.msg} kind={toast.kind} />}
     </div>
   )
 }

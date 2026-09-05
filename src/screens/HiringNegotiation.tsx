@@ -1,9 +1,10 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 import {
   getCareRequestDetail, getApplicationsForRequest, updateApplicationStatus, hireApplication,
-  getNegotiationMessages, sendNegotiationMessage, type NegotiationMessage,
+  getNegotiationMessages, sendNegotiationMessage, getOrCreateDirectConversation,
+  getNegotiationActivityForRequest, getBookingForApplication, type NegotiationMessage,
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -75,6 +76,17 @@ function Btn({ label, icon, onClick, variant='primary', small=false, disabled=fa
   )
 }
 
+function Toast({ msg, kind, onDone }: { msg:string; kind:'success'|'error'; onDone:()=>void }) {
+  useEffect(() => { const t = setTimeout(onDone, 3200); return () => clearTimeout(t) }, [onDone])
+  const color = kind === 'error' ? C.error : C.success
+  return (
+    <div style={{ position:'fixed', bottom:20, left:'50%', transform:'translateX(-50%)', zIndex:300, background:C.surface, border:`1.5px solid ${color}40`, borderRadius:12, padding:'10px 16px', boxShadow:'0 8px 24px rgba(0,0,0,0.15)', display:'flex', alignItems:'center', gap:8 }}>
+      <span style={{ color, display:'flex' }}>{kind==='error'?I.warning:I.check}</span>
+      <p style={{ fontSize:13, fontWeight:600, color:C.type, fontFamily:'Manrope,sans-serif' }}>{msg}</p>
+    </div>
+  )
+}
+
 function Bdg({ label, color=C.primary, bg, icon }: { label:string; color?:string; bg?:string; icon?:ReactNode }) {
   return <span style={{ display:'inline-flex', alignItems:'center', gap:4, padding:'3px 9px', borderRadius:999, fontSize:11, fontWeight:700, background:bg??`${color}14`, color, whiteSpace:'nowrap', fontFamily:'Manrope,sans-serif' }}>{icon&&<span style={{display:'flex'}}>{icon}</span>}{label}</span>
 }
@@ -120,6 +132,7 @@ type Application = {
   status: keyof typeof STATUS_META
   trustScore:number; coverLetter:string; notes:string; repeatClients:number
   recommendation?:string; matchScore:number
+  agentId?:string
 }
 
 const APPLICATIONS: Application[] = [
@@ -178,6 +191,7 @@ let CARE_REQUEST = {
   dates:'From 15 Jan 2025 · Ongoing',
   status:'Open',
   posted:'13 Jan 2025',
+  createdAt:'',
   views:28, applications:4, shortlisted:1,
 }
 
@@ -187,14 +201,61 @@ type SubView = 'dashboard'|'list'|'proposal'|'shortlist'|'compare'|'negotiate'|'
 // ──────────────────────────────────────────────────────────────────────────────
 // APPLICATION DASHBOARD
 // ──────────────────────────────────────────────────────────────────────────────
-function Dashboard({ onView, apps, shortlist, onSetView }: { onView:(id:string)=>void; apps:Application[]; shortlist:Set<string>; onSetView:(v:SubView)=>void }) {
+function formatTimelineDate(iso?: string | null): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleString('en-GB', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit' })
+}
+
+function Dashboard({ onView, apps, onSetView, negotiationActivity, hiredBooking }: {
+  onView:(id:string)=>void; apps:Application[]; shortlist:Set<string>; onSetView:(v:SubView)=>void
+  negotiationActivity:{hasActivity:boolean; lastMessageAt:string|null}
+  hiredBooking:{created_at:string}|null
+}) {
+  // Every step is derived from real fetched data (apps, CARE_REQUEST,
+  // negotiation activity, the hired booking) — never a hardcoded date or a
+  // status that can't reflect what actually happened in the database.
+  const hiredApp = apps.find(a => a.status === 'hired')
+  const isRequestPublished = !!CARE_REQUEST.createdAt
+  const hasApplications = apps.length > 0
+  const isShortlistedOrHired = apps.some(a => a.status === 'shortlisted' || a.status === 'hired')
+  const isNegotiationDone = negotiationActivity.hasActivity || !!hiredApp
+  const isHireConfirmed = CARE_REQUEST.status === 'assigned' || CARE_REQUEST.status === 'completed' || !!hiredApp
+
+  const earliestAppliedIso = apps.reduce<string | null>((earliest, a) => {
+    const t = new Date(a.appliedDate).getTime()
+    if (Number.isNaN(t)) return earliest
+    if (!earliest || t < new Date(earliest).getTime()) return a.appliedDate
+    return earliest
+  }, null)
+
   const timeline = [
-    {date:'13 Jan, 9:00 AM', ev:'Care Request Published', done:true},
-    {date:'13 Jan, 9:42 AM', ev:'First Application Received', done:true},
-    {date:'13 Jan, 3:00 PM', ev:'4 Applications Received', done:true},
-    {date:'14 Jan',          ev:'Review & Shortlist', done:false},
-    {date:'15 Jan',          ev:'Negotiation Phase', done:false},
-    {date:'TBD',             ev:'Hire Confirmed', done:false},
+    {
+      date: formatTimelineDate(CARE_REQUEST.createdAt) ?? '—',
+      ev: 'Care Request Published',
+      done: isRequestPublished,
+    },
+    {
+      date: hasApplications ? (formatTimelineDate(earliestAppliedIso) ?? '—') : 'Awaiting applications',
+      ev: `${apps.length} Application${apps.length===1?'':'s'} Received`,
+      done: hasApplications,
+    },
+    {
+      date: isShortlistedOrHired ? 'Completed' : 'Pending',
+      ev: 'Review & Shortlist',
+      done: isShortlistedOrHired,
+    },
+    {
+      date: isNegotiationDone ? (formatTimelineDate(negotiationActivity.lastMessageAt) ?? 'Completed') : 'Not started',
+      ev: 'Negotiation Phase',
+      done: isNegotiationDone,
+    },
+    {
+      date: isHireConfirmed ? (formatTimelineDate(hiredBooking?.created_at) ?? 'Confirmed') : 'TBD',
+      ev: 'Hire Confirmed',
+      done: isHireConfirmed,
+    },
   ]
   const recBadges: Record<string,string> = { 'Best Overall':C.primary,'Most Experienced':C.accent,'Best Value':C.success,'Fastest Response':C.info }
 
@@ -300,10 +361,10 @@ function Dashboard({ onView, apps, shortlist, onSetView }: { onView:(id:string)=
           {timeline.map((ev,i)=>(
             <div key={i} style={{ display:'flex', gap:12 }}>
               <div style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
-                <div style={{ width:24, height:24, borderRadius:'50%', background:ev.done?C.primary:`${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                <div style={{ width:24, height:24, borderRadius:'50%', background:ev.done?C.success:`${C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                   {ev.done ? <span style={{color:'#fff',display:'flex',transform:'scale(0.85)'}}>{I.check}</span> : <div style={{width:8,height:8,borderRadius:'50%',background:'#fff'}} />}
                 </div>
-                {i<timeline.length-1&&<div style={{ width:2, flex:1, minHeight:16, background:ev.done?C.primary:C.border, margin:'3px 0' }} />}
+                {i<timeline.length-1&&<div style={{ width:2, flex:1, minHeight:16, background:ev.done?C.success:C.border, margin:'3px 0' }} />}
               </div>
               <div style={{ paddingBottom: i<timeline.length-1?14:0 }}>
                 <p style={{ fontSize:12, fontWeight:700, color:ev.done?C.type:C.muted }}>{ev.ev}</p>
@@ -324,10 +385,11 @@ function Dashboard({ onView, apps, shortlist, onSetView }: { onView:(id:string)=
 // ──────────────────────────────────────────────────────────────────────────────
 // APPLICATION LIST
 // ──────────────────────────────────────────────────────────────────────────────
-function AppList({ apps, shortlist, onShortlist, onView, onCompare, compareIds, onReject, onNegotiate, onHire }: {
+function AppList({ apps, shortlist, onShortlist, onView, onCompare, compareIds, onReject, onNegotiate, onHire, requestFilled }: {
   apps:Application[]; shortlist:Set<string>; onShortlist:(id:string)=>void
   onView:(id:string)=>void; onCompare:(id:string)=>void; compareIds:Set<string>
   onReject:(id:string)=>void; onNegotiate:(id:string)=>void; onHire:(id:string)=>void
+  requestFilled:boolean
 }) {
   const [sort, setSort] = useState('Recommended')
   const sorts = ['Recommended','Highest Rated','Best Price','Fastest Response','Most Experienced']
@@ -357,6 +419,8 @@ function AppList({ apps, shortlist, onShortlist, onView, onCompare, compareIds, 
         {sorted.map(a=>{
           const isSl = shortlist.has(a.id)
           const isComp = compareIds.has(a.id)
+          const isHired = a.status === 'hired'
+          const locked = isHired || requestFilled
           return (
             <Card key={a.id} hover style={{ padding:0, overflow:'hidden' }}>
               {a.recommendation && <div style={{ height:3, background:`linear-gradient(90deg,${C.primary},${C.accent})` }} />}
@@ -418,9 +482,10 @@ function AppList({ apps, shortlist, onShortlist, onView, onCompare, compareIds, 
                   <button onClick={()=>onView(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 14px', borderRadius:9, border:'none', background:C.primary, cursor:'pointer', fontSize:12, fontWeight:700, color:'#fff', fontFamily:'Manrope,sans-serif' }}>{I.doc} View Proposal</button>
                   <button onClick={()=>onShortlist(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 14px', borderRadius:9, border:`1.5px solid ${isSl?C.primary:C.border}`, background:isSl?`${C.primary}08`:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:isSl?C.primary:C.sub, fontFamily:'Manrope,sans-serif' }}>{isSl?I.heartFill:I.heart} {isSl?'Shortlisted':'Shortlist'}</button>
                   <button onClick={()=>onCompare(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 14px', borderRadius:9, border:`1.5px solid ${isComp?C.primary:C.border}`, background:isComp?`${C.primary}08`:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:isComp?C.primary:C.sub, fontFamily:'Manrope,sans-serif' }}>{I.compare} {isComp?'Added':'Compare'}</button>
-                  <button onClick={()=>onNegotiate(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 14px', borderRadius:9, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>{I.refresh} Negotiate</button>
-                  <button onClick={()=>onHire(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 16px', borderRadius:9, border:'none', background:C.accent, cursor:'pointer', fontSize:12, fontWeight:700, color:'#fff', fontFamily:'Manrope,sans-serif', marginLeft:'auto' }}>{I.bolt} Hire Now</button>
-                  <button onClick={()=>onReject(a.id)} style={{ width:34, height:34, borderRadius:9, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.error }}>{I.close}</button>
+                  {!locked && <button onClick={()=>onNegotiate(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 14px', borderRadius:9, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:12, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif' }}>{I.refresh} Negotiate</button>}
+                  {!locked && <button onClick={()=>onHire(a.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'8px 16px', borderRadius:9, border:'none', background:C.accent, cursor:'pointer', fontSize:12, fontWeight:700, color:'#fff', fontFamily:'Manrope,sans-serif', marginLeft:'auto' }}>{I.bolt} Hire Now</button>}
+                  {locked && <span style={{ display:'flex', alignItems:'center', marginLeft:'auto' }}><Bdg label={isHired?'Hired':'Request Filled'} color={isHired?C.success:C.muted} icon={isHired?I.check:undefined} /></span>}
+                  {!isHired && <button onClick={()=>onReject(a.id)} style={{ width:34, height:34, borderRadius:9, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:C.error }}>{I.close}</button>}
                 </div>
               </div>
             </Card>
@@ -434,7 +499,33 @@ function AppList({ apps, shortlist, onShortlist, onView, onCompare, compareIds, 
 // ──────────────────────────────────────────────────────────────────────────────
 // PROPOSAL DETAIL
 // ──────────────────────────────────────────────────────────────────────────────
-function ProposalDetail({ app, onBack, onNegotiate, onHire }: { app:Application; onBack:()=>void; onNegotiate:()=>void; onHire:()=>void }) {
+function ProposalDetail({ app, onBack, onNegotiate, onHire, onToast, requestFilled }: {
+  app:Application; onBack:()=>void; onNegotiate:()=>void; onHire:()=>void
+  onToast:(msg:string, kind?:'success'|'error')=>void
+  requestFilled:boolean
+}) {
+  const navigate = useNavigate()
+  const [sendingMsg, setSendingMsg] = useState(false)
+  const isHired = app.status === 'hired'
+  const locked = isHired || requestFilled
+
+  const handleSendMessage = async () => {
+    if (sendingMsg) return
+    if (!app.agentId) {
+      onToast("Can't message this agent right now", 'error')
+      return
+    }
+    setSendingMsg(true)
+    try {
+      const conversationId = await getOrCreateDirectConversation(app.agentId)
+      navigate(`/agent/messaginghub?conversationId=${conversationId}`)
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Failed to open conversation', 'error')
+    } finally {
+      setSendingMsg(false)
+    }
+  }
+
   const carePlan = [
     { day:'Monday–Friday', tasks:['Morning medication check (8 AM)','Blood pressure monitoring','Hospital escort if required','Healthy meal reminder'] },
     { day:'Saturday', tasks:['Weekly pharmacy run','Personal care assistance','Family video call support'] },
@@ -552,11 +643,23 @@ function ProposalDetail({ app, onBack, onNegotiate, onHire }: { app:Application;
       <div style={{ width:280, flexShrink:0, display:'flex', flexDirection:'column', gap:16, position:'sticky', top:24 }}>
         <Card style={{ padding:22 }}>
           <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Take Action</p>
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            <button onClick={onHire} style={{ width:'100%', padding:'12px', borderRadius:10, border:'none', background:`linear-gradient(135deg,${C.primary},#00959E)`, cursor:'pointer', fontSize:13, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.bolt} Hire {app.name.split(' ')[0]}</button>
-            <button onClick={onNegotiate} style={{ width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.refresh} Negotiate Price</button>
-            <button style={{ width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.mail} Send Message</button>
-          </div>
+          {locked ? (
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              <div style={{ display:'flex', justifyContent:'center' }}>
+                <Bdg label={isHired?'Status: Hired':'Request Filled'} color={isHired?C.success:C.muted} icon={isHired?I.check:undefined} />
+              </div>
+              {isHired && (
+                <button onClick={handleSendMessage} disabled={sendingMsg} style={{ width:'100%', padding:'12px', borderRadius:10, border:'none', background:`linear-gradient(135deg,${C.primary},#00959E)`, cursor:sendingMsg?'default':'pointer', fontSize:13, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7, opacity:sendingMsg?0.7:1 }}>{I.mail} {sendingMsg?'Opening…':'Message Agent'}</button>
+              )}
+              <button onClick={()=>navigate('/dashboard')} style={{ width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.doc} View Booking Details</button>
+            </div>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              <button onClick={onHire} style={{ width:'100%', padding:'12px', borderRadius:10, border:'none', background:`linear-gradient(135deg,${C.primary},#00959E)`, cursor:'pointer', fontSize:13, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.bolt} Hire {app.name.split(' ')[0]}</button>
+              <button onClick={onNegotiate} style={{ width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.refresh} Negotiate Price</button>
+              <button onClick={handleSendMessage} disabled={sendingMsg} style={{ width:'100%', padding:'10px', borderRadius:10, border:`1.5px solid ${C.border}`, background:'transparent', cursor:sendingMsg?'default':'pointer', fontSize:13, fontWeight:700, color:C.sub, fontFamily:'Manrope,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:7, opacity:sendingMsg?0.7:1 }}>{I.mail} {sendingMsg?'Opening…':'Send Message'}</button>
+            </div>
+          )}
           <div style={{ marginTop:12, padding:'10px 12px', borderRadius:9, background:`${C.success}07`, border:`1px solid ${C.success}18` }}>
             <p style={{ fontSize:11, fontWeight:700, color:C.success }}>Usually responds in ~{app.responseTime}</p>
           </div>
@@ -744,6 +847,26 @@ function Negotiation({ app, clientId, onBack, onAccept, accepting, onPriceUpdate
   const counterNum = Number(counter)
   const pctSaving = counterNum > 0 ? Math.round((1 - counterNum/currentOffer)*100) : 0
 
+  // Data can go stale mid-session (e.g. hired from another tab) — never let
+  // negotiation controls render for an application that's already hired.
+  if (app.status === 'hired') {
+    return (
+      <div style={{ padding:'24px 28px 60px' }}>
+        <button onClick={onBack} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', color:C.muted, fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', marginBottom:20 }}>{I.chevronL} Back</button>
+        <Card style={{ padding:24, maxWidth:480 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:12 }}>
+            <Avatar name={app.name} size={48} />
+            <div>
+              <p style={{ fontSize:15, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>{app.name}</p>
+              <StatusBdg s="Hired" />
+            </div>
+          </div>
+          <p style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>{app.name.split(' ')[0]} has already been hired for this care request — negotiation is closed. Go back to message them or view the booking.</p>
+        </Card>
+      </div>
+    )
+  }
+
   const sendCounter = async () => {
     if (sending) return
     if (!counter || !Number.isFinite(counterNum) || counterNum <= 0) {
@@ -898,7 +1021,7 @@ function Negotiation({ app, clientId, onBack, onAccept, accepting, onPriceUpdate
 // ──────────────────────────────────────────────────────────────────────────────
 // SHORTLIST VIEW
 // ──────────────────────────────────────────────────────────────────────────────
-function ShortlistView({ apps, shortlist, onRemove, onView, onHire }: { apps:Application[]; shortlist:Set<string>; onRemove:(id:string)=>void; onView:(id:string)=>void; onHire:(id:string)=>void }) {
+function ShortlistView({ apps, shortlist, onRemove, onView, onHire, requestFilled }: { apps:Application[]; shortlist:Set<string>; onRemove:(id:string)=>void; onView:(id:string)=>void; onHire:(id:string)=>void; requestFilled:boolean }) {
   const slApps = apps.filter(a=>shortlist.has(a.id))
   if (!slApps.length) return (
     <div style={{ padding:'60px 28px', textAlign:'center' }}>
@@ -912,7 +1035,10 @@ function ShortlistView({ apps, shortlist, onRemove, onView, onHire }: { apps:App
       <h2 style={{ fontSize:20, fontWeight:900, color:C.type, marginBottom:4, fontFamily:'Manrope,sans-serif' }}>Shortlist</h2>
       <p style={{ fontSize:13, color:C.muted, marginBottom:18 }}>{slApps.length} agent{slApps.length!==1?'s':''} shortlisted</p>
       <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-        {slApps.map(a=>(
+        {slApps.map(a=>{
+          const isHired = a.status === 'hired'
+          const locked = isHired || requestFilled
+          return (
           <Card key={a.id} hover style={{ padding:'18px 20px' }}>
             <div style={{ display:'flex', gap:14, alignItems:'center', flexWrap:'wrap' }}>
               <Avatar name={a.name} size={52} />
@@ -929,14 +1055,17 @@ function ShortlistView({ apps, shortlist, onRemove, onView, onHire }: { apps:App
                 </div>
                 <p style={{ fontSize:12, color:C.sub, marginTop:6, fontStyle:'italic' }}>{a.notes}</p>
               </div>
-              <div style={{ display:'flex', gap:7, flexShrink:0 }}>
+              <div style={{ display:'flex', gap:7, flexShrink:0, alignItems:'center' }}>
                 <Btn label="View Proposal" variant="secondary" small onClick={()=>onView(a.id)} />
-                <Btn label="Hire" variant="primary" small onClick={()=>onHire(a.id)} icon={I.bolt} />
-                <button onClick={()=>onRemove(a.id)} style={{ width:32,height:32,borderRadius:9,border:`1px solid ${C.border}`,background:'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:C.error }}>{I.close}</button>
+                {locked
+                  ? <Bdg label={isHired?'Hired':'Request Filled'} color={isHired?C.success:C.muted} icon={isHired?I.check:undefined} />
+                  : <Btn label="Hire" variant="primary" small onClick={()=>onHire(a.id)} icon={I.bolt} />}
+                {!isHired && <button onClick={()=>onRemove(a.id)} style={{ width:32,height:32,borderRadius:9,border:`1px solid ${C.border}`,background:'transparent',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:C.error }}>{I.close}</button>}
               </div>
             </div>
           </Card>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -1123,9 +1252,31 @@ function RejectModal({ app, onClose, onConfirm, submitting, error }: { app:Appli
 // ──────────────────────────────────────────────────────────────────────────────
 // SUCCESS SCREEN
 // ──────────────────────────────────────────────────────────────────────────────
-function SuccessScreen({ app, onDashboard }: { app:Application; onDashboard:()=>void }) {
+function SuccessScreen({ app, onDashboard, onToast }: {
+  app:Application; onDashboard:()=>void
+  onToast:(msg:string, kind?:'success'|'error')=>void
+}) {
+  const navigate = useNavigate()
+  const [messaging, setMessaging] = useState(false)
   const ref = `RP-${Date.now().toString(36).toUpperCase().slice(-6)}`
   const steps = ['Care Request Confirmed','Agent Notified · Responds in ~'+app.responseTime,'Visit Scheduled for 15 Jan 2025 · 8:00 AM','Family Update Sent to Your Account']
+
+  const handleMessageAgent = async () => {
+    if (messaging) return
+    if (!app.agentId) {
+      onToast("Can't message this agent right now", 'error')
+      return
+    }
+    setMessaging(true)
+    try {
+      const conversationId = await getOrCreateDirectConversation(app.agentId)
+      navigate(`/agent/messaginghub?conversationId=${conversationId}`)
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Failed to open conversation', 'error')
+    } finally {
+      setMessaging(false)
+    }
+  }
 
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'48px 28px', textAlign:'center' }}>
@@ -1173,8 +1324,8 @@ function SuccessScreen({ app, onDashboard }: { app:Application; onDashboard:()=>
         <button onClick={onDashboard} style={{ padding:'12px 28px', borderRadius:12, border:'none', background:`linear-gradient(135deg,${C.primary},#00959E)`, cursor:'pointer', fontSize:14, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif' }}>
           Track Care Progress
         </button>
-        <button style={{ padding:'12px 22px', borderRadius:12, border:`1.5px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif' }}>
-          Message Care Agent
+        <button onClick={handleMessageAgent} disabled={messaging} style={{ padding:'12px 22px', borderRadius:12, border:`1.5px solid ${C.border}`, background:'transparent', cursor:messaging?'default':'pointer', fontSize:13, fontWeight:700, color:C.type, fontFamily:'Manrope,sans-serif', opacity:messaging?0.7:1 }}>
+          {messaging ? 'Opening…' : 'Message Care Agent'}
         </button>
       </div>
     </div>
@@ -1186,6 +1337,7 @@ function SuccessScreen({ app, onDashboard }: { app:Application; onDashboard:()=>
 // ──────────────────────────────────────────────────────────────────────────────
 export default function HiringNegotiation() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const [, forceUpdate] = useState(0)
   const [subView, setSubView]           = useState<SubView>('dashboard')
   const [selectedId, setSelectedId]     = useState<string>('')
@@ -1198,24 +1350,68 @@ export default function HiringNegotiation() {
   const [clientId, setClientId]         = useState('')
   const [accepting, setAccepting]       = useState(false)
   const [hireError, setHireError]       = useState('')
+  const [toast, setToast]               = useState<{msg:string; kind:'success'|'error'}|null>(null)
+  const [negotiationActivity, setNegotiationActivity] = useState<{hasActivity:boolean; lastMessageAt:string|null}>({ hasActivity:false, lastMessageAt:null })
+  const [hiredBooking, setHiredBooking] = useState<{created_at:string}|null>(null)
+  const showToast = (msg:string, kind:'success'|'error'='success') => setToast({ msg, kind })
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setClientId(data.user?.id || ''))
   }, [])
 
-  useEffect(() => {
+  // Re-fetched after a successful hire (in addition to on mount) so the
+  // application/care-request status is always current — a hired app or a
+  // filled request must never leave stale "Hire"/"Negotiate" controls
+  // visible without a full page reload.
+  const loadApplications = async () => {
     if (!id) return
-    getCareRequestDetail(id).then(real => {
+    try {
+      const loaded = await getApplicationsForRequest(id, clientId)
+      setApps(loaded)
+      setSelectedId(prev => prev || loaded[0]?.id || '')
+
+      // Feeds the Application Timeline: real negotiation activity and the
+      // hired booking's timestamp, instead of hardcoded dates/statuses.
+      const applicationIds = loaded.map(a => a.id)
+      const hiredApp = loaded.find(a => a.status === 'hired')
+      const [activity, booking] = await Promise.all([
+        getNegotiationActivityForRequest(applicationIds).catch(err => {
+          console.error('Failed to load negotiation activity:', err)
+          return { hasActivity: false, lastMessageAt: null }
+        }),
+        hiredApp
+          ? getBookingForApplication(hiredApp.id).catch(err => {
+              console.error('Failed to load hired booking:', err)
+              return null
+            })
+          : Promise.resolve(null),
+      ])
+      setNegotiationActivity(activity)
+      setHiredBooking(booking)
+    } catch (err) {
+      console.error('Failed to load applications:', err)
+    }
+  }
+
+  const loadCareRequest = async () => {
+    if (!id) return
+    try {
+      const real = await getCareRequestDetail(id)
       Object.assign(CARE_REQUEST, real)
       forceUpdate(n => n + 1)
-    }).catch(console.error)
-    getApplicationsForRequest(id, clientId).then(loaded => {
-      setApps(loaded)
-      if (loaded[0]) setSelectedId(loaded[0].id)
-    }).catch(console.error)
+    } catch (err) {
+      console.error('Failed to load care request:', err)
+    }
+  }
+
+  useEffect(() => {
+    loadCareRequest()
+    loadApplications()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, clientId])
 
   const selected = apps.find(a=>a.id===selectedId) ?? apps[0]
+  const requestFilled = CARE_REQUEST.status === 'assigned' || CARE_REQUEST.status === 'completed'
 
   const toggleShortlist = (id:string) => setShortlist(p=>{ const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n })
   const toggleCompare   = (id:string) => setCompareIds(p=>{ const n=new Set(p); if(n.has(id)){n.delete(id)}else if(n.size<4){n.add(id)}; return n })
@@ -1239,11 +1435,21 @@ export default function HiringNegotiation() {
     setHireError('')
     try {
       await hireApplication(selectedId, id, app.agentId, clientId, CARE_REQUEST.beneficiaryId)
+      // Refresh application/care-request status immediately so that if the
+      // user navigates back into this screen's own views (Applications,
+      // Proposal, Negotiate) without a full page reload, they never see
+      // stale "Hire"/"Negotiate" controls for what is now a filled request.
+      await Promise.all([loadApplications(), loadCareRequest()])
       setShowHireModal(false)
       setSubView('success')
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to hire application:', err)
-      setHireError(err?.message || "Couldn't hire this agent. Please try again.")
+      // Errors we threw ourselves (new Error(...)) are already written to be
+      // user-facing. Anything else is a raw Postgrest/network error object —
+      // never show that text directly, fall back to a generic message.
+      const friendly = err instanceof Error ? err.message : "Couldn't hire this agent. Please try again."
+      setHireError(friendly)
+      showToast(friendly, 'error')
     } finally {
       setAccepting(false)
     }
@@ -1306,18 +1512,19 @@ export default function HiringNegotiation() {
 
       {/* Content */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflowY:'auto' }}>
-        {subView==='dashboard' && <Dashboard onView={viewProposal} apps={apps} shortlist={shortlist} onSetView={setSubView} />}
-        {subView==='list'      && <AppList apps={apps} shortlist={shortlist} onShortlist={toggleShortlist} onView={viewProposal} onCompare={toggleCompare} compareIds={compareIds} onReject={doReject} onNegotiate={doNegotiate} onHire={doHire} />}
-        {subView==='proposal'  && <ProposalDetail app={selected} onBack={()=>setSubView('list')} onNegotiate={()=>doNegotiate(selected.id)} onHire={()=>doHire(selected.id)} />}
-        {subView==='shortlist' && <ShortlistView apps={apps} shortlist={shortlist} onRemove={toggleShortlist} onView={viewProposal} onHire={doHire} />}
+        {subView==='dashboard' && <Dashboard onView={viewProposal} apps={apps} shortlist={shortlist} onSetView={setSubView} negotiationActivity={negotiationActivity} hiredBooking={hiredBooking} />}
+        {subView==='list'      && <AppList apps={apps} shortlist={shortlist} onShortlist={toggleShortlist} onView={viewProposal} onCompare={toggleCompare} compareIds={compareIds} onReject={doReject} onNegotiate={doNegotiate} onHire={doHire} requestFilled={requestFilled} />}
+        {subView==='proposal'  && <ProposalDetail app={selected} onBack={()=>setSubView('list')} onNegotiate={()=>doNegotiate(selected.id)} onHire={()=>doHire(selected.id)} onToast={showToast} requestFilled={requestFilled} />}
+        {subView==='shortlist' && <ShortlistView apps={apps} shortlist={shortlist} onRemove={toggleShortlist} onView={viewProposal} onHire={doHire} requestFilled={requestFilled} />}
         {subView==='compare'   && <CompareView apps={apps.filter(a=>compareIds.has(a.id))} onRemove={toggleCompare} onHire={doHire} onBack={()=>setSubView('list')} />}
         {subView==='negotiate' && <Negotiation app={selected} clientId={clientId} onBack={()=>setSubView('proposal')} onAccept={()=>doHire(selected.id)} accepting={accepting} onPriceUpdated={updateAppPrice} />}
         {subView==='invitations'&& <InvitationsView />}
-        {subView==='success'   && <SuccessScreen app={selected} onDashboard={()=>setSubView('dashboard')} />}
+        {subView==='success'   && <SuccessScreen app={selected} onDashboard={()=>navigate('/dashboard')} onToast={showToast} />}
       </div>
 
       {showHireModal && <HireConfirmModal app={selected} onClose={()=>{ if(!accepting){ setShowHireModal(false); setHireError('') } }} onConfirm={confirmHire} submitting={accepting} error={hireError} />}
       {showRejectModal && <RejectModal app={apps.find(a=>a.id===rejectId)??apps[0]} onClose={()=>{ if(!rejecting){ setShowRejectModal(false); setRejectError('') } }} onConfirm={confirmReject} submitting={rejecting} error={rejectError} />}
+      {toast && <Toast msg={toast.msg} kind={toast.kind} onDone={()=>setToast(null)} />}
     </div>
   )
 }
