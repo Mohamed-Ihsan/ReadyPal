@@ -409,7 +409,7 @@ function InlineAlert({ type, message }: { type:'error'|'warning'|'success'; mess
 // ─── Welcome ──────────────────────────────────────────────────────────────────
 function WelcomeScreen({ go }: { go: (s: AuthScreen) => void }) {
   const [lang, setLang] = useState<'en'|'si'|'ta'>('en')
-  const langs: [string, Lang][] = [['English','en'],['සිංහල','si'],['தமிழ்','ta']]
+  const langs: [string, typeof lang][] = [['English','en'],['සිංහල','si'],['தமிழ்','ta']]
   return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'linear-gradient(160deg,#F0F7F8 0%,#F9F6F3 60%,#F5EDE8 100%)', padding:'32px 24px', fontFamily:'Manrope,sans-serif', position:'relative', overflow:'hidden' }}>
       {/* blobs */}
@@ -1950,4 +1950,5 @@ export default function AuthOnboarding() {
     </div>
   )
 }
+
 
