@@ -194,6 +194,27 @@ export async function signInUser(email: string, password: string) {
   return data
 }
 
+// Redirects to Google's consent screen, then back to /auth — not the bare
+// site origin — so AuthOnboarding's own auth-state listener (which already
+// knows how to route a returning user by their real stored role, and falls
+// back to /dashboard if no profile row exists yet) is what picks the
+// session back up, instead of needing a second copy of that logic on the
+// page the origin resolves to.
+export async function signInWithGoogle() {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${window.location.origin}/auth`,
+    },
+  })
+
+  if (error) {
+    throw error
+  }
+
+  return data
+}
+
 
 export async function uploadProfilePhoto(file: File) {
   const user = await getCurrentUser()
