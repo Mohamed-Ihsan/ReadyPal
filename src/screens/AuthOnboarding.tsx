@@ -409,7 +409,7 @@ function InlineAlert({ type, message }: { type:'error'|'warning'|'success'; mess
 // ─── Welcome ──────────────────────────────────────────────────────────────────
 function WelcomeScreen({ go }: { go: (s: AuthScreen) => void }) {
   const [lang, setLang] = useState<'en'|'si'|'ta'>('en')
-  const langs: [string, typeof lang][] = [['English','en'],['සිංහල','si'],['தமிழ்','ta']]
+  const langs: [string, Lang][] = [['English','en'],['සිංහල','si'],['தமிழ்','ta']]
   return (
     <div style={{ minHeight:'100vh', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'linear-gradient(160deg,#F0F7F8 0%,#F9F6F3 60%,#F5EDE8 100%)', padding:'32px 24px', fontFamily:'Manrope,sans-serif', position:'relative', overflow:'hidden' }}>
       {/* blobs */}
@@ -456,31 +456,32 @@ function WelcomeScreen({ go }: { go: (s: AuthScreen) => void }) {
             </svg>
           </div>
 
-          <h1 style={{ fontSize:26, fontWeight:900, color:C.type, letterSpacing:'-0.02em', lineHeight:1.2, marginBottom:10 }}>
-            Care that feels close,<br />from anywhere.
-          </h1>
+          <h1
+            style={{ fontSize:26, fontWeight:900, color:C.type, letterSpacing:'-0.02em', lineHeight:1.2, marginBottom:10 }}
+            dangerouslySetInnerHTML={{ __html: 'Care that feels close,<br />from anywhere.' }}
+          />
           <p style={{ fontSize:15, color:C.sub, lineHeight:1.65, maxWidth:340, margin:'0 auto' }}>
-            Trusted care agents for your elderly parents back home in Sri Lanka.
+            {'Trusted care agents for your elderly parents back home in Sri Lanka.'}
           </p>
         </div>
 
         {/* CTAs */}
         <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:20 }}>
-          <Btn variant="primary" size="lg" fullWidth onClick={() => go('login')}>Log In to Your Account</Btn>
-          <Btn variant="outline" size="lg" fullWidth onClick={() => go('role-select')}>Create a Free Account</Btn>
-          <Btn variant="ghost" size="md" fullWidth onClick={() => go('login')}>Continue as Guest</Btn>
+          <Btn variant="primary" size="lg" fullWidth onClick={() => go('login')}>{'Log In to Your Account'}</Btn>
+          <Btn variant="outline" size="lg" fullWidth onClick={() => go('role-select')}>{'Create a Free Account'}</Btn>
+          <Btn variant="ghost" size="md" fullWidth onClick={() => go('login')}>{'Continue as Guest'}</Btn>
         </div>
 
         {/* Trust row */}
         <div style={{ display:'flex', justifyContent:'center', gap:20, flexWrap:'wrap' }}>
           {[
-            { icon: Ico.shield, label:'Verified Agents' },
-            { icon: Ico.lock,   label:'Secure Payments' },
-            { icon: Ico.star,   label:'4.9 / 5 Rating' },
-          ].map(t => (
-            <div key={t.label} style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <span style={{ color:C.primary }}>{t.icon}</span>
-              <span style={{ fontSize:12, fontWeight:600, color:C.sub }}>{t.label}</span>
+            { icon: Ico.shield, label: 'Verified Agents' },
+            { icon: Ico.lock,   label: 'Secure Payments' },
+            { icon: Ico.star,   label: '4.9 / 5 Rating' },
+          ].map(item => (
+            <div key={item.label} style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <span style={{ color:C.primary }}>{item.icon}</span>
+              <span style={{ fontSize:12, fontWeight:600, color:C.sub }}>{item.label}</span>
             </div>
           ))}
         </div>
@@ -488,11 +489,11 @@ function WelcomeScreen({ go }: { go: (s: AuthScreen) => void }) {
 
       {/* Footer */}
       <div style={{ position:'absolute', bottom:20, left:0, right:0, textAlign:'center', fontSize:11, color:C.muted }}>
-        <button onClick={() => {}} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:11 }}>Privacy</button>
+        <button onClick={() => {}} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:11 }}>{'Privacy'}</button>
         &nbsp;·&nbsp;
-        <button onClick={() => {}} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:11 }}>Terms</button>
+        <button onClick={() => {}} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:11 }}>{'Terms'}</button>
         &nbsp;·&nbsp;
-        <button onClick={() => {}} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:11 }}>Support</button>
+        <button onClick={() => {}} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontFamily:'Manrope,sans-serif', fontSize:11 }}>{'Support'}</button>
       </div>
     </div>
   )
@@ -1806,3 +1807,4 @@ export default function AuthOnboarding() {
     </div>
   )
 }
+

@@ -1,5 +1,14 @@
 import { useState, useEffect, type ReactNode, type CSSProperties } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { loadStripe } from '@stripe/stripe-js'
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import { supabase } from '../lib/supabaseClient'
+
+// Loaded once, outside the component, so it isn't re-created on every render.
+// ASSUMPTION: this is a Vite project (import.meta.env.VITE_*). If you're on
+// Create React App instead, use process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY
+// and rename the .env variable to match.
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY)
 
 // ─── Brand ─────────────────────────────────────────────────────────────────────
 const C = {
@@ -247,33 +256,121 @@ function Dashboard({ onNav, TRANSACTIONS }: { onNav:(v:SubView)=>void; TRANSACTI
 // ──────────────────────────────────────────────────────────────────────────────
 // CHECKOUT
 // ──────────────────────────────────────────────────────────────────────────────
-function Checkout({ onBack, onSuccess, onFailed }: { onBack:()=>void; onSuccess:()=>void; onFailed:()=>void }) {
-  const [selectedCard, setSelectedCard] = useState('cd1')
-  const [coupon, setCoupon] = useState('')
-  const [couponApplied, setCouponApplied] = useState(false)
-  const [step, setStep] = useState<'review'|'processing'>('review')
+// Fetches the real booking + creates a real PaymentIntent, then hands off to
+// <Elements> once we have a clientSecret. Split into two components because
+// useStripe()/useElements() only work INSIDE an <Elements> provider, and the
+// provider itself needs the clientSecret before it can mount.
+function Checkout({ onBack, onSuccess, onFailed }: { onBack:()=>void; onSuccess:()=>void; onFailed:(msg?:string)=>void }) {
+  const [searchParams] = useSearchParams()
+  const bookingId = searchParams.get('booking_id')
 
-  const subtotal = 5250
-  const platformFee = 787
-  const discount = couponApplied ? 500 : 0
-  const total = subtotal + platformFee - discount
+  const [booking, setBooking] = useState<any>(null)
+  const [clientSecret, setClientSecret] = useState<string|null>(null)
+  const [loadError, setLoadError] = useState<string|null>(null)
+  const [loading, setLoading] = useState(true)
 
-  const handlePay = () => {
-    setStep('processing')
-    setTimeout(()=>onSuccess(), 2200)
-  }
+  useEffect(() => {
+    if (!bookingId) { setLoading(false); return }
+    let cancelled = false
 
-  if (step==='processing') return (
-    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, padding:40 }}>
-      <div style={{ width:80, height:80, borderRadius:'50%', border:`4px solid ${C.primary}`, borderTopColor:'transparent', animation:'spin 0.9s linear infinite' }} />
-      <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Processing Payment…</h2>
-      <p style={{ fontSize:13, color:C.muted }}>Please do not close this window</p>
-      <div style={{ display:'flex', gap:6, alignItems:'center', padding:'8px 16px', borderRadius:999, background:`${C.success}08`, border:`1px solid ${C.success}20` }}>
-        <span style={{ color:C.success, display:'flex' }}>{I.lock}</span>
-        <p style={{ fontSize:12, fontWeight:700, color:C.success }}>256-bit SSL Encrypted</p>
-      </div>
+    async function init() {
+      try {
+        // Real booking fields for the Service Summary card. Add joins for
+        // beneficiary/service-type here once you confirm those table/column
+        // names — left out rather than guessed.
+        const { data: bookingData, error: bookingErr } = await supabase
+          .from('bookings')
+          .select(`
+            id, scheduled_date, scheduled_time, duration, payment_amount, location,
+            agent:profiles!agent_id(full_name)
+          `)
+          .eq('id', bookingId)
+          .single()
+        if (bookingErr) throw bookingErr
+        if (cancelled) return
+        setBooking(bookingData)
+
+        // supabase.functions.invoke handles the Authorization + apikey
+        // headers automatically from the current session — no manual
+        // header wiring needed here (unlike our curl testing earlier).
+        const { data, error } = await supabase.functions.invoke('create-payment-intent', {
+          body: { booking_id: bookingId },
+        })
+        if (error) throw error
+        if (cancelled) return
+        setClientSecret(data.client_secret)
+      } catch (e: any) {
+        if (!cancelled) setLoadError(e?.message || 'Could not start checkout')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    init()
+    return () => { cancelled = true }
+  }, [bookingId])
+
+  if (!bookingId) return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12, padding:40 }}>
+      <p style={{ fontSize:14, color:C.muted }}>No booking selected. Open this page from a specific booking to pay for it.</p>
+      <Btn label="Back to Dashboard" variant="secondary" onClick={onBack} />
     </div>
   )
+
+  if (loading) return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, padding:40 }}>
+      <div style={{ width:80, height:80, borderRadius:'50%', border:`4px solid ${C.primary}`, borderTopColor:'transparent', animation:'spin 0.9s linear infinite' }} />
+      <p style={{ fontSize:13, color:C.muted }}>Preparing your checkout…</p>
+    </div>
+  )
+
+  if (loadError || !clientSecret || !booking) return (
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12, padding:40 }}>
+      <p style={{ fontSize:14, color:C.error }}>{loadError || 'Could not load this booking.'}</p>
+      <Btn label="Back to Dashboard" variant="secondary" onClick={onBack} />
+    </div>
+  )
+
+  return (
+    <Elements stripe={stripePromise} options={{ clientSecret, appearance:{ theme:'stripe', variables:{ colorPrimary:C.primary, fontFamily:'Manrope, sans-serif' } } }}>
+      <CheckoutForm booking={booking} onBack={onBack} onSuccess={onSuccess} onFailed={onFailed} />
+    </Elements>
+  )
+}
+
+function CheckoutForm({ booking, onBack, onSuccess, onFailed }: { booking:any; onBack:()=>void; onSuccess:()=>void; onFailed:(msg?:string)=>void }) {
+  const stripe = useStripe()
+  const elements = useElements()
+  const [submitting, setSubmitting] = useState(false)
+  const [payError, setPayError] = useState<string|null>(null)
+
+  const total = booking.payment_amount ?? 0
+
+  const handlePay = async () => {
+    if (!stripe || !elements) return
+    setSubmitting(true)
+    setPayError(null)
+    try {
+      const { error, paymentIntent } = await stripe.confirmPayment({
+        elements,
+        redirect: 'if_required',
+        confirmParams: { return_url: window.location.href },
+      })
+      if (error) {
+        setSubmitting(false)
+        onFailed(error.message || 'Payment failed')
+        return
+      }
+      if (paymentIntent?.status === 'succeeded' || paymentIntent?.status === 'processing') {
+        onSuccess()
+      } else {
+        setSubmitting(false)
+        onFailed('Payment was not completed')
+      }
+    } catch (err: any) {
+      setSubmitting(false)
+      onFailed(err?.message || 'Payment failed unexpectedly')
+    }
+  }
 
   return (
     <div style={{ padding:'24px 28px 60px', display:'flex', gap:26, alignItems:'start', flexWrap:'wrap' }}>
@@ -281,16 +378,14 @@ function Checkout({ onBack, onSuccess, onFailed }: { onBack:()=>void; onSuccess:
         <button onClick={onBack} style={{ display:'flex', alignItems:'center', gap:5, background:'none', border:'none', cursor:'pointer', color:C.muted, fontSize:13, fontWeight:700, fontFamily:'Manrope,sans-serif', alignSelf:'flex-start' }}>{I.chevL} Dashboard</button>
         <h2 style={{ fontSize:20, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif' }}>Checkout</h2>
 
-        {/* Service summary */}
+        {/* Service summary — real fields only */}
         <Card style={{ padding:22 }}>
           <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Service Summary</h3>
           {[
-            { l:'Service',      v:'Hospital Companion' },
-            { l:'Care Agent',   v:'Kasun Perera' },
-            { l:'Beneficiary',  v:'Nimal Perera · Kandy' },
-            { l:'Schedule',     v:'14 Jan 2025 · 9:00 AM' },
-            { l:'Duration',     v:'Approx. 3 hours' },
-            { l:'Task Ref',     v:'RP-T-20259' },
+            { l:'Care Agent', v: booking.agent?.full_name || 'Not yet assigned' },
+            { l:'Schedule',   v: booking.scheduled_date ? `${new Date(booking.scheduled_date).toLocaleDateString()}${booking.scheduled_time ? ' · '+booking.scheduled_time : ''}` : 'N/A' },
+            { l:'Duration',   v: booking.duration ? `${booking.duration} hours` : 'N/A' },
+            { l:'Location',   v: booking.location || 'N/A' },
           ].map(r=>(
             <div key={r.l} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
               <p style={{ fontSize:13, color:C.muted }}>{r.l}</p>
@@ -299,97 +394,36 @@ function Checkout({ onBack, onSuccess, onFailed }: { onBack:()=>void; onSuccess:
           ))}
         </Card>
 
-        {/* Payment methods */}
+        {/* Payment method — real Stripe PaymentElement, replaces the old mock card list */}
         <Card style={{ padding:22 }}>
           <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:14, fontFamily:'Manrope,sans-serif' }}>Payment Method</h3>
-          <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:14 }}>
-            {CARDS.map(card=>(
-              <button key={card.id} onClick={()=>setSelectedCard(card.id)}
-                style={{ display:'flex', gap:12, alignItems:'center', padding:'14px 16px', borderRadius:13, border:`2px solid ${selectedCard===card.id?C.primary:C.border}`, background:selectedCard===card.id?`${C.primary}06`:'transparent', cursor:'pointer', textAlign:'left' as const, transition:'all 0.15s' }}>
-                <div style={{ width:46, height:30, borderRadius:8, background:`linear-gradient(135deg,${card.color},${card.color}99)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                  <p style={{ fontSize:9, fontWeight:900, color:'#fff', letterSpacing:'0.05em' }}>{card.brand.toUpperCase()}</p>
-                </div>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:13, fontWeight:700, color:C.type }}>{card.brand} •••• {card.last4}</p>
-                  <p style={{ fontSize:11, color:C.muted }}>Expires {card.expiry} · {card.holder}</p>
-                </div>
-                {card.isDefault && <Bdg label="Default" color={C.primary} />}
-                <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${selectedCard===card.id?C.primary:C.border}`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                  {selectedCard===card.id && <div style={{ width:9, height:9, borderRadius:'50%', background:C.primary }} />}
-                </div>
-              </button>
-            ))}
-
-            {/* Wallet option */}
-            <button onClick={()=>setSelectedCard('wallet')} style={{ display:'flex', gap:12, alignItems:'center', padding:'14px 16px', borderRadius:13, border:`2px solid ${selectedCard==='wallet'?C.primary:C.border}`, background:selectedCard==='wallet'?`${C.primary}06`:'transparent', cursor:'pointer', textAlign:'left' as const }}>
-              <div style={{ width:46, height:30, borderRadius:8, background:`linear-gradient(135deg,${C.primary},#00959E)`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                <span style={{ color:'#fff', display:'flex' }}>{I.wallet}</span>
-              </div>
-              <div style={{ flex:1 }}>
-                <p style={{ fontSize:13, fontWeight:700, color:C.type }}>ReadyPal Wallet</p>
-                <p style={{ fontSize:11, color:C.muted }}>Balance: LKR 12,500</p>
-              </div>
-              <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${selectedCard==='wallet'?C.primary:C.border}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                {selectedCard==='wallet' && <div style={{ width:9, height:9, borderRadius:'50%', background:C.primary }} />}
-              </div>
-            </button>
-
-            {/* Apple/Google Pay placeholders */}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-              {[{icon:I.apple, l:'Apple Pay'},{icon:I.google, l:'Google Pay'}].map(p=>(
-                <button key={p.l} style={{ padding:'11px', borderRadius:12, border:`1.5px solid ${C.border}`, background:'#FAFAFA', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:7, fontFamily:'Manrope,sans-serif', fontSize:12, fontWeight:700, color:C.sub }}>
-                  <span style={{ display:'flex' }}>{p.icon}</span>{p.l}
-                </button>
-              ))}
-            </div>
-          </div>
-          <button style={{ width:'100%', padding:'10px', borderRadius:10, border:`1.5px dashed ${C.primary}40`, background:`${C.primary}04`, cursor:'pointer', fontFamily:'Manrope,sans-serif', fontSize:13, fontWeight:700, color:C.primary, display:'flex', alignItems:'center', justifyContent:'center', gap:7 }}>{I.plus} Add New Card</button>
+          <PaymentElement />
         </Card>
 
-        {/* Coupon */}
-        <Card style={{ padding:22 }}>
-          <h3 style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:12, fontFamily:'Manrope,sans-serif' }}>Coupon</h3>
-          <div style={{ display:'flex', gap:8 }}>
-            <input value={coupon} onChange={e=>setCoupon(e.target.value.toUpperCase())} placeholder="Enter coupon code" disabled={couponApplied}
-              style={{ flex:1, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${couponApplied?C.success:C.border}`, fontFamily:'Manrope,sans-serif', fontSize:13, color:C.type, outline:'none', background:couponApplied?`${C.success}04`:'#FAFAFA', boxSizing:'border-box' as const }} />
-            {couponApplied
-              ? <Btn label="Remove" variant="danger" small onClick={()=>{ setCouponApplied(false); setCoupon('') }} />
-              : <Btn label="Apply" variant="secondary" small onClick={()=>{ if(coupon==='CARE50'||coupon==='FIRST20') setCouponApplied(true) }} />
-            }
-          </div>
-          {couponApplied && <p style={{ fontSize:12, color:C.success, marginTop:6, fontWeight:700 }}>✓ Coupon applied — LKR 500 discount</p>}
-          <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>Try: CARE50 or FIRST20</p>
-        </Card>
+        {payError && (
+          <Card style={{ padding:16, border:`1.5px solid ${C.error}30`, background:`${C.error}06` }}>
+            <p style={{ fontSize:13, color:C.error, fontWeight:600 }}>{payError}</p>
+          </Card>
+        )}
       </div>
 
-      {/* Order summary sidebar */}
-      <div style={{ width:300, flexShrink:0, position:'sticky', top:24 }}>
+      <div style={{ width:340, flexShrink:0, display:'flex', flexDirection:'column', gap:18 }}>
         <Card style={{ padding:24 }}>
           <h3 style={{ fontSize:14, fontWeight:800, color:C.type, marginBottom:16, fontFamily:'Manrope,sans-serif' }}>Order Summary</h3>
-          {[
-            { l:'Care Service (3 hrs × LKR 1,750)', v:subtotal },
-            { l:'ReadyPal Platform Fee (15%)', v:platformFee },
-            ...(couponApplied?[{ l:'Coupon — CARE50', v:-discount }]:[]),
-          ].map(r=>(
-            <div key={r.l} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
-              <p style={{ fontSize:13, color:C.muted }}>{r.l}</p>
-              <p style={{ fontSize:13, fontWeight:700, color:r.v<0?C.success:C.type }}>{r.v<0?'-':''} LKR {Math.abs(r.v).toLocaleString()}</p>
-            </div>
-          ))}
+          <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${C.border}` }}>
+            <p style={{ fontSize:13, color:C.muted }}>Care Service Total</p>
+            <p style={{ fontSize:13, fontWeight:700, color:C.type }}>LKR {total.toLocaleString()}</p>
+          </div>
           <div style={{ display:'flex', justifyContent:'space-between', padding:'12px 0 16px' }}>
             <p style={{ fontSize:15, fontWeight:800, color:C.type }}>Grand Total</p>
             <p style={{ fontSize:20, fontWeight:900, color:C.primary, fontFamily:'Manrope,sans-serif', letterSpacing:'-0.02em' }}>LKR {total.toLocaleString()}</p>
           </div>
-          <button onClick={handlePay} style={{ width:'100%', padding:'14px', borderRadius:12, border:'none', background:`linear-gradient(135deg,${C.primary},#00959E)`, cursor:'pointer', fontSize:14, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif', boxShadow:`0 6px 20px ${C.primary}40` }}>
+          <button onClick={handlePay} disabled={!stripe} style={{ width:'100%', padding:'14px', borderRadius:12, border:'none', background:!stripe?'#C8D0D4':`linear-gradient(135deg,${C.primary},#00959E)`, cursor:!stripe?'not-allowed':'pointer', fontSize:14, fontWeight:800, color:'#fff', fontFamily:'Manrope,sans-serif', boxShadow:!stripe?'none':`0 6px 20px ${C.primary}40` }}>
             Confirm & Pay LKR {total.toLocaleString()}
           </button>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:6, marginTop:12 }}>
             <span style={{ color:C.success, display:'flex' }}>{I.lock}</span>
             <p style={{ fontSize:11, color:C.muted }}>256-bit SSL · Secured by Stripe</p>
-          </div>
-          <div style={{ display:'flex', gap:8, marginTop:10 }}>
-            <Btn label="Change Method" variant="secondary" small onClick={()=>{}} />
-            <button onClick={onFailed} style={{ padding:'6px 14px', borderRadius:9, border:`1px solid ${C.border}`, background:'transparent', cursor:'pointer', fontSize:11, fontWeight:700, color:C.muted, fontFamily:'Manrope,sans-serif' }}>Test Failure</button>
           </div>
         </Card>
       </div>
@@ -439,7 +473,7 @@ function PaymentSuccess({ onBack }: { onBack:()=>void }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // PAYMENT FAILED
 // ──────────────────────────────────────────────────────────────────────────────
-function PaymentFailed({ onBack, onRetry }: { onBack:()=>void; onRetry:()=>void }) {
+function PaymentFailed({ onBack, onRetry, errorMessage }: { onBack:()=>void; onRetry:()=>void; errorMessage?:string|null }) {
   const reasons = ['Insufficient funds on card','Bank declined the transaction','Card expired or incorrect details','Connection timeout — please retry']
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'48px 28px', textAlign:'center', gap:16 }}>
@@ -448,15 +482,15 @@ function PaymentFailed({ onBack, onRetry }: { onBack:()=>void; onRetry:()=>void 
       </div>
       <h1 style={{ fontSize:28, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', letterSpacing:'-0.02em' }}>Payment Failed</h1>
       <p style={{ fontSize:14, color:C.muted, maxWidth:380, lineHeight:1.7 }}>We were unable to process your payment. Please try again or use a different payment method.</p>
-      <Card style={{ padding:20, maxWidth:380, width:'100%' }}>
-        <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:12 }}>Possible Reasons</p>
-        {reasons.map((r,i)=>(
-          <div key={i} style={{ display:'flex', gap:8, alignItems:'flex-start', padding:'7px 0', borderBottom:i<reasons.length-1?`1px solid ${C.border}`:'none' }}>
+      {errorMessage && (
+        <Card style={{ padding:20, maxWidth:380, width:'100%' }}>
+          <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:8 }}>What Stripe said</p>
+          <div style={{ display:'flex', gap:8, alignItems:'flex-start' }}>
             <span style={{ color:C.error, display:'flex', flexShrink:0, marginTop:1 }}>{I.warning}</span>
-            <p style={{ fontSize:12, color:C.sub }}>{r}</p>
+            <p style={{ fontSize:12, color:C.sub }}>{errorMessage}</p>
           </div>
-        ))}
-      </Card>
+        </Card>
+      )}
       <div style={{ display:'flex', gap:12, flexWrap:'wrap', justifyContent:'center' }}>
         <Btn label="Retry Payment" variant="primary" icon={I.refresh} onClick={onRetry} />
         <Btn label="Change Method" variant="secondary" icon={I.card} onClick={onBack} />
@@ -1097,6 +1131,8 @@ export default function PaymentsBilling() {
 
   const [view, setView] = useState<SubView>('dashboard')
   const [detailId, setDetailId] = useState('TXN-29841')
+  const [paymentError, setPaymentError] = useState<string|null>(null)
+
 
   const NAV: {key:SubView; label:string}[] = [
     {key:'dashboard', label:'Overview'},
@@ -1135,7 +1171,7 @@ export default function PaymentsBilling() {
       {/* Content */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflowY:'auto' }}>
         {view==='dashboard' && <Dashboard onNav={setView} TRANSACTIONS={TRANSACTIONS} />}
-        {view==='checkout'  && <Checkout onBack={()=>setView('dashboard')} onSuccess={()=>setView('success')} onFailed={()=>setView('failed')} />}
+        {view==='checkout'  && <Checkout onBack={()=>setView('dashboard')} onSuccess={()=>setView('success')} onFailed={(msg)=>{ setPaymentError(msg??null); setView('failed') }} />}
         {view==='history'   && <TxnHistory onBack={()=>setView('dashboard')} onDetail={id=>{ setDetailId(id); setView('detail') }} TRANSACTIONS={TRANSACTIONS} />}
         {view==='detail'    && <TxnDetail id={detailId} onBack={()=>setView('history')} TRANSACTIONS={TRANSACTIONS} />}
         {view==='invoices'  && <InvoiceCenter onBack={()=>setView('dashboard')} />}
@@ -1145,7 +1181,7 @@ export default function PaymentsBilling() {
         {view==='refunds'   && <Refunds onBack={()=>setView('dashboard')} TRANSACTIONS={TRANSACTIONS} />}
         {view==='coupons'   && <CouponView onBack={()=>setView('dashboard')} COUPONS={COUPONS} />}
         {view==='success'   && <PaymentSuccess onBack={()=>setView('dashboard')} />}
-        {view==='failed'    && <PaymentFailed onBack={()=>setView('checkout')} onRetry={()=>setView('checkout')} />}
+        {view==='failed'    && <PaymentFailed onBack={()=>setView('checkout')} onRetry={()=>setView('checkout')} errorMessage={paymentError} />}
       </div>
     </div>
   )

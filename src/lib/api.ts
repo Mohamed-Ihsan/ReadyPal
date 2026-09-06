@@ -3927,3 +3927,17 @@ export async function updateBeneficiary(id: string, fields: Record<string, any>,
   if (error) throw error
   return data
 }
+
+export async function getMyAvailableBalance() {
+  const { data, error } = await supabase.rpc('get_my_available_balance').single()
+  if (error) throw error
+  return data as { gross_earned: number; already_claimed: number; available_balance: number }
+}
+
+export async function requestPayout(amount?: number) {
+  const { data, error } = await supabase.functions.invoke('request-payout', {
+    body: amount != null ? { amount } : {},
+  })
+  if (error) throw error
+  return data.payout
+}

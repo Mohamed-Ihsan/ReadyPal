@@ -7,6 +7,8 @@ import {
   getMyPayouts,
   getMyBankAccount,
   saveMyBankAccount,
+  getMyAvailableBalance,
+  requestPayout,
 } from '../lib/api'
 
 // ─── Brand ────────────────────────────────────────────────────────────────────
@@ -902,19 +904,73 @@ function PayoutCenter({ payouts, bankAccount, onNav }:{ payouts:PayoutRow[]; ban
 // time, or an automatic payout schedule — so none of those are invented
 // here. Submission is intentionally disabled until that business rule
 // exists; the real bank account is still shown for context.
-function WithdrawFunds({ bankAccount, onNav }:{ bankAccount:BankAccount|null; onNav:(s:SubView)=>void }) {
+// ─── Withdraw Funds ───────────────────────────────────────────────────────────
+function WithdrawFunds({ bankAccount, onNav, onToast, onPayoutCreated }:{
+  bankAccount:BankAccount|null; onNav:(s:SubView)=>void; onToast:(m:string)=>void
+  onPayoutCreated:()=>void
+}) {
+  const [balance, setBalance] = useState<{gross_earned:number;already_claimed:number;available_balance:number}|null>(null)
+  const [loadingBalance, setLoadingBalance] = useState(true)
+  const [balanceError, setBalanceError] = useState<string|null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    getMyAvailableBalance()
+      .then(b => { if(!cancelled) setBalance(b) })
+      .catch(e => { if(!cancelled) setBalanceError(e?.message || 'Could not load balance') })
+      .finally(() => { if(!cancelled) setLoadingBalance(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const isVerified = bankAccount?.verification_status === 'verified'
+  const hasBalance = (balance?.available_balance ?? 0) > 0
+  const canSubmit = isVerified && hasBalance && !submitting
+
+  async function submit() {
+    setSubmitting(true)
+    try {
+      await requestPayout()
+      onToast('Payout requested')
+      onPayoutCreated()
+      onNav('payouts')
+    } catch(e:any) {
+      onToast(e?.message || 'Could not request payout')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <div style={{ maxWidth:580, margin:'0 auto', padding:'24px 28px 60px' }}>
       <h2 style={{ fontSize:22, fontWeight:900, color:C.type, fontFamily:'Manrope,sans-serif', marginBottom:24 }}>Withdraw Funds</h2>
-      <Card style={{ padding:24, marginBottom:16, border:`1.5px solid ${C.warning}30`, background:`${C.warning}06` }}>
-        <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
-          <span style={{ fontSize:22 }}>⚠️</span>
-          <div>
-            <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:4 }}>Payout requests are temporarily unavailable</p>
-            <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>This feature requires payout rules (available balance, minimum/maximum amount, processing time) to be configured before requests can be submitted.</p>
-          </div>
-        </div>
+
+      <Card style={{ padding:24, marginBottom:16, background:`linear-gradient(135deg,${C.primary},#005D63)`, border:'none' }}>
+        <p style={{ fontSize:11, color:'rgba(255,255,255,0.65)', marginBottom:4 }}>Available Balance</p>
+        {loadingBalance ? (
+          <p style={{ fontSize:20, color:'#fff', fontFamily:'Manrope,sans-serif' }}>Loading…</p>
+        ) : balanceError ? (
+          <p style={{ fontSize:13, color:'#FCA5A5' }}>{balanceError}</p>
+        ) : (
+          <>
+            <p style={{ fontSize:34, fontWeight:900, color:'#fff', fontFamily:'Manrope,sans-serif', marginBottom:6 }}>{fmt(balance?.available_balance ?? 0)}</p>
+            <p style={{ fontSize:12, color:'rgba(255,255,255,0.6)' }}>From completed, confirmed visits — minus payouts already requested</p>
+          </>
+        )}
       </Card>
+
+      {!isVerified && (
+        <Card style={{ padding:24, marginBottom:16, border:`1.5px solid ${C.warning}30`, background:`${C.warning}06` }}>
+          <div style={{ display:'flex', gap:12, alignItems:'flex-start' }}>
+            <span style={{ fontSize:22 }}>⚠️</span>
+            <div>
+              <p style={{ fontSize:13, fontWeight:800, color:C.type, marginBottom:4 }}>Bank account not verified yet</p>
+              <p style={{ fontSize:12, color:C.sub, lineHeight:1.6 }}>Your default bank account needs to be verified before you can request a payout.</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card style={{ padding:22, marginBottom:16 }}>
         <SectionTitle title="Payout Bank Account" />
         {bankAccount ? (
@@ -932,6 +988,10 @@ function WithdrawFunds({ bankAccount, onNav }:{ bankAccount:BankAccount|null; on
           <p style={{ fontSize:12, color:C.muted }}>No bank account on file yet. Add one in Bank Accounts before requesting a payout.</p>
         )}
       </Card>
+
+      <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+        <Btn label={submitting?'Requesting…':`Request Payout${hasBalance?` — ${fmt(balance!.available_balance)}`:''}`} disabled={!canSubmit} onClick={submit} full />
+      </div>
       <div style={{ display:'flex', gap:8 }}>
         <Btn label="View Payout History" variant="secondary" onClick={()=>onNav('payouts')} />
         <Btn label="Bank Accounts" variant="ghost" onClick={()=>onNav('bankAccounts')} />
@@ -1226,35 +1286,49 @@ export default function AgentEarnings() {
   const showToast = (m:string) => { setToast(m); setTimeout(()=>setToast(null),2800) }
   const groups = [...new Set(NAV.map(n=>n.group))]
 
+  async function loadData() {
+    try {
+      const [profileData, bookingsData, txnData, payoutData, bankData] = await Promise.all([
+        getMyProfile(),
+        getMyCompletedBookings(),
+        getMyTransactions(),
+        getMyPayouts(),
+        getMyBankAccount(),
+      ])
+      setProfile(profileData)
+      setCompletedBookings(bookingsData as unknown as CompletedBooking[])
+      setTransactions(txnData as unknown as TransactionRow[])
+      setPayouts(payoutData as PayoutRow[])
+      setBankAccount(bankData as BankAccount|null)
+    } catch(e:any) {
+      setLoadError(e?.message || 'Failed to load earnings data')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // Loads real profile/earnings/transaction/payout/bank data once on
   // mount. Nothing here is mocked — a failure surfaces as loadError rather
   // than falling back to demo content.
   useEffect(() => {
     let cancelled = false
-    async function load() {
+    async function run() {
       try {
-        const [profileData, bookingsData, txnData, payoutData, bankData] = await Promise.all([
-          getMyProfile(),
-          getMyCompletedBookings(),
-          getMyTransactions(),
-          getMyPayouts(),
-          getMyBankAccount(),
-        ])
-        if(cancelled) return
-        setProfile(profileData)
-        setCompletedBookings(bookingsData as unknown as CompletedBooking[])
-        setTransactions(txnData as unknown as TransactionRow[])
-        setPayouts(payoutData as PayoutRow[])
-        setBankAccount(bankData as BankAccount|null)
-      } catch(e:any) {
-        if(!cancelled) setLoadError(e?.message || 'Failed to load earnings data')
+        await loadData()
+      } catch {
+        // no-op; loadData already handles the error path
       } finally {
-        if(!cancelled) setLoading(false)
+        if(cancelled) setLoading(true)
       }
     }
-    load()
+    run()
     return () => { cancelled = true }
   }, [])
+
+  const handlePayoutCreated = () => {
+    setLoading(true)
+    void loadData()
+  }
 
   const summary = useMemo(()=>computeEarningsSummary(completedBookings, new Date()), [completedBookings])
 
@@ -1274,7 +1348,7 @@ export default function AgentEarnings() {
       case 'jobEarnings':  return <JobEarnings completedBookings={completedBookings} transactions={transactions} />
       case 'transactions': return <TransactionHistory transactions={transactions} onSelect={t=>{ setSelectedTxn(t); setSub('txnDetail') }} />
       case 'payouts':      return <PayoutCenter payouts={payouts} bankAccount={bankAccount} onNav={setSub} />
-      case 'withdraw':     return <WithdrawFunds bankAccount={bankAccount} onNav={setSub} />
+      case 'withdraw':     return <WithdrawFunds bankAccount={bankAccount} onNav={setSub} onToast={showToast} onPayoutCreated={handlePayoutCreated} />
       case 'bankAccounts': return <BankAccounts bankAccount={bankAccount} onSaved={setBankAccount} onToast={showToast} />
       case 'bonuses':      return <BonusesIncentives />
       case 'performance':  return <PerformanceEarnings />
